@@ -4,10 +4,10 @@
 // bought, no shop credentials are used, and no background refresh starts. Every part shares one total deadline.
 import { classifyComSite } from './com-site.mjs';
 import { anySignal, cacheDir, readCache } from './cache.mjs';
-import { asciiDomain, canRecommend, defaultEndings, domainEnding, fallbackEndings, listQuote, mainstreamEndings, nameCandidates,
-  premiumRisk, searchCandidates, supportedEndings, unicodeName } from './name-search.mjs';
+import { asciiDomain, canRecommend, choosePick, defaultEndings, domainEnding, listQuote, nameCandidates, premiumRisk, qualityEndings,
+  searchCandidates, supportedEndings, unicodeName } from './name-search.mjs';
 import { bundledCatalog, loadCachedCatalog } from './price-catalog.mjs';
-import { bestValue, triageNames } from './triage.mjs';
+import { triageNames } from './triage.mjs';
 import { bootstrap, bootstrapUrl, documentedWhois, lookupRegistrations, rdapBase, rdapDomainUrl, systemResolveNs } from './registry.mjs';
 import { saleMarketplace } from './parking.mjs';
 import { checkListings, marketplaceFor, providers, stopReason, urlBindsDomain } from './marketplaces.mjs';
@@ -20,6 +20,7 @@ const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const registrarPriceUrls = {
   Spaceship: 'https://www.spaceship.com/domain-search/pricing/',
   Dynadot: 'https://www.dynadot.com/domain/prices?currency=USD',
+  Cloudflare: 'https://pricing.registrar.cloudflare.com/',
 };
 const priceSourceUrl = (quote, tld) => quote.shop === 'Gandi'
   ? 'https://www.gandi.net/en/domain/tld/' + encodeURIComponent(tld) + '?currency=USD'
@@ -50,6 +51,9 @@ export function readRdap(data, domain) {
   if (String(data?.ldhName ?? '').toLowerCase().replace(/\.$/, '') !== domain) return null;
   const events = Array.isArray(data.events) ? data.events : [];
   const event = action => iso(events.find(row => row?.eventAction === action)?.eventDate);
+  // Multiple transfers can appear. Canonical ISO timestamps sort with the newest first.
+  const transferred = events.filter(row => row?.eventAction === 'transfer').map(row => iso(row.eventDate))
+    .reduce((latest, date) => date && (!latest || date > latest) ? date : latest, null);
   const registrar = (Array.isArray(data.entities) ? data.entities : [])
     .find(entity => Array.isArray(entity?.roles) && entity.roles.includes('registrar'));
   const card = Array.isArray(registrar?.vcardArray?.[1]) ? registrar.vcardArray[1] : [];
@@ -57,7 +61,8 @@ export function readRdap(data, domain) {
   const ianaId = (Array.isArray(registrar?.publicIds) ? registrar.publicIds : [])
     .find(row => /iana/i.test(String(row?.type)))?.identifier;
   return {
-    created: event('registration'), expires: event('expiration'), changed: event('last changed'),
+    // "transfer" is its own RDAP event action (RFC 9083); "last changed" is never read as a transfer.
+    created: event('registration'), expires: event('expiration'), changed: event('last changed'), transferred,
     registrar: name, registrarIanaId: /^\d{1,6}$/.test(String(ianaId ?? '')) ? String(ianaId) : null,
     status: (Array.isArray(data.status) ? data.status : [])
       .filter(value => typeof value === 'string' && /^[a-z ]{3,40}$/i.test(value)).map(normalizeStatus).slice(0, 24),
@@ -116,7 +121,7 @@ export async function registryFacts(domain, { fetcher = globalThis.fetch, resolv
     registered, checkedAt, source,
     created: facts.created ?? null,
     expires: facts.expires ?? iso(basic?.expires) ?? null,
-    changed: facts.changed ?? null,
+    changed: facts.changed ?? null, transferred: facts.transferred ?? null,
     registrar: facts.registrar ?? null, registrarIanaId: facts.registrarIanaId ?? null,
     status: facts.status ?? [], nameservers,
     marketplaceNameservers: saleMarketplace(nameservers),
@@ -304,10 +309,8 @@ export function chooseTrack(registry, listing, outlook) {
   return 'not-listed';
 }
 
-// Broker ending order: the anchors, then established mainstream endings (the shared attractiveness tiers). .xyz and
-// .tech are a fallback tier, ranked after every mainstream ending however cheap their first year is. Other supported
-// endings follow in catalog order.
-const brokerEndingOrder = [...new Set([...mainstreamEndings, ...fallbackEndings, ...supportedEndings])];
+// Broker ending order: the shared quality order, then other supported endings in catalog order.
+const brokerEndingOrder = [...new Set([...qualityEndings, ...supportedEndings])];
 const labelOf = domain => domain.slice(0, domain.indexOf('.'));
 const threeYearOf = row => Number.isFinite(row?.threeYear) ? row.threeYear : Infinity;
 
@@ -338,8 +341,9 @@ function variantForms(name) {
   });
 }
 
-// Pick the best value for the exact name, a natural .com variant, and the strongest remaining exact ending.
-// Fill open slots in ending order, then with additional variants.
+// The shared pick for the exact name (highest-quality ending within $60 over 3 years, else the least paid over 3 years,
+// never .ai by default), a natural .com variant, and the strongest remaining exact ending.
+// Fill open slots in the quality order, then with additional variants.
 export function pickAlternatives(rows, domain) {
   const name = labelOf(domain);
   const forms = variantForms(name);
@@ -354,8 +358,7 @@ export function pickAlternatives(rows, domain) {
   const picks = [];
   const open = list => list.filter(row => !picks.some(pick => pick.row === row));
   const take = (row, role) => { if (row && open([row]).length) picks.push({ row, role }); };
-  const attractive = exact.filter(row => mainstreamEndings.includes(row.tld));
-  take(bestValue(attractive) ?? bestValue(exact), 'best-value');
+  take(choosePick(exact.map(row => ({ domain: row.domain, now: row.firstPayment ?? null, total: row.threeYear ?? null, row })))?.row, 'pick');
   take(variants[0], 'variant');
   for (const row of [...open(exact), ...open(variants)]) {
     if (picks.length >= 3) break;

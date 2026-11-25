@@ -1,0 +1,22 @@
+{
+  "objectClassName": "domain",
+  "ldhName": "LANTERNBAY.COM",
+  "status": ["client transfer prohibited", "auto renew period"],
+  "events": [
+    { "eventAction": "registration", "eventDate": "2021-03-04T10:00:00Z" },
+    { "eventAction": "expiration", "eventDate": "2026-12-07T10:00:00Z" },
+    { "eventAction": "last changed", "eventDate": "2025-12-07T10:00:00Z" }
+  ],
+  "entities": [
+    {
+      "objectClassName": "entity",
+      "roles": ["registrar"],
+      "publicIds": [{ "type": "IANA Registrar ID", "identifier": "3862" }],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Spaceship, Inc."]]]
+    }
+  ],
+  "nameservers": [
+    { "objectClassName": "nameserver", "ldhName": "ADA.NS.CLOUDFLARE.COM" },
+    { "objectClassName": "nameserver", "ldhName": "BOB.NS.CLOUDFLARE.COM" }
+  ]
+}

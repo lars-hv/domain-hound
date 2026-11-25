@@ -1,15 +1,15 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "dev.domainhound/domain-hound",
-  "title": "Domain Hound",
-  "description": "Find a startup name and domain you can buy: availability, prices, app names, trademarks, handles.",
+  "title": "Domain Hound: Domains for agents",
+  "description": "One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "transport": {
         "type": "stdio"
       }

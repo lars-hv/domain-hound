@@ -211,8 +211,9 @@ test('with DOMAIN_HOUND_SHOP_QUOTES=top4 the check confirms the top pick and up 
     },
     confirm: async () => assert.fail('The browser runs only on the explicit confirm flag'),
   });
-  // Top pick .co, then .app, .me and .com; the more expensive .io and .ai stay list prices.
-  assert.deepEqual([...new Set(asked)], ['quietfern.co', 'quietfern.app', 'quietfern.me', 'quietfern.com']);
+  // Top pick .com, then the next picks the same rule makes: .app and .me within $60, then .co, the least over 3 years
+  // of the rest. The more expensive .io and .ai (never a default pick) stay list prices.
+  assert.deepEqual([...new Set(asked)], ['quietfern.com', 'quietfern.app', 'quietfern.me', 'quietfern.co']);
   const options = Object.fromEntries(result.names[0].free.map(option => [option.d, option]));
   assert.deepEqual(options.com, { d: 'com', s: 'ok', now: 9.48, renew: 10.68, y3: 30.84, shop: 'Spaceship', at: '12:04' });
   assert.equal(options.co.s, 'nc');
@@ -221,7 +222,8 @@ test('with DOMAIN_HOUND_SHOP_QUOTES=top4 the check confirms the top pick and up 
   assert.match(display, /^- quietfern\.com \$9\.48\/\$10\.68 ✓ confirmed at Spaceship 12:04 UTC$/m);
   // The renewal jump is said on the price line itself, with both figures.
   assert.match(display, /^- quietfern\.co \$3\.11, then \$31\.05\/yr, 10x jump \(list price\)$/m);
-  assert.match(display, /^Cheapest now: quietfern\.co\nBest value: quietfern\.com, \$30\.84 over 3 years$/m);
+  assert.match(display, /^Pick: quietfern\.com\nCheapest now: quietfern\.co$/m);
+  assert.doesNotMatch(display, /^Best value:/m, 'the best 3-year value is the pick');
   assert.match(display, /^Confirmed at Spaceship 12:04 UTC: \[quietfern\.com\]/m);
   assert.equal(result.liveCheck, undefined);
   assert.ok(Buffer.byteLength(checkText(result)) < 8000);

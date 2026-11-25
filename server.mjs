@@ -10,6 +10,7 @@ import { attributed, errorText, progressText } from './display.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
+import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
@@ -34,7 +35,7 @@ const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entr
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: supportedEndings.length, uniqueItems: true,
   items: { type: 'string', enum: supportedEndings },
-  description: 'Endings to consider for the recommendation, in preference order. For .com only use ["com"]. The page still shows all fourteen default endings for bare names. '
+  description: 'Endings to consider for the recommendation, in preference order; listed endings rank first. For .com only use ["com"]. The page still shows all twelve default endings for bare names. '
     + 'On request only (add them here when the person asks or names a country): ' + requestEndings.map(ending => '.' + ending).join(', ') + '.',
 };
 const countryEnding = {
@@ -51,16 +52,15 @@ const lookupProperties = {
   ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
   endings: endingsSchema,
   budget: { type: 'number', minimum: 0, maximum: 1000000,
-    description: 'Maximum upfront price in USD when the person gave a cap. Carry it from the registry screen into triage.' },
+    description: 'The person\'s budget in USD, only when they gave one. Endings that cost more upfront are left out, and it replaces the $60 three-year cap of the default pick (highest-quality ending within the cap, else the least paid over 3 years; .ai only when asked for or within this budget). Carry it from the registry screen into triage.' },
   eligible: { type: 'array', uniqueItems: true, items: { type: 'string', enum: restrictedEndings },
     description: 'Restricted endings the buyer qualifies to register. Pass no or eu only when the buyer qualifies for that ending.' },
 };
 const relay = 'The answer starts with the clickable Markdown link on the first line of say. Then give the relevant facts from say.';
 const checkTool = {
   name: 'check_domains',
-  description: 'Check availability and dated list prices for one domain or up to 20 names or domains. Use triage_names to find or vet a product name. '
-    + 'For one check, pass query, for example {"query":"lanternbay.com"}. For a batch, pass names. '
-    + 'For a buy or register request, set purchase: true and state the checkout limitation. Set confirm: true only for an explicit live shop check. '
+  description: 'Check availability and dated prices for up to 20 names or domains. Use triage_names for product names. '
+    + 'For purchase requests, set purchase: true and relay the checkout guidance. Use confirm: true only for an explicit live shop check. '
     + 'Keep list, shop-confirmed and premium prices distinct. ' + relay,
   inputSchema: {
     type: 'object',
@@ -85,10 +85,9 @@ const legacyTool = { ...checkTool, name: 'broker_find',
 
 const triageTool = {
   name: 'triage_names',
-  description: 'Use for “find a name and domain” or “can I use this name?”. For a new name, generate five distinct, easy-to-say candidates now. '
-    + 'Call triage_names once with those names, an about description under 160 characters, and shortlist: true. No preliminary tool or web search is needed. '
-    + 'Put the person’s own name first if supplied. The tool checks fourteen endings, US marks, optional EU and Norway marks, apps, rivals and meanings in 14 languages. The receipt fills in slow checks and top-three handles. '
-    + 'Use the returned verdicts. Report checks in progress as pending and give the page link. ' + relay,
+  description: 'Find or vet a product name before any other search. For naming, generate five distinct, easy-to-say names, with the supplied name first. '
+    + 'Call triage_names once with those names, a short about description and shortlist: true. Checks domains, trademarks, apps, rivals and meanings. '
+    + 'Use the returned verdicts and label unfinished checks as pending. ' + relay,
   inputSchema: {
     type: 'object',
     properties: {
@@ -257,8 +256,9 @@ function triageArguments(args) {
     throw new Error('names[' + bad + '] is not valid. Supply 1 to 20 bare names of up to 100 characters, without commas or domain endings.');
   }
   const flags = lookupFlags(args);
-  // Requested endings are never demoted to the fallback tier in the screen's own picks.
+  // Requested endings rank first in the screen's own picks, and a budget applies there as on the receipt.
   if (args.endings) flags.push('--prefer-endings', args.endings.join(','));
+  if (args.budget !== undefined) flags.push('--upfront-cap', String(args.budget));
   if (Object.hasOwn(args, 'shortlist') && typeof args.shortlist !== 'boolean') throw new Error('shortlist must be a boolean.');
   const { companyType, additionalHandles } = args;
   if (companyType !== undefined && !Object.hasOwn(handlePriorities, companyType)) throw new Error('Choose a supported company type.');
@@ -320,7 +320,7 @@ function readProgress(progress, line) {
 // Start one capability run. It ends on its own; only the maximum lookup time or server shutdown stops it.
 // A name screen answers first with the checks done so far ({"followUp":true} on its first line) and keeps running
 // the slow checks; the re-assessed result on its next line resolves lookup.later (null when there is none).
-function startLookup(args, cwd, maxMs) {
+function startLookup(args, cwd, maxMs, onLookupEvent) {
   const triage = args[0] === '--triage';
   const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false, exited: false,
     collect: false, outcome: null };
@@ -360,7 +360,10 @@ function startLookup(args, cwd, maxMs) {
       settle(() => parseOutput(firstLine, false, 0));
     }
   });
-  createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', line => readProgress(lookup.progress, line));
+  createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', line => {
+    readProgress(lookup.progress, line);
+    onLookupEvent?.('progress', lookup.progress);
+  });
   let stopped = false;
   const limit = setTimeout(() => {
     stopped = true;
@@ -385,7 +388,11 @@ function startLookup(args, cwd, maxMs) {
     later(next);
   };
   child.once('error', () => finish(true));
-  child.once('close', code => finish(code !== 0));
+  child.once('close', code => {
+    finish(code !== 0);
+    onLookupEvent?.('exited');
+  });
+  onLookupEvent?.('started');
   return lookup;
 }
 
@@ -414,7 +421,8 @@ function pendingTriage(progress, rows) {
 
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
-  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier,
+  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
+  onLookupEvent,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -439,7 +447,7 @@ export async function serve({
     const key = JSON.stringify([cliArgs, presentation]);
     let lookup = lookups.get(key);
     if (!lookup) {
-      lookup = startLookup(cliArgs, cwd, maxLookup);
+      lookup = startLookup(cliArgs, cwd, maxLookup, onLookupEvent);
       lookups.set(key, lookup);
       lookup.done.then(() => {
         if (lookups.get(key) !== lookup) return;
@@ -615,7 +623,7 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool]) });
+    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool, portfolioTool]) });
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
     if (name === namingTool.name) {
@@ -640,6 +648,13 @@ export async function serve({
     if (name === dossierTool.name) {
       try {
         return reply(toolResult(JSON.stringify(await dossier(args))));
+      } catch (problem) {
+        return reply(errorResult(problem.message));
+      }
+    }
+    if (name === portfolioTool.name) {
+      try {
+        return reply(toolResult(JSON.stringify(await portfolio(args))));
       } catch (problem) {
         return reply(errorResult(problem.message));
       }

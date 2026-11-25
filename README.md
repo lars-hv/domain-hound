@@ -1,6 +1,14 @@
-# Find a startup name and a domain you can actually buy
+# Domain Hound: Domains for agents
 
-Domain Hound checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. It runs locally. Connect your Spaceship account to quote a domain, buy it with your approval, and set up DNS.
+One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.
+
+Domain Hound finds names and checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. Connect your Spaceship account to quote a domain, buy it with your approval and set up DNS. It also investigates and watches taken domains, plans moves to a cheaper registrar, and keeps track of every domain you own. It runs locally.
+
+- **Find and check:** `triage_names`, `check_domains`, `naming_method`
+- **Buy and set up:** `quote_domain`, `buy_domain`, `setup_domain`
+- **Watch taken domains:** `taken_domain_dossier`, `watch_domain`
+- **Plan a move:** `move_domain`
+- **Track domains and renewals:** `my_domains`
 
 ![Live Domain Hound results with completed app checks and dated upfront and renewal prices](assets/readme-search.png)
 
@@ -35,12 +43,15 @@ Add this to the client’s MCP configuration for a local stdio server.
 }
 ```
 
-Then ask, for example: “Is lanternbay.com available?”, “Find a name for my meeting-room booking app” or “Is the app name Quiet Otter taken?”
+Then ask, for example: “Is lanternbay.com available?”, “Find a name for my meeting-room booking app”, “Is the app name Quiet Otter taken?”, “Buy lanternbay.com and point it at my Vercel site” or “Which of my domains expire soon?”
 
-## What it checks
+## Find and check
 
-- **Domains:** registry RDAP or WHOIS for fourteen endings by default (.com, .ai, .io, .me, .co, .dev, .app, .si, .so, .no, .net, .org, .xyz, .tech) and, on request, .sh, .gg, .inc, .studio, .se, .dk, .de, .uk, .co.uk and .eu. A domain is never called free without a registry or shop answer.
-- **Prices:** first payment, renewal and three-year cost from first-party registrar price lists, each with its date and label; renewal jumps and premium risk are flagged.
+### What it checks
+
+- **Domains:** registry RDAP or WHOIS for twelve endings by default (.com, .ai, .io, .me, .co, .dev, .app, .si, .so, .no, .xyz, .tech) and, on request, .net, .org, .sh, .gg, .inc, .studio, .se, .dk, .de, .uk, .co.uk and .eu. A domain is never called free without a registry or shop answer.
+- **Pick:** one quality order for AI-native companies: .com, .ai, .io, .dev, .app, .co, .so, .me, .si, then .xyz and .tech; other endings follow. The pick is the highest-quality free ending you can register whose payments over 3 years stay within $60, or within your budget when you give one; if none fits, it is the one with the least paid over 3 years. .ai is never the default pick unless you ask for it or its 3-year total fits your budget. Endings you list come first, in your order. A budget also drops endings that cost more than it upfront. The cheapest upfront payment and the best 3-year value get their own lines when they differ from the pick. Every checked ending stays on the page.
+- **Prices:** first payment, renewal and three-year cost from first-party registrar price lists, each with its date and label; renewal jumps and premium risk are flagged. Cloudflare's standard at-cost prices come from its official public table ([pricing.registrar.cloudflare.com](https://pricing.registrar.cloudflare.com/)), checked 2026-11-25 and shipped as a dated estimate; they compete with the other registrars, and rows priced there say Needs Cloudflare DNS.
 - **Trademarks:** live US marks (USPTO). EU (EUIPO) and Norwegian (Patentstyret) marks too when you set their free keys; otherwise, and for WIPO, search links to check yourself. Exact and near-identical live marks in the relevant classes (9, 35 and 42 for software) count the same at every office.
 - **Meaning:** names that are, contain or sound like a rude word in 14 languages get a note and Check first, never Avoid. Word lists: [LDNOOBW](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words), © Shutterstock, CC BY 4.0, adapted (see `clis/domain-check/meaning-words.LICENSE.txt`).
 - **Apps and rivals:** same-name iOS and Android apps, companies, Wikidata entities and live sites, weighed by their traction.
@@ -54,7 +65,7 @@ GitHub allows 60 anonymous API requests an hour. To check GitHub handles more of
 
 For the optional browser fallback, run `npm install domain-hound playwright && npx playwright install chromium` in a project directory and start your MCP client there. Ask for a live shop check to set the `confirm` tool flag, or use `--confirm` with the CLI.
 
-## Guides
+### Guides
 
 - [Check domain availability](https://domainhound.dev/guides/how-to-check-domain-availability/)
 - [Find an available startup name](https://domainhound.dev/guides/find-an-available-startup-name/)
@@ -64,14 +75,9 @@ Use `check_domains` for one exact domain or up to 20 names or domains. Use `tria
 
 Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. On macOS, naming and batch results open in the background. Windows and Wayland request a background open where the desktop supports it. Exact checks and watch results stay in chat with a file link. Set `DOMAIN_HOUND_OPEN=off` on the MCP server to keep every page closed.
 
-## Share
+### Share
 
 Use **Share** on the results page to send up to five names. The link carries the names, checked endings, verdicts, prices and check time after the `#`. The browser reads that part locally. Your brief and notes stay out of the link. Anyone with the full link can read the shortlist.
-
-## Taken names
-
-- `taken_domain_dossier` checks the registry record, website and public Atom listings. It shows sources, up to three priced alternatives with a quick name screen, and an inquiry draft when useful. Other marketplaces have manual links. The draft stays in the result.
-- `watch_domain` checks the registry, expiry and website. To start a free watch, give your assistant the email it should use. Confirm the watch in your inbox. Optional news requires a separate choice in that confirmation.
 
 ## Buy and set up
 
@@ -108,7 +114,40 @@ To find the contact ID, use Spaceship's `contacts_list` or read `contacts.regist
 
 **Last resort: checkout.** After a valid quote, the answer ends with a Spaceship checkout link, for when Spaceship's MCP cannot be used and nothing was submitted. Check the same term, price limits, privacy and auto-renew before you pay, then ask Domain Hound to verify and set up the domain. After an unclear order there is no checkout link: check your Spaceship account first.
 
-Quotes, DNS plans, order claims and receipts stay in `~/.domain-hound/purchases/`. `DOMAIN_HOUND_PURCHASE_DIR` moves them; a relative path is resolved once, when the server starts.
+## Watch taken domains
+
+- `taken_domain_dossier` checks the registry record, website and public Atom listings. It shows sources, up to three priced alternatives with a quick name screen, and an inquiry draft when useful. Other marketplaces have manual links. The draft stays in the result.
+- `watch_domain` checks the registry, expiry and website. To start a free watch, give your assistant the email it should use. Confirm the watch in your inbox. Optional news requires a separate choice in that confirmation.
+
+## Move a domain to a cheaper shop
+
+`move_domain` plans a transfer for any exact domain you own. It reads the same public registry facts and dated list prices as `my_domains` and saves nothing to your list. The plan shows:
+
+- the current registrar and its renewal price (a price is "unavailable" when no list price can be trusted)
+- the transfer price at each shop and the total for 3 years. The total adds what the transfer covers (one year for most endings, two for .ai) and the renewals for the remaining years, counted per year
+- the target: Spaceship when it is the cheapest or within $2 a year of the cheapest, otherwise the cheapest shop
+- what blocks a move now: a registration or registry transfer event under 60 days old (gTLDs and .io), a registry lock or pending status, an expiry under 15 days or an expired domain
+- the rules for the ending (ICANN's Transfer Policy, and the .ai and .io terms) and the steps at the current registrar to unlock the domain and get the auth code. Steps link to the official guides for GoDaddy, Namecheap, Squarespace, Cloudflare, Porkbun, Dynadot, Hover, Gandi and IONOS
+
+The plan reads a transfer date only from the registry's own `transfer` event, never from the last-changed date.
+
+With a Spaceship key (`domains:read`), the plan adds a live transfer quote from Spaceship's pricing API. It is bound to your account, the domain, the current registrar and expiry, the term Spaceship adds, the amount, the regular price (shown when a promotion applies), the renewal and the currency. The quote expires in 10 minutes. `move_domain` with `quote_id` and `max_usd` checks all of that again, plus the blockers, `max_usd` and `DOMAIN_HOUND_MAX_USD`, and stops on any change.
+
+**Default: Spaceship's transfer checkout.** Spaceship's MCP ([tool reference](https://www.spaceship.com/knowledgebase/spaceship-mcp/)) has no tool for transfers into Spaceship, and `domain_register` only registers new names. So the answer links to Spaceship's transfer page with the limits to check. You enter the auth code there; it never passes through the chat. If Spaceship's MCP later offers a transfer tool with a preview and a confirmation step, your agent may use it with the same limits.
+
+**Opt-in: direct transfer.** This uses the same `DOMAIN_HOUND_DIRECT_PURCHASE=1` and `DOMAIN_HOUND_SPACESHIP_CONTACT_ID` as direct purchase. The key also needs `domains:billing`, `domains:transfer` and `asyncoperations:read`. Preview with a dry run. After your approval, `confirm: true` with the auth code from your private tool input sends one request. It enables high privacy and auto-renew and uses your owner contact for each role. Direct execution requires a standard price, a verified transfer term, an unlocked domain and no pending transfer. Both the promotional and regular upfront prices must fit both limits. Spaceship has no API field for a hard charge limit and sets the final charge. Domain Hound uses the code for the request and omits it from output and local state. A documented refusal releases the local claim. An unclear result keeps the claim and blocks a repeat. `move_domain` with `status: true` follows the transfer without a code.
+
+Quotes, transfer quotes, DNS plans, order and transfer claims and receipts stay in `~/.domain-hound/purchases/`. `DOMAIN_HOUND_PURCHASE_DIR` moves them; a relative path is resolved once, when the server starts.
+
+## Keep track of your domains
+
+`my_domains` gives one view of every domain you own, wherever you bought it, most urgent first: registrar, expiry and days left, registry status, DNS host, website, certificate, email setup (MX, SPF, DMARC), renewal price and any 3-year saving from moving.
+
+- Name the domains you own to check them and save them to a local list of up to 100. Ask again without naming any to recheck the saved list, or ask to remove some.
+- Ask it to find your domains. It lists candidates from a fixed set of public project files (such as `CNAME`, `package.json`, `vercel.json`, `netlify.toml`, Wrangler config and the README) and, with a Spaceship key (`domains:read`), the domains in your Spaceship account. It never opens `.env` or other secret files. Nothing is saved until you confirm which domains are yours.
+- It flags expiry within 30 days, registry and service issues, and potential transfer savings. Renew at your registrar, or use `move_domain` to see how much registration time a transfer adds. The portfolio can also suggest an expiry watch by email.
+
+`my_domains` buys, transfers and sends nothing, and stores nothing remotely. Its checks use public registry records, DNS, your sites over HTTPS and HTTP, and dated list prices. The list stays on this computer in `~/.domain-hound/portfolio.json` (`DOMAIN_HOUND_PORTFOLIO_FILE` moves it). The results page is rewritten on each check as `portfolio.html` and `portfolio.md` in the results folder.
 
 ## Privacy and lookup hosts
 
@@ -129,7 +168,7 @@ Domain Hound uses your brief locally. Availability queries use registries and DN
 | `www.sec.gov`, `tranco-list.eu` | Public company and site lists with no candidate name. |
 | `index.commoncrawl.org` | Rival domain for a public crawl count. The index list request has no name. |
 | `api.porkbun.com`, `www.dynadot.com`, `www.gandi.net` | Public price catalogs, sometimes filtered by ending. The standalone exact-price CLI may also ask `data.norges-bank.no` for USD/NOK with no name. |
-| `spaceship.dev`, `api.dynadot.com`; `api.porkbun.com` for the standalone exact-price CLI | With configured credentials, the selected domain and the relevant shop credentials. The Spaceship API also gets quote and purchase details, the owner contact ID on a direct order, or DNS records for approved setup. |
+| `spaceship.dev`, `api.dynadot.com`; `api.porkbun.com` for the standalone exact-price CLI | With configured credentials, the selected domain and the relevant shop credentials. Spaceship also gets quote and purchase details, the owner contact ID on a direct order, DNS records for approved setup, or the auth code and owner contact ID for an approved direct transfer. Portfolio discovery uses the Spaceship domain list endpoint. |
 | `mcp.spaceship.com` | When you use Spaceship's own MCP, your assistant passes the domain and the registration options to Spaceship. |
 | `www.spaceship.com`, `www.namecheap.com`, `www.dynadot.com`, `www.cloudflare.com` | Optional live browser check sends only the selected domain. Storefront pages can load supporting assets. A manual Spaceship price refresh opens its public catalog without a candidate name. |
 | `api.search.brave.com` or `google.serper.dev` | Candidate search when you configure a search provider. |

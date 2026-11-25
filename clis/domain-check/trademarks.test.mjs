@@ -4,11 +4,11 @@ import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { writeCache } from './cache.mjs';
 import { withSocial } from '../../test-support/social-fixture.mjs';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { screenMeaning } from './meaning.mjs';
 import { checkOffice, euipoQuery, officeAnswered, patentstyretCases, resetOffices, searchTool, trademarkKeys } from './trademarks.mjs';
 import { triageNames } from './triage.mjs';
@@ -249,17 +249,19 @@ test('unrecognized provider responses cannot produce a complete trademark check'
 
 test('Patentstyret setup and search share one deadline', async t => {
   resetOffices();
+  const clock = deadlineClock(t);
   const directory = await directoryFor(t);
   const calls = [];
   const fetcher = patentstyret({}, calls);
   const result = await checkOffice('NO', 'copperfern', 'Copper Fern', { directory, now, env: noEnv, timeLeft: () => 1550,
     fetcher: async (value, init) => {
-      await delay(400, undefined, { signal: init.signal });
+      clock.tick(400);
+      init.signal.throwIfAborted();
       return fetcher(value, init);
     },
   });
   assert.equal(officeAnswered(result), false);
-  assert.equal(calls.includes('tools/list'), false);
+  assert.deepEqual(calls, ['initialize', 'notifications/initialized']);
 });
 
 // A browser whose Google Play search finds no app.

@@ -50,6 +50,11 @@ export function offer(shop, domain, details) {
   };
 }
 
+// The short note a list-price row carries when buying there needs that registrar's DNS: "Needs Cloudflare DNS".
+export function dnsNeed(shopName) {
+  return shopName === shops.cloudflare.name ? 'Needs Cloudflare DNS' : null;
+}
+
 export function linkable(shop) {
   return Object.hasOwn(shops, shop) && !shops[shop].dataOnly;
 }

@@ -1,0 +1,6 @@
+{
+  "services": [
+    [["com", "net"], ["https://rdap.verisign.com/com/v1/"]],
+    [["dev", "app"], ["https://pubapi.registry.google/rdap/"]]
+  ]
+}

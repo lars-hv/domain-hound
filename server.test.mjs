@@ -1,6 +1,6 @@
 import './test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { PassThrough } from 'node:stream';
 import { serve } from './server.mjs';
-import { resultsLine } from './results.mjs';
+import { resultPages, resultsLine } from './results.mjs';
+import { deadlineClock } from './test-support/deadline-clock.mjs';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCache } from './clis/domain-check/cache.mjs';
@@ -126,7 +127,7 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   const responses = await exchange([...handshake(), request(2, 'tools/list')]);
   const { tools } = resultOf(responses, 2);
   assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain',
-    'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain']);
+    'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
   const [{ description, inputSchema }, triage, naming, alias, watch] = tools;
   for (const tool of [tools[0], triage, alias]) {
     assert.match(tool.description, /clickable Markdown link on the first line of say/);
@@ -150,7 +151,7 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   assert.equal(triage.inputSchema.properties.names.maxItems, 20);
   assert.deepEqual(triage.inputSchema.required, ['names']);
   assert.deepEqual(alias.inputSchema, inputSchema);
-  assert.match(inputSchema.properties.endings.description, /preference order.*all fourteen default endings/);
+  assert.match(inputSchema.properties.endings.description, /preference order.*all twelve default endings/);
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   const { query, names } = inputSchema.properties;
   assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
@@ -296,7 +297,8 @@ test('an ending on request joins the default endings at the wire and on the page
   const checked = callData(responses, 2);
   assert.deepEqual(checked.names[0].free.map(option => option.d), [...defaultEndings, 'de']);
   assert.deepEqual(callData(responses, 3).names[0].free, [...defaultEndings, 'uk']);
-  assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), defaultEndings);
+  // .net left the defaults in 0.1.8, so asking for it adds it like any ending on request.
+  assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), [...defaultEndings, 'net']);
   assert.match(errorText(responses, 5), /supported domain endings/);
   const receipt = await readFile(new URL(checked.resultPage), 'utf8');
   assert.ok(receipt.includes('endingsample.de'));
@@ -376,30 +378,105 @@ test('reports capability errors as one line and detects malformed output', async
   assert.equal(errorText(responses, 3), 'Domain Hound returned invalid JSON.');
 });
 
-// A live server session: send requests one at a time and read each reply as it arrives.
-async function session(options, env = {}) {
-  const args = ['--input-type=module', '-e',
-    `import { serve } from ${JSON.stringify(server.href)}; await serve(${JSON.stringify({ cwd: capability, ...options })});`];
-  const child = spawn(process.execPath, args, { env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'inherit'] });
-  const exited = new Promise(resolve => child.once('close', resolve));
+// Wait for matching events, including ones that arrived before the test started waiting.
+function events() {
+  const emitted = [];
+  const waiting = new Set();
+  return {
+    push(event) {
+      emitted.push(event);
+      for (const waiter of waiting) {
+        if (!waiter.matches(event)) continue;
+        waiting.delete(waiter);
+        waiter.resolve(event);
+      }
+    },
+    next(matches) {
+      const existing = emitted.find(matches);
+      return existing ? Promise.resolve(existing) : new Promise(resolve => waiting.add({ matches, resolve }));
+    },
+  };
+}
+
+// Run the server on a controlled clock with a real capability subprocess and results files.
+async function local(t, options, held) {
+  const environment = new Map();
+  if (held) {
+    for (const [key, value] of Object.entries({ DOMAIN_HOUND_TEST_RUNS: held.runs, DOMAIN_HOUND_TEST_GATE: held.file })) {
+      environment.set(key, process.env[key]);
+      process.env[key] = value;
+    }
+  }
+  const clock = deadlineClock(t);
+  const lookupEvents = events();
+  const written = events();
+  const realPages = resultPages();
+  const pages = async (data, ...rest) => {
+    try {
+      const page = await realPages(data, ...rest);
+      written.push({ data, page });
+      return page;
+    } catch (error) {
+      written.push({ error });
+      throw error;
+    }
+  };
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const served = serve({ input, output, cwd: capability, pages, onLookupEvent: (type, progress) => lookupEvents.push({ type, progress }),
+    ...options });
   const replies = new Map();
   const waiting = new Map();
-  createInterface({ input: child.stdout }).on('line', line => {
-    const reply = { ...JSON.parse(line), receivedAt: performance.now() };
-    if (waiting.has(reply.id)) waiting.get(reply.id)(reply);
-    else replies.set(reply.id, reply);
+  createInterface({ input: output }).on('line', line => {
+    const reply = JSON.parse(line);
+    replies.set(reply.id, reply);
+    waiting.get(reply.id)?.(reply);
+    waiting.delete(reply.id);
   });
   const reply = id => replies.has(id) ? Promise.resolve(replies.get(id)) : new Promise(resolve => waiting.set(id, resolve));
-  const send = message => child.stdin.write(JSON.stringify(message) + '\n');
-  const ask = async message => {
-    const sentAt = performance.now();
-    send(message);
-    const answer = await reply(message.id);
-    return { ...answer, seconds: (answer.receivedAt - sentAt) / 1000 };
+  const send = message => input.write(JSON.stringify(message) + '\n');
+  const ask = message => { send(message); return reply(message.id); };
+  // Whether a reply has arrived once every pending step that needs no clock or capability has run.
+  const answered = async id => {
+    await new Promise(resolve => setImmediate(resolve));
+    return replies.has(id);
   };
+  const progressed = matches => lookupEvents.next(({ type, progress }) => type === 'progress' && matches(progress));
+  const started = () => lookupEvents.next(({ type }) => type === 'started');
+  const exited = () => lookupEvents.next(({ type }) => type === 'exited');
+  const waitForPage = async matches => {
+    const { page, error } = await written.next(event => event.error || matches(event.data));
+    if (error) throw error;
+    return page;
+  };
+  t.after(async () => {
+    try {
+      await held?.open();
+      input.end();
+      clock.tick(120_000);
+      await served;
+    } finally {
+      for (const [key, previous] of environment) {
+        if (previous === undefined) delete process.env[key];
+        else process.env[key] = previous;
+      }
+      await held?.close();
+    }
+  });
   for (const message of handshake()) send(message);
   await reply(1);
-  return { ask, send, reply, close: () => { child.stdin.end(); return exited; } };
+  return { ask, send, reply, answered, clock, progressed, started, exited, waitForPage };
+}
+
+// The slow fixture waits at this gate until the test opens it, so a lookup finishes exactly when the test says.
+async function gate() {
+  const directory = await mkdtemp(join(tmpdir(), 'hound-gate-'));
+  const file = join(directory, 'open');
+  return {
+    file, runs: join(directory, 'runs.log'),
+    open: () => writeFile(file, ''),
+    close: () => rm(directory, { recursive: true, force: true }),
+  };
 }
 
 // Check the shape of one MCP response, then return its structured result with the display body.
@@ -408,109 +485,111 @@ const structured = response => {
   return callData([response], response.id);
 };
 const runsIn = async file => (await readFile(file, 'utf8').catch(() => '')).split('\n').filter(Boolean).length;
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const unanswered = defaultEndings.filter(ending => !['com', 'dev', 'app'].includes(ending));
+const threeAnswers = stage => progress => progress.answers.size === 3 && progress.stage === stage;
 
-test('answers a slow lookup with partial progress at the budget, keeps it running and a repeat collects it', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'domain-hound-runs-'));
-  const runs = join(directory, 'runs.log');
-  try {
-    const mcp = await session({ timeout: 1000 }, { DOMAIN_HOUND_TEST_RUNS: runs, DOMAIN_HOUND_TEST_DELAY: '1700' });
-    t.after(() => mcp.close());
-    const partial = await mcp.ask(call(2, { query: 'slowroom' }));
-    const progress = structured(partial);
-    // A real race: the answer comes at the budget, not when the lookup ends.
-    assert.ok(partial.seconds >= 0.95 && partial.seconds < 1.6, String(partial.seconds));
-    assert.equal(partial.result.isError, false);
-    assert.equal(progress.complete, false);
-    assert.equal(progress.pending, true);
-    assert.equal(progress.budgetMs, 1000);
-    assert.ok(progress.elapsedMs >= 950, String(progress.elapsedMs));
-    assert.equal(progress.stage, 'quotes');
-    assert.deepEqual(progress.names, [{ name: 'slowroom', taken: ['com'], free: [{ d: 'dev', s: 'nc' }, { d: 'app', s: 'nc' }],
-      checking: unanswered }]);
-    const lines = progress.display.split('\n');
-    assert.match(lines[0], /^\*\*Still checking\*\* after 1\.\d s \(answer budget 1\.0 s\)\. The lookup keeps running\.$/);
-    assert.equal(lines[1], 'Registry answers so far: 3 of 14 domains.');
-    assert.equal(lines[2], '- slowroom: free .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
-    assert.match(progress.display, /Call the same tool again with the same input/);
+test('answers a slow lookup with partial progress at the budget, keeps it running and a repeat collects it', { timeout: 30_000 }, async t => {
+  const held = await gate();
+  const mcp = await local(t, { timeout: 1000 }, held);
+  mcp.send(call(2, { query: 'slowroom' }));
+  await mcp.progressed(threeAnswers('quotes'));
+  // A real race against the budget: no answer a millisecond before it, the progress answer exactly at it.
+  mcp.clock.tick(999);
+  assert.equal(await mcp.answered(2), false);
+  mcp.clock.tick(1);
+  const partial = await mcp.reply(2);
+  const progress = structured(partial);
+  assert.equal(partial.result.isError, false);
+  assert.equal(progress.complete, false);
+  assert.equal(progress.pending, true);
+  assert.equal(progress.budgetMs, 1000);
+  assert.equal(progress.elapsedMs, 1000);
+  assert.equal(progress.stage, 'quotes');
+  assert.deepEqual(progress.names, [{ name: 'slowroom', taken: ['com'], free: [{ d: 'dev', s: 'nc' }, { d: 'app', s: 'nc' }],
+    checking: unanswered }]);
+  const lines = progress.display.split('\n');
+  assert.equal(lines[0], '**Still checking** after 1.0 s (answer budget 1.0 s). The lookup keeps running.');
+  assert.equal(lines[1], 'Registry answers so far: 3 of 12 domains.');
+  assert.equal(lines[2], '- slowroom: free .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
+  assert.match(progress.display, /Call the same tool again with the same input/);
 
-    // The repeat joins the running lookup and returns its finished result within its own budget.
-    const finished = await mcp.ask(call(3, { query: 'slowroom' }));
-    const result = structured(finished);
-    assert.ok(finished.seconds < 1, String(finished.seconds));
-    assert.equal(result.complete, true);
-    assert.match(result.display, /slowroom\.(?:dev|app) \$8\.00, then \$12\.50 list price/);
-    assert.equal(await runsIn(runs), 1);
-    // The same lookup stays stable for the session window.
-    const repeated = await mcp.ask(call(4, { query: 'slowroom' }));
-    assert.deepEqual(structured(repeated).names, result.names);
-    assert.equal(await runsIn(runs), 1);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
+  // The repeat joins the running lookup and returns its finished result when it ends, before its own budget.
+  mcp.send(call(3, { query: 'slowroom' }));
+  assert.equal(await mcp.answered(3), false);
+  await held.open();
+  const result = structured(await mcp.reply(3));
+  assert.equal(mcp.clock.now(), 1000);
+  assert.equal(result.complete, true);
+  assert.match(result.display, /slowroom\.(?:dev|app) \$8\.00, then \$12\.50 list price/);
+  assert.equal(await runsIn(held.runs), 1);
+  // The same lookup stays stable for the session window.
+  const repeated = await mcp.ask(call(4, { query: 'slowroom' }));
+  assert.deepEqual(structured(repeated).names, result.names);
+  assert.equal(await runsIn(held.runs), 1);
 });
 
-test('lists all seven requested names in order on a timeout and collects the cached result on repeat', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'domain-hound-runs-'));
-  const runs = join(directory, 'runs.log');
+test('lists all seven requested names in order on a timeout and collects the cached result on repeat', { timeout: 30_000 }, async t => {
+  const held = await gate();
   const names = ['quietbook', 'slowroom', 'oakenroom.me', 'hushnook', 'stillowl', 'softnook', 'calmcove'];
-  try {
-    const mcp = await session({ timeout: 400 }, { DOMAIN_HOUND_TEST_RUNS: runs, DOMAIN_HOUND_TEST_DELAY: '700' });
-    t.after(() => mcp.close());
-    // Two identical calls in flight share one lookup.
-    mcp.send(call(2, { names, purchase: true }));
-    const [first, second] = await Promise.all([mcp.ask(call(3, { names, purchase: true })), mcp.reply(2)]);
-    for (const response of [first, second]) {
-      const progress = structured(response);
-      assert.equal(progress.complete, false);
-      assert.deepEqual(progress.names.map(row => row.name), names);
-      const lines = progress.display.split('\n');
-      assert.equal(lines[1], 'Registry answers so far: 3 of 85 domains.');
-      // A row without any answer yet shows every default ending; the exact domain stays exact.
-      assert.deepEqual(progress.names[0], { name: 'quietbook', checking: defaultEndings });
-      assert.deepEqual(progress.names[2], { name: 'oakenroom.me', checking: ['oakenroom.me'] });
-      assert.equal(lines[2], '- quietbook: still checking .' + defaultEndings.join(' .') + ', ask again');
-      assert.equal(lines[4], '- oakenroom.me: still checking oakenroom.me, ask again');
-      assert.deepEqual(lines.slice(2, 9).map(line => line.split(':')[0].slice(2)), names);
-    }
-    // The purchase request keeps its closing line in the progress answer.
-    assert.ok(callText([first], 3).endsWith('\n\n' + purchaseLine));
-    assert.equal(await runsIn(runs), 1);
-    // The lookup finishes while nobody waits; the repeat gets it at once from the kept result.
-    await pause(900);
-    const repeat = await mcp.ask(call(4, { names, purchase: true }));
-    const result = structured(repeat);
-    assert.ok(repeat.seconds < 0.3, String(repeat.seconds));
-    assert.equal(result.complete, true);
-    assert.deepEqual(result.names.map(row => row.name), names);
-    assert.match(await readFile(new URL(result.resultPage), 'utf8'), /oakenroom\.me[\s\S]*?\$8\.00<\/td><td>\$12\.50/);
-    assert.equal(await runsIn(runs), 1);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+  const mcp = await local(t, { timeout: 400 }, held);
+  // Two identical calls in flight share one lookup.
+  mcp.send(call(2, { names, purchase: true }));
+  mcp.send(call(3, { names, purchase: true }));
+  await mcp.progressed(threeAnswers('quotes'));
+  mcp.clock.tick(400);
+  const [first, second] = await Promise.all([mcp.reply(3), mcp.reply(2)]);
+  for (const response of [first, second]) {
+    const progress = structured(response);
+    assert.equal(progress.complete, false);
+    assert.deepEqual(progress.names.map(row => row.name), names);
+    const lines = progress.display.split('\n');
+    assert.equal(lines[1], 'Registry answers so far: 3 of 73 domains.');
+    // A row without any answer yet shows every default ending; the exact domain stays exact.
+    assert.deepEqual(progress.names[0], { name: 'quietbook', checking: defaultEndings });
+    assert.deepEqual(progress.names[2], { name: 'oakenroom.me', checking: ['oakenroom.me'] });
+    assert.equal(lines[2], '- quietbook: still checking .' + defaultEndings.join(' .') + ', ask again');
+    assert.equal(lines[4], '- oakenroom.me: still checking oakenroom.me, ask again');
+    assert.deepEqual(lines.slice(2, 9).map(line => line.split(':')[0].slice(2)), names);
   }
+  // The purchase request keeps its closing line in the progress answer.
+  assert.ok(callText([first], 3).endsWith('\n\n' + purchaseLine));
+  assert.equal(await runsIn(held.runs), 1);
+  // The lookup finishes while nobody waits; the repeat gets it from the kept result without waiting on its budget.
+  await held.open();
+  await mcp.exited();
+  const repeat = await mcp.ask(call(4, { names, purchase: true }));
+  assert.equal(mcp.clock.now(), 400);
+  const result = structured(repeat);
+  assert.equal(result.complete, true);
+  assert.deepEqual(result.names.map(row => row.name), names);
+  assert.match(await readFile(new URL(result.resultPage), 'utf8'), /oakenroom\.me[\s\S]*?\$8\.00<\/td><td>\$12\.50/);
+  assert.equal(await runsIn(held.runs), 1);
 });
 
-test('a slow triage answers with every requested name and its verdict once finished', async t => {
-  const mcp = await session({ timeout: 400 }, { DOMAIN_HOUND_TEST_DELAY: '630' });
-  t.after(() => mcp.close());
-  const progress = structured(await mcp.ask(call(2, { names: ['Slow Room'] }, 'triage_names')));
+test('a slow triage answers with every requested name and its verdict once finished', { timeout: 30_000 }, async t => {
+  const held = await gate();
+  const mcp = await local(t, { timeout: 400 }, held);
+  mcp.send(call(2, { names: ['Slow Room'] }, 'triage_names'));
+  await mcp.progressed(threeAnswers('rivals'));
+  mcp.clock.tick(400);
+  const progress = structured(await mcp.reply(2));
   assert.deepEqual(progress.names, [{ name: 'Slow Room', taken: ['com'], free: ['dev', 'app'],
     checking: unanswered }]);
   assert.equal(progress.stage, 'rivals');
-  assert.match(await readFile(new URL(progress.resultPage), 'utf8'), /Still checking trademark, app and web sources/);
+  // The progress page is complete before the reply; the lookup is still held, so nothing rewrites it meanwhile.
+  const opened = await readFile(new URL(progress.resultPage), 'utf8');
+  assert.match(opened, /Still checking trademark, app and web sources/);
   assert.match(progress.display, /^- Slow Room: free \.dev \.app · taken \.com · still checking .*, ask again$/m);
   assert.match(progress.display, /trademark, app and rival checks are still running/);
   // The page link leads the progress answer, and that page reloads itself while the lookup runs.
   assert.equal(progress.display.split('\n')[0], resultsLine(progress.resultPage));
   assert.match(progress.display, /The results page fills in by itself/);
-  assert.match(await readFile(new URL(progress.resultPage), 'utf8'), /<meta http-equiv="refresh" content="8">/);
+  assert.match(opened, /<meta http-equiv="refresh" content="8">/);
   // Without any repeat call, the finished verdict reaches the same page.
-  let page = '';
-  for (let tries = 0; tries < 60 && !/No conflict found/.test(page); tries++) {
-    await new Promise(resolve => setTimeout(resolve, 50));
-    page = await readFile(new URL(progress.resultPage), 'utf8');
-  }
+  await held.open();
+  const finished = await mcp.waitForPage(data => data.names?.[0]?.verdict === 'No conflict found');
+  assert.equal(finished.resultPage, progress.resultPage);
+  const page = await readFile(new URL(progress.resultPage), 'utf8');
   assert.match(page, /No conflict found/);
   assert.doesNotMatch(page, /http-equiv="refresh"/);
   const result = structured(await mcp.ask(call(3, { names: ['Slow Room'] }, 'triage_names')));
@@ -519,26 +598,26 @@ test('a slow triage answers with every requested name and its verdict once finis
   assert.match(await readFile(new URL(result.resultPage), 'utf8'), /slowroom\.app[\s\S]*?\$8\.28<\/td><td>\$14\.49/);
 });
 
-test('a name screen answers first, then re-assesses slow checks on the same page without a repeat call', async t => {
-  const runs = join(await mkdtemp(join(tmpdir(), 'hound-runs-')), 'runs.log');
-  const mcp = await session({ timeout: 2000 }, { DOMAIN_HOUND_TEST_RUNS: runs, DOMAIN_HOUND_TEST_FOLLOW_MS: '400' });
-  t.after(() => mcp.close());
+test('a name screen answers first, then re-assesses slow checks on the same page without a repeat call', { timeout: 30_000 }, async t => {
+  const held = await gate();
+  // The budget is a guard only: the manual clock never reaches it, so the first answer comes from the first line.
+  const mcp = await local(t, { timeout: 2000 }, held);
   const first = structured(await mcp.ask(call(2, { names: ['Late Room'] }, 'triage_names')));
   assert.equal(first.names[0].verdict, 'Check first');
   assert.equal(first.followUp, undefined);
   const lines = first.say.split('\n');
   assert.equal(lines[0], resultsLine(first.resultPage));
   assert.ok(lines.includes('Still checking Google Play. The results page updates by itself.'), first.say);
+  // The first page is final before the gate opens: the follow-up cannot rewrite it until then.
   const opened = await readFile(new URL(first.resultPage), 'utf8');
   assert.match(opened, /<meta http-equiv="refresh" content="8">/);
   assert.match(opened, /Android: still checking/);
   assert.doesNotMatch(opened, /(?:Android|Apps) check incomplete|Android: check incomplete/);
   // No model call: the follow-up rewrites the same file with the re-assessed verdict and stops reloading.
-  let page = opened;
-  for (let tries = 0; tries < 60 && !/Avoid/.test(page); tries++) {
-    await pause(50);
-    page = await readFile(new URL(first.resultPage), 'utf8');
-  }
+  await held.open();
+  const rewritten = await mcp.waitForPage(data => data.names?.[0]?.verdict === 'Avoid');
+  assert.equal(rewritten.resultPage, first.resultPage);
+  const page = await readFile(new URL(first.resultPage), 'utf8');
   assert.match(page, /Avoid\. Late Room is an app in the same category/);
   assert.match(page, /Android: Late Room/);
   assert.doesNotMatch(page, /http-equiv="refresh"|still checking/);
@@ -546,20 +625,26 @@ test('a name screen answers first, then re-assesses slow checks on the same page
   const repeat = structured(await mcp.ask(call(3, { names: ['Late Room'] }, 'triage_names')));
   assert.equal(repeat.names[0].verdict, 'Avoid');
   assert.equal(repeat.resultPage, first.resultPage);
-  assert.equal(await runsIn(runs), 1);
+  assert.equal(await runsIn(held.runs), 1);
+  assert.equal(mcp.clock.now(), 0);
 });
 
-test('keeps answering pings during a lookup, stops a lookup at the maximum time and on shutdown', async t => {
+test('keeps answering pings during a lookup, stops a lookup at the maximum time and on shutdown', { timeout: 30_000 }, async t => {
+  // The real subprocess protocol: a ping is answered while the lookup waits out its (real) 350 ms budget.
   const responses = await exchange([...handshake(), call(2, { query: 'slow' }), request(3, 'ping')], { fastTimeout: true });
   assert.deepEqual(responses.map(({ id }) => id), [1, 3, 2]);
   const progress = callData(responses, 2);
   assert.equal(progress.pending, true);
   assert.deepEqual(progress.names, [{ name: 'slow', checking: defaultEndings }]);
   // The server exited, so the never-ending lookup was stopped at shutdown.
-  const mcp = await session({ timeout: 200, maxLookup: 1000 });
-  t.after(() => mcp.close());
-  assert.equal(structured(await mcp.ask(call(2, { query: 'slow' }))).pending, true);
-  await pause(1000);
+  const mcp = await local(t, { timeout: 200, maxLookup: 1000 });
+  mcp.send(call(2, { query: 'slow' }));
+  await mcp.started();
+  mcp.clock.tick(200);
+  assert.equal(structured(await mcp.reply(2)).pending, true);
+  // At the maximum lookup time, one second after the start, the capability is stopped.
+  mcp.clock.tick(800);
+  await mcp.exited();
   const stopped = await mcp.ask(call(3, { query: 'slow' }));
   assert.equal(errorText([stopped], 3), 'Domain Hound stopped the lookup after 1 second.');
 });
@@ -593,7 +678,9 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
   assert.deepEqual(one.names[0].notes, ['iOS app: Example One (Example Inc., 12 ratings)']);
   assert.ok(one.names[0].memorable);
   assert.match(one.say, /Keep Example One\? Check first/);
-  assert.match(one.say, /exampleone\.co \$3\.11, then \$31\.05/);
+  // .co renews at $31.05 ($65.21 over 3 years), so the pick is .app within $60; .co is the cheapest upfront line.
+  assert.match(one.say, /^1\. exampleone\.app \$8\.28, then \$14\.49/m);
+  assert.match(one.say, /^Cheapest: \[exampleone\.co\]\([^)]+\) \$3\.11, then \$31\.05 \(renewal jumps\)/m);
   assert.doesNotMatch(one.say, /\[x\]\(/);
   assert.match(await readFile(new URL(one.resultPage), 'utf8'), /exampleone\.ai[\s\S]*?\$160\.02/);
   assert.match(errorText(responses, 6), /product description/);
@@ -718,7 +805,7 @@ test('renders the triage shortlist as one priced, linked row per candidate', () 
   const lines = display.split('\n');
   assert.equal(lines[0], '**Top picks**');
   assert.equal(lines[4], '');
-  for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, cheapest now [a-z]+\.[a-z]+ \$[\d.]+(?:\/\$[\d.]+|, then \$[\d.]+\/yr, \d+x jump)/);
+  for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, pick [a-z]+\.[a-z]+ \$[\d.]+(?:\/\$[\d.]+|, then \$[\d.]+\/yr, \d+x jump)/);
   assert.ok(lines.includes('| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |'));
   const rows = lines.filter(line => /^\| (?!Name|---)/.test(line));
   assert.deepEqual(rows.map(line => line.split(' | ')[0].slice(2)), five);
@@ -778,7 +865,7 @@ test('shows best value beside the cheapest offer in the top picks and name row',
     renew: 31.05, bestValue: { domain: 'quietotter.dev', now: 7.24, renew: 13.45, term: 1 } }];
   const { display } = JSON.parse(triageText(sample));
   // Cheapest now carries the jump in plain words; best value is the lowest three-year total.
-  assert.match(display, /cheapest now quietotter\.co \$3\.11, then \$31\.05\/yr, 10x jump.*\n  Best value: quietotter\.dev, \$34\.14 over 3 years/);
+  assert.match(display, /pick quietotter\.co \$3\.11, then \$31\.05\/yr, 10x jump.*\n  Best value: quietotter\.dev, \$34\.14 over 3 years/);
   assert.match(display, /^\| Quiet Otter .*<br>Best value: quietotter\.dev, \$34\.14 over 3 years \|/m);
 });
 
@@ -793,6 +880,8 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
     shop: 'Dynadot', firstYear: tld === 'co' ? 3.11 : 6 + index, renewal: tld === 'co' ? 31.05 : 10 + index,
   }]));
   await writeCache(directory, 'prices.json', { checkedAt, catalogs: { dynadot: { checkedAt, prices } } });
+  // This test measures payload size with every fixture answer in. The deadline stays frozen while cache I/O finishes.
+  deadlineClock(t);
   const options = {
     directory, now, cachedOnly: true, budgetMs: 2500, compact: true, resolveNs: async () => [],
     queryWhois: async () => null, launch: async () => { throw Error('Fixture has no browser'); },
@@ -823,21 +912,22 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
     if (index < 5) assert.match(row.reason, /^Near-identical: ex.*010\/011/);
     else assert.match(row.reason, /^Not screened/);
     assert.notEqual(row.verdict, 'No conflict found');
-    assert.equal(row.free.length, 14);
-    assert.equal(row.free[0], 'co');
+    assert.equal(row.free.length, 12);
+    // Free endings follow the quality order (0.1.8), not the cheapest first payment.
+    assert.equal(row.free[0], 'com');
     assert.equal(row.bestValue, 'com');
   }
   // Fourteen endings (0.1.5): four more ending codes per name than the 13 000-byte bound of 0.1.4 allowed for.
   assert.ok(size(JSON.stringify(report)) < 14_000, String(size(JSON.stringify(report))));
   const text = triageText(report);
-  // display.mjs triageText is not on the MCP path (the server answers with the results-page say). With fourteen
+  // display.mjs triageText is not on the MCP path (the server answers with the results-page say). With twelve
   // priced endings for twenty 63-character labels it needs a little more than the 8 KB it had for ten.
   assert.ok(size(text) < 9500, String(size(text)));
   const parsed = JSON.parse(text);
   assert.deepEqual(Object.keys(parsed)[0], 'display');
   assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
-  assert.ok(parsed.names.every(row => row.free.length === 14));
+  assert.ok(parsed.names.every(row => row.free.length === 12));
   for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
     assert.ok(parsed.display.includes(source), source);
   }
@@ -1102,7 +1192,7 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
       assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
       assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find',
-        'watch_domain', 'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain']);
+        'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
   } finally {

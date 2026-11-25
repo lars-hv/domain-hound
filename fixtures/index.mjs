@@ -1,4 +1,4 @@
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { progressReporter } from '../clis/domain-check/progress.mjs';
@@ -10,6 +10,15 @@ if (receipt >= 0) rest.splice(receipt, 1);
 if (!['--agent', '--triage'].includes(mode) || dirname(fileURLToPath(import.meta.url)) !== process.cwd()) {
   throw new Error('Wrong command or working directory');
 }
+// A test holds a slow lookup at a gate and releases it by creating the DOMAIN_HOUND_TEST_GATE file, so no step
+// depends on how fast the machine is. Without a gate the lookup waits fallbackMs.
+async function gate(fallbackMs) {
+  const file = process.env.DOMAIN_HOUND_TEST_GATE;
+  if (!file) return new Promise(resolve => setTimeout(resolve, fallbackMs));
+  while (!existsSync(file)) await new Promise(resolve => setTimeout(resolve, 10));
+}
+// Print the last line and exit once stdout has taken it; an immediate exit can lose piped output.
+const finish = text => new Promise(resolve => process.stdout.write(text + '\n', resolve)).then(() => process.exit(0));
 // Tests count capability runs through this log.
 if (process.env.DOMAIN_HOUND_TEST_RUNS) appendFileSync(process.env.DOMAIN_HOUND_TEST_RUNS, JSON.stringify([mode, query]) + '\n');
 if (query === 'endingsample' || query === 'Ending Sample') {
@@ -21,8 +30,7 @@ if (query === 'endingsample' || query === 'Ending Sample') {
     ? { prices: Object.fromEntries(endings.map(ending => [ending, price])),
       names: [{ name: query, free: endings, verdict: 'Check first', reason: 'Review the available options' }] }
     : { complete: true, names: [{ name: query, free: endings.map(d => ({ d, s: 'nc', ...price })) }] };
-  console.log(JSON.stringify(rows));
-  process.exit(0);
+  await finish(JSON.stringify(rows));
 }
 // A deliberately slow lookup: two registry answers at once, the final result after DOMAIN_HOUND_TEST_DELAY ms.
 const slowBatch = query === '--names' ? rest[0]?.split(',') : null;
@@ -34,20 +42,19 @@ if (query === 'slowroom' || query === 'Slow Room' || slowBatch?.includes('slowro
     progress?.({ domain: 'slowroom.app', status: 'probably-free' });
     progress?.({ stage: mode === '--triage' ? 'rivals' : 'quotes' });
   }, 50);
-  await new Promise(resolve => setTimeout(resolve, Number(process.env.DOMAIN_HOUND_TEST_DELAY ?? 1500)));
+  await gate(Number(process.env.DOMAIN_HOUND_TEST_DELAY ?? 1500));
   if (mode === '--triage') {
-    console.log(JSON.stringify({ prices: { dev: { now: 8, renew: 12.5, shop: 'Spaceship' }, app: { now: 8.28, renew: 14.49, shop: 'Spaceship' } },
+    await finish(JSON.stringify({ prices: { dev: { now: 8, renew: 12.5, shop: 'Spaceship' }, app: { now: 8.28, renew: 14.49, shop: 'Spaceship' } },
       names: [{ name: query, verdict: 'No conflict found', reason: 'No close US mark, app or site overlap',
         free: ['dev', 'app'], taken: ['com'], buy: 'https://www.spaceship.com/domain-search/?query=slowroom.dev' }] }));
   } else {
     const price = { now: 8, renew: 12.5, shop: 'Spaceship' };
-    console.log(JSON.stringify({ complete: true, checkedAt: '2026-11-24T12:00:00.000Z', priceListDate: '2026-11-24',
+    await finish(JSON.stringify({ complete: true, checkedAt: '2026-11-24T12:00:00.000Z', priceListDate: '2026-11-24',
       names: (slowBatch ?? ['slowroom']).map(name => name === 'slowroom'
         ? { name, taken: ['com'], free: [{ d: 'dev', s: 'nc', ...price }, { d: 'app', s: 'nc', ...price }] }
         : { name, free: [{ d: name.includes('.') ? name.split('.')[1] : 'com', s: 'nc', ...price }] }),
       buyUrlTemplate: { Spaceship: 'https://www.spaceship.com/domain-search/?query={domain}' } }));
   }
-  process.exit(0);
 }
 // A name screen with a slow source: the first answer lists Google Play as still checking, the follow-up line re-assesses.
 if (mode === '--triage' && query === 'Late Room') {
@@ -58,15 +65,15 @@ if (mode === '--triage' && query === 'Late Room') {
     reason, ...(waiting && { waiting }) });
   const checkedAt = '2026-11-24T12:00:00.000Z';
   const followUp = process.env.DOMAIN_HOUND_FOLLOW_UP === '1';
-  console.log(JSON.stringify({ prices, checkedAt, ...(followUp && { followUp: true }),
-    names: [row('Check first', 'still checking Google Play', null)], receiptDetails: [detail(null, 'still checking Google Play', ['Google Play'])] }));
-  if (!followUp) process.exit(0);
-  await new Promise(resolve => setTimeout(resolve, Number(process.env.DOMAIN_HOUND_TEST_FOLLOW_MS ?? 300)));
+  const first = JSON.stringify({ prices, checkedAt, ...(followUp && { followUp: true }),
+    names: [row('Check first', 'still checking Google Play', null)], receiptDetails: [detail(null, 'still checking Google Play', ['Google Play'])] });
+  if (!followUp) await finish(first);
+  console.log(first);
+  await gate(Number(process.env.DOMAIN_HOUND_TEST_FOLLOW_MS ?? 300));
   const app = [{ name: 'Late Room', developer: 'Example Apps', ratings: 5000, url: 'https://play.google.com/store/apps/details?id=example.lateroom' }];
   const reason = 'Late Room is an app in the same category with 5000 Android ratings';
-  console.log(JSON.stringify({ prices, checkedAt: '2026-11-24T12:00:20.000Z',
+  await finish(JSON.stringify({ prices, checkedAt: '2026-11-24T12:00:20.000Z',
     names: [row('Avoid', reason, app)], receiptDetails: [detail(app, reason)] }));
-  process.exit(0);
 }
 if (mode === '--triage') {
   // Mirrors the compact triage shape; flags echo the forwarded arguments for the tests.
@@ -79,8 +86,7 @@ if (mode === '--triage') {
       free: ['co', 'app', 'ai'], taken: ['com'], shop_check: ['dev'],
       buy: 'https://www.spaceship.com/domain-search/?query=' + name.toLowerCase().replace(/[^a-z0-9-]/g, '') + '.co',
       notes: ['iOS app: ' + name + ' (Example Inc., 12 ratings)'], memorable: '10 letters (short), ~3 syllables' });
-  console.log(JSON.stringify({ prices, names, legend: 'USD ex. VAT. Long legend.', flags: rest }));
-  process.exit(0);
+  await finish(JSON.stringify({ prices, names, legend: 'USD ex. VAT. Long legend.', flags: rest }));
 }
 const batch = query === '--names' ? rest.shift() : null;
 const flags = rest.length ? { flags: rest } : {};

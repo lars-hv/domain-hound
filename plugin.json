@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "domain-hound",
-  "version": "0.1.7",
-  "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
+  "version": "0.1.8",
+  "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "author": {
     "name": "Lars Hvinden"
   },
@@ -12,15 +12,15 @@
     "com.openai": {
       "interface": {
         "displayName": "Domain Hound",
-        "shortDescription": "Domain prices and name checks",
-        "longDescription": "Domain Hound checks registry availability, compares upfront and renewal prices, and screens product names for trademarks, app store clashes and web traction. It can investigate taken domains and watch them for release. Connect your own Spaceship account to get a live quote and set up website or mail DNS. You buy through Spaceship’s own MCP, after you approve Spaceship’s confirmation with the price and payment method. Direct purchase is an opt-in in the server settings, and Spaceship checkout is the fallback. Domain Hound runs on your machine and is open source under the MIT license.",
+        "shortDescription": "Domains for agents",
+        "longDescription": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track. Domain Hound finds names and checks registry availability, compares upfront and renewal prices, and screens names for trademarks, app store clashes and web traction. Connect your own Spaceship account to get a live quote, buy with your approval and set up website or mail DNS. You buy through Spaceship’s own MCP, after you approve Spaceship’s confirmation with the price and payment method. Direct purchase is an opt-in in the server settings, and Spaceship checkout is the fallback. It investigates and watches taken domains, plans moves to a cheaper registrar, and keeps track of every domain you own: expiry, DNS, site, email setup and renewal prices. Domain Hound runs on your machine and is open source under the MIT license.",
         "developerName": "Lars Hvinden",
         "category": "Developer Tools",
         "capabilities": [
-          "Check domain availability",
-          "Compare registrar prices",
-          "Screen product names",
-          "Set up DNS at Spaceship"
+          "Find names and check domains",
+          "Compare upfront and renewal prices",
+          "Buy and set up DNS at Spaceship",
+          "Watch, move and track your domains"
         ],
         "websiteURL": "https://domainhound.dev",
         "privacyPolicyURL": "https://domainhound.dev/privacy/",

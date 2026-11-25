@@ -1,11 +1,12 @@
 import { buildDossier, dossierDomain, formatMoney } from './clis/domain-check/dossier.mjs';
 import { attributed, md } from './display.mjs';
+import { dnsNeed } from './clis/domain-check/prices.mjs';
 
 export const dossierTool = {
   name: 'taken_domain_dossier',
-  description: 'Investigate a taken domain. Get registry, site and public listing evidence, likely owner type, and a price range when supported. '
-    + 'See up to three free alternatives with upfront, renewal and three-year prices, plus a quick trademark, app and rival screen. '
-    + 'Relay the display and sources. Keep maxBudget private, send no drafts, and start a watch only on request. Share follow-up drafts only on request.',
+  description: 'Investigate a taken domain: registry, site and public listing evidence, likely owner type, and a price range when supported, '
+    + 'plus up to three free alternatives with upfront, renewal and three-year prices and a quick trademark, app and rival screen. '
+    + 'Relay the display and sources. Keep maxBudget private and send no drafts. Share follow-up drafts and start a watch only on request.',
   annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   inputSchema: {
     type: 'object',
@@ -97,7 +98,8 @@ function trackLine(data) {
   return 'Next: if you want to inquire, review the draft and use a public contact route.';
 }
 
-const roleText = { 'best-value': 'best 3-year value for the exact name', variant: '.com variant', 'exact-com': 'exact .com',
+const roleText = { pick: 'pick for the exact name',
+  variant: '.com variant', 'exact-com': 'exact .com',
   'exact-ending': 'same name, other ending' };
 
 // First payment, renewal with the jump flag, minimum term and the three-year total, all list prices.
@@ -108,7 +110,8 @@ function costText(row) {
     : money(row.price) + ' first year';
   const renewal = row.renewal != null ? ', renews at ' + money(row.renewal) + '/year' + (row.renewalJump ? ' (renewal jump)' : '') : '';
   const total = row.threeYear != null ? ', ' + money(row.threeYear) + ' over 3 years' : '';
-  return first + renewal + total;
+  const dns = dnsNeed(row.shop);
+  return first + renewal + total + (dns ? ' (' + dns.toLowerCase() + ')' : '');
 }
 
 function screenText(screen, isBase = false) {

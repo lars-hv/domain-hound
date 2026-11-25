@@ -14,6 +14,11 @@ export const scopes = {
   buy: ['domains:read'],
   direct: ['domains:read', 'domains:billing', 'asyncoperations:read'],
   setup: ['domains:read', 'dnsrecords:read', 'dnsrecords:write'],
+  // move_domain: the live transfer quote, the direct transfer request (transferRequest needs domains:billing) and its status
+  // (getTransferInfo needs domains:transfer).
+  transfer: ['domains:read'],
+  transferDirect: ['domains:read', 'domains:billing', 'domains:transfer', 'asyncoperations:read'],
+  transferStatus: ['domains:transfer', 'asyncoperations:read'],
 };
 
 // One short instruction per tool when no key is set. It never asks for the secret in chat.
@@ -111,12 +116,36 @@ export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher 
     return { status: response.status, headers: response.headers, json };
   }
 
+  async function sendOnce(path, body, noun, privateRequest = false) {
+    if (!directPurchase(env)) {
+      throw Object.assign(new SpaceshipError('Direct purchase is off: DOMAIN_HOUND_DIRECT_PURCHASE is not 1.'), { notSent: true });
+    }
+    let headers;
+    try {
+      ({ headers } = await request('POST', path, { body, accept: [202] }));
+    } catch (problem) {
+      if (refusalStatuses.has(problem.status) && problem.detail) {
+        const detail = privateRequest ? null : problem.detail;
+        throw Object.assign(new SpaceshipError('Spaceship refused the ' + noun + ' (HTTP ' + problem.status
+          + (detail ? ': ' + detail : '') + ').', { status: problem.status, detail }), { notSent: true, refused: true });
+      }
+      if (privateRequest) throw new SpaceshipError('Spaceship returned no confirmed transfer result.', { ambiguous: true });
+      throw problem;
+    }
+    const operationId = headers.get('spaceship-async-operationid');
+    if (!operationId || (privateRequest && (!/^[A-Za-z0-9-]{1,36}$/.test(operationId)
+      || (body?.authCode && operationId.toLowerCase().includes(body.authCode.toLowerCase()))))) {
+      throw new SpaceshipError('Spaceship accepted the ' + noun + ' without an operation ID.', { ambiguous: true });
+    }
+    return { operationId };
+  }
+
   return {
     baseUrl: base,
     accountBinding: createHash('sha256').update(key).digest('hex'),
     // checkSingleDomainAvailability: { domain, result, premiumPricing }
     available: async domain => (await request('GET', '/v1/domains/' + domainPath(domain) + '/available')).json,
-    // getSingleDomainPricing: { domain, priceClass, prices: { register: [...], renew: [...] } }
+    // getSingleDomainPricing: { domain, priceClass, prices: { register, transfer, renew } }, each a list of terms
     pricing: async domain => (await request('GET', '/v1/domains/' + domainPath(domain) + '/pricing')).json,
     // getDomainInfo: { name, lifecycleStatus, autoRenew, privacyProtection, nameservers, contacts }
     info: async domain => (await request('GET', '/v1/domains/' + domainPath(domain))).json,
@@ -146,24 +175,11 @@ export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher 
     // domainCreate has no price cap or idempotency field. It is sent only when the person set DOMAIN_HOUND_DIRECT_PURCHASE=1,
     // whatever the host, and exactly once: request() never retries. The gate below and Spaceship's documented refusal are
     // proven unsent (notSent); every other failure may have placed the order.
-    async createDomain(domain, body) {
-      if (!directPurchase(env)) {
-        throw Object.assign(new SpaceshipError('Direct purchase is off: DOMAIN_HOUND_DIRECT_PURCHASE is not 1.'), { notSent: true });
-      }
-      let headers;
-      try {
-        ({ headers } = await request('POST', '/v1/domains/' + domainPath(domain), { body, accept: [202] }));
-      } catch (problem) {
-        if (refusalStatuses.has(problem.status) && problem.detail) {
-          throw Object.assign(new SpaceshipError('Spaceship refused the order (HTTP ' + problem.status + ': ' + problem.detail + ').',
-            { status: problem.status, detail: problem.detail }), { notSent: true, refused: true });
-        }
-        throw problem;
-      }
-      const operationId = headers.get('spaceship-async-operationid');
-      if (!operationId) throw new SpaceshipError('Spaceship accepted the order without an operation ID.', { ambiguous: true });
-      return { operationId };
-    },
+    createDomain: (domain, body) => sendOnce('/v1/domains/' + domainPath(domain), body, 'order'),
+    // The transfer body contains an auth code. Never forward provider error details or unexpected operation IDs.
+    startTransfer: (domain, body) => sendOnce('/v1/domains/' + domainPath(domain) + '/transfer', body, 'transfer', true),
+    // getTransferInfo: { startedAt, finishedAt, direction, status }
+    transferInfo: async domain => (await request('GET', '/v1/domains/' + domainPath(domain) + '/transfer')).json,
     // getAsyncOperationDetails: { status: pending | success | failed, type, details }
     operation: async id => (await request('GET', '/v1/async-operations/' + encodeURIComponent(id))).json,
   };

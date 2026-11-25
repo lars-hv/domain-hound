@@ -1,7 +1,7 @@
 {
   "name": "domain-hound",
-  "version": "0.1.7",
-  "description": "Find a startup name and domain you can actually buy: availability, prices, app names, trademarks. MCP for Claude Code and Codex.",
+  "version": "0.1.8",
+  "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -23,6 +23,9 @@
     "codex",
     "domain",
     "domain-availability",
+    "domains-for-agents",
+    "domain-portfolio",
+    "domain-transfer",
     "domain-name",
     "startup-name",
     "naming",
@@ -79,6 +82,14 @@
     "clis/spaceship/setup.mjs",
     "clis/spaceship/store.mjs",
     "clis/spaceship/tools.mjs",
+    "clis/spaceship/transfer.mjs",
+    "clis/portfolio/checks.mjs",
+    "clis/portfolio/discover.mjs",
+    "clis/portfolio/move.mjs",
+    "clis/portfolio/page.mjs",
+    "clis/portfolio/portfolio.mjs",
+    "clis/portfolio/store.mjs",
+    "clis/portfolio/transfer-prices.mjs",
     "assets/",
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
@@ -88,7 +99,7 @@
     "server.json"
   ],
   "scripts": {
-    "test": "node --test server.test.mjs results.test.mjs share.test.mjs dossier.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs",
+    "test": "node --test server.test.mjs results.test.mjs share.test.mjs dossier.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs clis/portfolio/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "snapshot-prices": "node scripts/snapshot-prices.mjs",
     "build-mcpb": "node scripts/build-mcpb.mjs"

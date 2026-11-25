@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
 import { checkDomainSite } from './com-site.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { applyLiveSite, asciiDomain, domainEnding, canRecommend, defaultEndings, eligibilityNotes, endingTier, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
+import { applyLiveSite, asciiDomain, domainEnding, canRecommend, choosePick, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
   premiumRisk, rankName, registrationStatus, searchCandidates, searchName, termCosts, unicodeName, validEligibility, validEndings,
   withPremiumRisk, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
@@ -328,15 +328,14 @@ function agentPrice({ firstPayment: now, renewalPayment: renew, threeYear: y3, m
 const quoteClock = value => typeof value === 'string' ? value.match(/T(\d{2}:\d{2})/)?.[1] ?? null : null;
 
 function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimited = false, liveCheck = null,
-  { eligible, otherEndings, requested = [] } = {}) {
+  { eligible, otherEndings, requested = [], budget } = {}) {
   const buyUrlTemplate = {};
   const shopCheckWhy = {};
   const listPrices = {};
   const checkedEndings = new Set();
   const byName = new Map();
   let priceListDate;
-  let best;
-  let bestTier;
+  const confirmedPicks = [];
   for (const { name, results } of groups) {
     const taken = [], resale = [], free = [], shop_check = [], reserved = [], likelyFree = [], likelyTaken = [];
     for (const row of results) {
@@ -389,19 +388,17 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       const at = confirmed ? quoteClock(row.quotedAt ?? row.checkedAt) : null;
       free.push({ d, s: confirmed ? 'ok' : 'nc', ...(!standard && price), ...(premium && { prem: row.premium ?? true }),
         ...(at && { at }) });
-      if (confirmed && !premium && canRecommend(row.tld, eligible) && !premiumRisk(row.domain)) {
+      if (confirmed && !premium && canRecommend(row.tld, eligible) && !premiumRisk(row.domain)
+        && (budget == null || (row.firstPayment ?? Infinity) <= budget)) {
         const { now, renew, y3, term, jump } = price;
         const buyUrl = row.buyUrl ?? shopSearchUrl(shopId, row.domain);
-        // The cheapest confirmed quote in the most attractive tier is the pick; rows are already sorted by tier, then
-        // first payment within a name.
-        const tier = endingTier(row.domain, requested, eligible);
-        if (best && (bestTier < tier || bestTier === tier && (best.priceNow ?? Infinity) <= (now ?? Infinity))) continue;
-        bestTier = tier;
-        best = { domain: row.domain, status: 'free-confirmed', ...(now != null && { priceNow: now }), ...(at && { at }),
-          ...(renew != null && { renewal: renew }), ...(y3 != null && { threeYear: y3 }),
-          ...(term && { term }),
-          ...(jump && { renewalNote: 'Renews at $' + renew.toFixed(2) }),
-          ...(shop && { shop }), ...(buyUrl && { buyUrl }) };
+        // Every confirmed quote competes; the shared pick rule chooses among them below.
+        confirmedPicks.push({ domain: row.domain, now: row.firstPayment ?? null, total: row.threeYear ?? null,
+          best: { domain: row.domain, status: 'free-confirmed', ...(now != null && { priceNow: now }), ...(at && { at }),
+            ...(renew != null && { renewal: renew }), ...(y3 != null && { threeYear: y3 }),
+            ...(term && { term }),
+            ...(jump && { renewalNote: 'Renews at $' + renew.toFixed(2) }),
+            ...(shop && { shop }), ...(buyUrl && { buyUrl }) } });
       }
     }
     const unicode = unicodeName(name);
@@ -411,6 +408,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
       ...(likelyFree.length && { likely_free: likelyFree }), ...(likelyTaken.length && { likely_taken: likelyTaken }) });
   }
+  const best = choosePick(confirmedPicks, { requested, eligible, budget })?.best;
   const result = {
     ...(!batch && names[0].includes('.') && {
       purchaseAdvice: 'For a purchase request, include this sentence even when the domain is taken: ' + purchaseLine,
@@ -448,17 +446,24 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
 // the pick is sent to a shop, so no shop sees the other names. DOMAIN_HOUND_SHOP_QUOTES=top4 adds up to three runners-up.
 export const shopQuoteCount = (env = process.env) => env?.DOMAIN_HOUND_SHOP_QUOTES === 'top4' ? 4 : 1;
 
-// The shop quote goes to the pick: the first preferred ending in order, else the cheapest upfront payment in the most
-// attractive tier. explicit lists exact domains the person typed; like preferred endings, they are never demoted.
+// The shop quote goes to the pick (and, with top4, the next picks): the shared pick rule (quality order within $60 over 3 years, or within the cap the
+// person gave), with preferred endings first in the person's order. explicit lists exact domains the person typed; like
+// preferred endings, they rank first. cap is the person's upfront budget: it also drops rows that cost more upfront.
 export function lightTargets(rows, eligible, count = 1, preferred = [], cap, explicit = []) {
   const requested = [...preferred, ...explicit];
   const inScope = rows.filter(row => (!preferred.length || preferred.includes(row.tld))
     && (cap == null || (row.firstPayment ?? Infinity) <= cap));
-  const top = preferred.length ? preferred.map(tld => pickName(inScope.filter(row => row.tld === tld), eligible)).find(Boolean)
-    : pickName(inScope, eligible, requested);
-  const others = rankName(inScope.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
+  // The pick first, then the next picks the same rule would make, then any other free or premium row in the quality order.
+  const picks = [];
+  for (let rest = inScope; picks.length < count;) {
+    const next = pickName(rest, eligible, requested, cap);
+    if (!next) break;
+    picks.push(next);
+    rest = rest.filter(row => row !== next);
+  }
+  const others = rankName(inScope.filter(row => !picks.includes(row) && ['probably-free', 'premium'].includes(row.status)
     && canRecommend(row.tld, eligible)), requested, eligible);
-  return [top, ...others].filter(Boolean).slice(0, count);
+  return [...picks, ...others].slice(0, count);
 }
 
 export async function agentResult(input, options = {}) {
@@ -545,7 +550,8 @@ export async function agentResult(input, options = {}) {
   const exactCom = names.length === 1 && names[0].endsWith('.com') ? names[0] : null;
   const otherEndings = exactCom ? await endingBenchmarks(exactCom, options) : null;
   const result = compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
-    options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings, requested });
+    options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings, requested,
+      budget: options.upfrontCap });
   if (asked.size) result.shopAsked = [...asked];
   if (options.receipt) result.receiptDetails = rankedGroups.map(({ results, sites }) => ({ endings: results.map(row => ({
     domain: row.domain, source: row.source, checkedAt: row.checkedAt, priceAt: row.priceCheckedAt,

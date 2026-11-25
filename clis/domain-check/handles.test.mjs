@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { withSocial } from '../../test-support/social-fixture.mjs';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { autoPlatforms, checkSocialHandles, handleLifetime, handlePlatforms, handleStates, handleSummary, resetHandleRuns }
   from './handles.mjs';
 
@@ -106,15 +107,24 @@ test('caches taken for 7 days and no public profile for 1 hour, keeps the origin
 });
 
 test('one platform shares one time budget for its controls, handles and variants; a slow platform reads check', async t => {
-  const directory = await directoryFor(t);
+  const clock = deadlineClock(t);
   const base = withSocial(undefined, { taken: ['quietotter'] });
-  const fetcher = (input, init) => new URL(input).hostname === 'public.api.bsky.app'
-    ? new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)))
-    : base(input, init);
-  const started = performance.now();
-  const rows = (await checkSocialHandles([{ name: 'quietotter', variants: true }], { directory, now, fetcher, budgetMs: 250 }))
-    .get('quietotter');
-  assert.ok(performance.now() - started < 1000);
+  const slowSignals = [];
+  const fetcher = (input, init) => {
+    if (new URL(input).hostname !== 'public.api.bsky.app') return base(input, init);
+    slowSignals.push(init.signal);
+    return new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason)));
+  };
+  const checking = checkSocialHandles([{ name: 'quietotter', variants: true }],
+    { directory: null, now, fetcher, budgetMs: 250, freshRun: true });
+  // The injected APIs have no I/O. Let the fast answers settle and the slow calls reach their abort listener.
+  await new Promise(setImmediate);
+  assert.equal(slowSignals.length, 3);
+  clock.tick(249);
+  assert.ok(slowSignals.every(signal => !signal.aborted));
+  clock.tick(1);
+  assert.ok(slowSignals.every(signal => signal.aborted));
+  const rows = (await checking).get('quietotter');
   assert.equal(rows.find(row => row.platform === 'Bluesky').state, 'check');
   assert.equal(rows.find(row => row.platform === 'GitHub').state, 'taken');
 });

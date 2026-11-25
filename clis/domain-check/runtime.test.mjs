@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { attribution, checkText, purchaseLine } from '../../display.mjs';
 import { cacheDir, userCacheDir, writeCache } from './cache.mjs';
 import { confirmDomain } from './confirm.mjs';
@@ -60,9 +61,8 @@ function withoutPlaywright(t) {
 test('by default an exact free domain needs no browser and labels its list price', async t => {
   withoutPlaywright(t);
   const options = await pricedRegistry(t);
-  const started = performance.now();
+  deadlineClock(t);
   const result = await agentResult('example.me', { ...options, env: {} });
-  assert.ok(performance.now() - started < 2000);
   assert.equal(result.complete, true);
   assert.equal(result.best, undefined);
   assert.equal(result.liveCheck, undefined);
@@ -78,9 +78,8 @@ test('by default an exact free domain needs no browser and labels its list price
 test('with the explicit confirm flag and no Playwright, an exact free domain keeps its list price and asks for a shop check', async t => {
   withoutPlaywright(t);
   const options = { ...await pricedRegistry(t), browser: true };
-  const started = performance.now();
+  deadlineClock(t);
   const result = await agentResult('example.me', options);
-  assert.ok(performance.now() - started < 5000);
   assert.equal(result.complete, true);
   assert.equal(result.best, undefined);
   assert.deepEqual(result.names, [{ name: 'example.me',
@@ -103,7 +102,8 @@ test('with the explicit confirm flag and no Playwright, a batch keeps taken rows
   const options = { ...await pricedRegistry(t), endings: ['com', 'me', 'io'], browser: true };
   const result = await agentResult(['example'], options);
   assert.equal(result.best, undefined);
-  assert.deepEqual(result.names, [{ name: 'example', taken: ['com'], free: [{ d: 'me', s: 'nc' }, { d: 'io', s: 'nc' }] }]);
+  // Free rows follow the quality order (.io before .me); the pick is .me, since .io costs $130 over 3 years.
+  assert.deepEqual(result.names, [{ name: 'example', taken: ['com'], free: [{ d: 'io', s: 'nc' }, { d: 'me', s: 'nc' }] }]);
   assert.deepEqual(result.listPrices.me, { now: 3.5, renew: 6, y3: 15.5, shop: 'Dynadot' });
   assert.deepEqual(result.listPrices.io, { now: 30, renew: 50, y3: 130, shop: 'Dynadot' });
   assert.equal(result.liveCheck.domain, 'example.me');
@@ -111,7 +111,7 @@ test('with the explicit confirm flag and no Playwright, a batch keeps taken rows
   const { display } = JSON.parse(checkText(result));
   // Each price appears once: on its own free line, not again on a shared line.
   assert.doesNotMatch(display, /^Standard prices/m);
-  assert.match(display, /^- example\.me \$3\.50\/\$6\.00 list price\n- example\.io \$30\.00\/\$50\.00 list price$/m);
+  assert.match(display, /^- example\.io \$30\.00\/\$50\.00 list price\n- example\.me \$3\.50\/\$6\.00 list price$/m);
   assert.match(display, /^Taken: example \.com$/m);
   assert.match(display, /\nCheck at shop: \[example\.me\]\(https:\/\/www\.dynadot\.com\/domain\/search\?domain=example\.me\)\. Live shop check unavailable/);
   assert.doesNotMatch(display, /^Confirmed|^- .*✓/m);

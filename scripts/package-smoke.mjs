@@ -18,8 +18,8 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier',
-  'quote_domain', 'buy_domain', 'setup_domain'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier', 'my_domains',
+  'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');
 const published = flag >= 0 ? process.argv[flag + 1] : null;
@@ -50,7 +50,8 @@ try {
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
       'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
-      'share.mjs', 'site/r/share-format.mjs', 'clis/spaceship/tools.mjs']) {
+      'share.mjs', 'site/r/share-format.mjs', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
+      'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
     assert.ok(!paths.some(file => /\.test\.mjs$|^fixtures\/|^test-support\/|^scripts\/|^\.github\//.test(file)), 'Tarball ships test or build files');
@@ -133,7 +134,10 @@ try {
       exitCode = await closed;
       clearTimeout(timer);
     }
-    if (timedOut) return { failure: new Error(`npx smoke timed out after ${Math.ceil(limit / 1000)} s`) };
+    if (timedOut) return {
+      failure: new Error(`npx smoke timed out after ${Math.ceil(limit / 1000)} s`),
+      registryWait: limit < attemptMs && !responded && (!stderr.trim() || notListedYet(stderr)),
+    };
     if (spawnError) return { failure: spawnError };
     if (exitCode !== 0) failure ??= new Error(`npx exited with status ${exitCode}`);
     if (!failure) {
@@ -144,15 +148,17 @@ try {
     return { failure, retryable: exitCode !== 0 && !responded && notListedYet(stderr) };
   };
 
+  let sawMissingVersion = false;
   for (let number = 1; ; number++) {
-    const { failure, retryable } = await attempt(number);
+    const { failure, retryable, registryWait } = await attempt(number);
     if (!failure) break;
     const left = deadline - performance.now();
     if (!published || !retryable || left <= retryDelayMs) {
-      if (published && retryable) console.error(`npx still could not find ${tarball} after ${number} attempts in `
+      if (published && (retryable || (registryWait && sawMissingVersion))) console.error(`npx still could not find ${tarball} after ${number} attempts in `
         + `${Math.round(windowMs / 60_000)} minutes.`);
       throw failure;
     }
+    sawMissingVersion = true;
     console.error(`Attempt ${number}: npx could not find ${tarball} yet (ETARGET/E404). Retrying with a fresh npm cache `
       + `in ${Math.round(retryDelayMs / 1000)} s, ${Math.round(left / 1000)} s left.`);
     await new Promise(resolve => setTimeout(resolve, retryDelayMs));
