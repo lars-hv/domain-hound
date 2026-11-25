@@ -1,0 +1,8 @@
+{
+  "items": [
+    { "name": "lanternbay.com", "autoRenew": true, "expirationDate": "2026-12-07T10:00:00Z" },
+    { "name": "quietotter.dev", "autoRenew": false, "expirationDate": "2027-05-01T10:00:00Z" },
+    { "name": "not a domain" }
+  ],
+  "total": 3
+}

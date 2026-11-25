@@ -10,6 +10,7 @@ import { attributed, errorText, progressText } from './display.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
+import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
@@ -414,7 +415,7 @@ function pendingTriage(progress, rows) {
 
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
-  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier,
+  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -615,7 +616,7 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool]) });
+    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool, portfolioTool]) });
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
     if (name === namingTool.name) {
@@ -640,6 +641,13 @@ export async function serve({
     if (name === dossierTool.name) {
       try {
         return reply(toolResult(JSON.stringify(await dossier(args))));
+      } catch (problem) {
+        return reply(errorResult(problem.message));
+      }
+    }
+    if (name === portfolioTool.name) {
+      try {
+        return reply(toolResult(JSON.stringify(await portfolio(args))));
       } catch (problem) {
         return reply(errorResult(problem.message));
       }

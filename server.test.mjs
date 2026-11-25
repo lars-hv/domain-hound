@@ -126,7 +126,7 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   const responses = await exchange([...handshake(), request(2, 'tools/list')]);
   const { tools } = resultOf(responses, 2);
   assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain',
-    'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain']);
+    'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain']);
   const [{ description, inputSchema }, triage, naming, alias, watch] = tools;
   for (const tool of [tools[0], triage, alias]) {
     assert.match(tool.description, /clickable Markdown link on the first line of say/);
@@ -1102,7 +1102,7 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
       assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
       assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find',
-        'watch_domain', 'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain']);
+        'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
   } finally {

@@ -79,6 +79,11 @@
     "clis/spaceship/setup.mjs",
     "clis/spaceship/store.mjs",
     "clis/spaceship/tools.mjs",
+    "clis/portfolio/checks.mjs",
+    "clis/portfolio/discover.mjs",
+    "clis/portfolio/page.mjs",
+    "clis/portfolio/portfolio.mjs",
+    "clis/portfolio/store.mjs",
     "assets/",
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
@@ -88,7 +93,7 @@
     "server.json"
   ],
   "scripts": {
-    "test": "node --test server.test.mjs results.test.mjs share.test.mjs dossier.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs",
+    "test": "node --test server.test.mjs results.test.mjs share.test.mjs dossier.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs clis/portfolio/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "snapshot-prices": "node scripts/snapshot-prices.mjs",
     "build-mcpb": "node scripts/build-mcpb.mjs"
