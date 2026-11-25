@@ -268,14 +268,22 @@ export async function checkSocialHandles(rows, {
     const names = wanted(platform);
     if (!names.length) return [platform, new Map()];
     const started = performance.now();
-    const deadline = AbortSignal.timeout(budgetMs);
-    const exact = await platformBatch(platform, names.map(row => row.name), options, deadline);
-    const taken = names.filter(row => row.variants && exact.get(row.name)?.state === 'taken');
-    const left = budgetMs - (performance.now() - started);
-    const variants = taken.length && left >= 300
-      ? await platformBatch(platform, taken.flatMap(row => handleVariants(row.name)), options, deadline)
-      : new Map();
-    return [platform, { exact, variants, skipped: taken.length > 0 && left < 300 }];
+    const deadline = new AbortController();
+    // Keep Node alive until the platform answers or the deadline aborts its requests.
+    const timer = setTimeout(() => {
+      deadline.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+    }, budgetMs);
+    try {
+      const exact = await platformBatch(platform, names.map(row => row.name), options, deadline.signal);
+      const taken = names.filter(row => row.variants && exact.get(row.name)?.state === 'taken');
+      const left = budgetMs - (performance.now() - started);
+      const variants = taken.length && left >= 300
+        ? await platformBatch(platform, taken.flatMap(row => handleVariants(row.name)), options, deadline.signal)
+        : new Map();
+      return [platform, { exact, variants, skipped: taken.length > 0 && left < 300 }];
+    } finally {
+      clearTimeout(timer);
+    }
   })));
   const result = new Map();
   for (const row of rows) {
