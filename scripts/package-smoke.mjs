@@ -65,5 +65,6 @@ try {
     await closed;
   }
 } finally {
-  await rm(temp, { recursive: true, force: true });
+  // On Windows, the first lookup's background price refresh can still hold the package directory open.
+  await rm(temp, { recursive: true, force: true, maxRetries: 25, retryDelay: 100 });
 }
