@@ -10,7 +10,7 @@ export const watchTool = {
   name: 'watch_domain',
   description: 'Check a specific domain’s registry, expiry and website and start a free release watch at the person’s request. '
     + 'Use the email and optional name they gave for this submission. If the email is missing, ask once and never guess. '
-    + 'Before submitting, ask exactly: “' + newsQuestion + '” Pass news: true only on an explicit yes. '
+    + 'Before submitting, ask exactly: “' + newsQuestion + '” Pass news: true only on an explicit yes, or false if they decline or skip it. '
     + 'This highlights a choice in the confirmation email. Only the email confirmation can start news. Relay say as written.',
   annotations: { title: 'Watch a domain', readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   inputSchema: {
@@ -67,6 +67,9 @@ export async function watchDomain(input, { fetcher = globalThis.fetch, registry 
   if (!email) {
     lines.push('Ask for the email address once.', newsQuestion,
       '[Start the free watch](' + watchUrl + '). You confirm by email.');
+  } else if (input.news === undefined) {
+    submission = 'needs-news-choice';
+    lines.push(newsQuestion);
   } else {
     let response;
     try {
@@ -77,8 +80,8 @@ export async function watchDomain(input, { fetcher = globalThis.fetch, registry 
     } catch { /* A timeout may occur after the worker has already accepted the request. */ }
     const accepted = response?.status === 202 && (await response.json().catch(() => null))?.ok === true;
     if (accepted) {
-      submission = 'pending-confirmation';
-      lines.push('Check your inbox to start watching. Choose “Confirm watch only” or “Confirm watch + news”.');
+      submission = 'accepted';
+      lines.push('Check your inbox to start watching. Choose “Confirm watch only” or “Confirm watch + news”. Already watching? Your watch stays on.');
     } else {
       submission = response?.status === 429 ? 'rate-limited' : 'unconfirmed';
       lines.push(response?.status === 429 ? 'Too many tries. Wait a minute.' : 'Signup could not be verified. Check your inbox before trying again.',

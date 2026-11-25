@@ -18,7 +18,7 @@
       "registryType": "mcpb",
       "identifier": "https://github.com/lars-hv/domain-hound/releases/download/v0.1.4/domain-hound-0.1.4.mcpb",
       "version": "0.1.4",
-      "fileSha256": "a62eec77bdaeedaf2d746de74b6fb8df5f50a291892503dfd56fef1cd6a58b36",
+      "fileSha256": "d249e50032fb32e5ae611071018c0ff492bbb422802d18d5f5c53fb95e650a59",
       "transport": {
         "type": "stdio"
       }

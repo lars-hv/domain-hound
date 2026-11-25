@@ -3,8 +3,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
+import { checkDomainSite } from './com-site.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { asciiDomain, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
+import { applyLiveSite, asciiDomain, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
   premiumRisk, rankName, registrationStatus, searchCandidates, searchName, termCosts, unicodeName, validEligibility, validEndings,
   withPremiumRisk, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
@@ -558,14 +559,29 @@ async function retryGoogle(fast, remaining, options) {
   const until = performance.now() + budget;
   const timeLeft = () => Math.max(0, Math.floor(until - performance.now()));
   const answers = new Map();
+  const siteChecks = [];
+  const sites = new Map();
+  const verify = options.verifyFreeSite ?? options.comSite ?? checkDomainSite;
+  const checkNegative = options.fetcher === undefined || options.verifyFreeSite;
   let timer;
   await Promise.race([
     lookupRegistrations([...pending.values()].map(({ domain, tld, exact }) => ({ domain, tld, exact })), {
       directory: options.directory, fetcher: options.fetcher, pause: options.pause, now: options.now,
       // DNS already showed no name servers for these rows.
       resolveNs: async () => [], timeLeft, rdapAttempts: 1,
-      onResult: (candidate, registry) => { if (timeLeft() > 0) answers.set(candidate.domain, registry); },
-    }).catch(() => {}),
+      onResult: ({ domain }, registry) => {
+        if (!timeLeft()) return;
+        if (registry.status !== 'free' || !checkNegative) {
+          answers.set(domain, registry);
+          return;
+        }
+        const wait = Math.min(1_200, timeLeft());
+        siteChecks.push(Promise.resolve().then(() => verify(domain, wait, true)).then(site => {
+          sites.set(domain, site);
+          answers.set(domain, applyLiveSite(registry, site));
+        }, () => { answers.set(domain, registry); }));
+      },
+    }).then(() => Promise.all(siteChecks)).catch(() => {}),
     new Promise(resolve => { timer = setTimeout(resolve, budget + 100); }),
   ]);
   clearTimeout(timer);
@@ -574,6 +590,7 @@ async function retryGoogle(fast, remaining, options) {
     group.results = rankName(group.results.map(row => {
       const answer = pending.has(row.domain) && answers.get(row.domain);
       if (!answer) return row;
+      if (sites.has(row.domain)) group.sites[row.tld] = sites.get(row.domain);
       const status = registrationStatus(answer);
       if (status === 'check-at-shop') {
         if (/HTTP 429/.test(answer.reason ?? '')) limited = true;

@@ -113,16 +113,17 @@ test('desktop opener skips headless environments and requests platform backgroun
 
 test('a live website overrides the reported free registry status before progress or final output', async () => {
   const progress = [];
-  const domain = 'paperheron.com';
-  const results = await searchCandidates([{ name: 'paperheron', candidates: [{ domain, tld: 'com', exact: true }] }], {
+  const candidates = ['com', 'dev'].map(tld => ({ domain: 'paperheron.' + tld, tld, exact: true }));
+  const results = await searchCandidates([{ name: 'paperheron', candidates }], {
     directory: null, cachedOnly: true, bundledCatalog: null, fetcher: async url => new URL(url).hostname === 'data.iana.org'
-      ? Response.json({ services: [[['com'], ['https://rdap.example.test/']]] }) : new Response(null, { status: 404 }),
+      ? Response.json({ services: [[['com', 'dev'], ['https://rdap.example.test/']]] }) : new Response(null, { status: 404 }),
     resolveNs: async () => [], verifyFreeSite: async () => ({ state: 'live', host: 'www.example.com' }),
     onProgress: row => progress.push(row),
   });
-  assert.equal(results.groups[0].results[0].status, 'taken');
-  assert.equal(results.groups[0].results[0].source, 'web');
-  assert.deepEqual(progress, [{ domain, status: 'taken' }]);
+  assert.equal(results.groups[0].results.length, 2);
+  assert.ok(results.groups[0].results.every(row => row.status === 'taken' && row.source === 'web'));
+  assert.deepEqual(new Map(progress.map(row => [row.domain, row.status])),
+    new Map(candidates.map(row => [row.domain, 'taken'])));
 });
 
 test('watch sends only an explicit news pre-flag and never puts contact details into the receipt', async t => {
@@ -139,6 +140,10 @@ test('watch sends only an explicit news pre-flag and never puts contact details 
   assert.match(preview.say, /expiry|expires 2027-11-24/);
   assert.ok(preview.say.includes(newsQuestion));
   assert.match(preview.say, /watch\/\?domain=example\.com/);
+  const ask = await watchDomain({ domain: 'example.com', email: 'rowan@example.com' }, options);
+  assert.equal(ask.submission, 'needs-news-choice');
+  assert.ok(ask.say.includes(newsQuestion));
+  assert.equal(sent.length, 0);
   await assert.rejects(watchDomain({ domain: 'sub.example.com', email: 'rowan@example.com' }, options), /supported domain/);
   await watchDomain({ domain: 'example.com', email: 'rowan@example.com', name: 'Rowan Example', news: false }, options);
   const signed = await watchDomain({ domain: 'example.com', email: 'rowan@example.com', name: 'Rowan Example', news: true }, options);

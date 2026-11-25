@@ -167,6 +167,11 @@ export function registrationStatus(registry) {
   return registry.status === 'taken' ? 'taken' : 'check-at-shop';
 }
 
+export function applyLiveSite(registry, site) {
+  if (registry.status !== 'free' || !['live', 'parked', 'for-sale'].includes(site?.state)) return registry;
+  return { status: 'taken', source: 'web', checkedAt: registry.checkedAt, forSale: site.state === 'for-sale' };
+}
+
 export function listQuote(catalog, { domain, tld }, now, bundled = bundledCatalog) {
   // Data-only shops never become the listed pick or its checkout link.
   const prices = datedListPrices(catalog, tld, now, bundled).filter(row => linkable(row.id)).sort((a, b) =>
@@ -241,8 +246,7 @@ export async function searchCandidates(groups, options = {}) {
     };
     // A negative registry answer can be wrong. A real response on the domain beats a free claim.
     // Replay and unit callers that inject registry traffic can inject the site check as well.
-    const checkNegative = registry.status === 'free' && tld === 'com'
-      && (options.fetcher === undefined || options.verifyFreeSite);
+    const checkNegative = registry.status === 'free' && (options.fetcher === undefined || options.verifyFreeSite);
     const checkTaken = registry.status === 'taken' && exact && siteEndings.includes(tld);
     if (!checkNegative) publish(registry);
     if (!checkNegative && !checkTaken) return;
@@ -252,11 +256,7 @@ export async function searchCandidates(groups, options = {}) {
     const pending = Promise.resolve().then(() => visit(domain, timeout, options.siteDetails || checkNegative)).then(site => {
       sites.get(domain).result = site;
       options.onSite?.(domain, site);
-      if (checkNegative) {
-        publish(['live', 'parked', 'for-sale'].includes(site?.state)
-          ? { status: 'taken', source: 'web', checkedAt: registry.checkedAt, forSale: site.state === 'for-sale' }
-          : registry);
-      }
+      if (checkNegative) publish(applyLiveSite(registry, site));
     }, () => { if (checkNegative) publish(registry); });
     sites.set(domain, { pending });
     checks.push(pending);

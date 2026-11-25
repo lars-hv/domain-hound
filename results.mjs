@@ -341,11 +341,13 @@ export function resultPages({ env = process.env,
       const groups = watch ? [] : resultGroups(data);
       const lines = watch ? data.say.split('\n') : summary(groups, args, triage);
       const title = watch ? data.domain : groups[0]?.row.name;
-      const slug = (normalizeName(String(title).split('.')[0]) ?? 'results').slice(0, 30);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      // If a caller points us at a shared directory, don't expose the searched name in its listing.
+      const privateListing = process.platform === 'win32' || ((await stat(directory)).mode & 0o077) === 0;
+      const slug = (privateListing && normalizeName(String(title).split('.')[0]) || 'results').slice(0, 30);
       const base = new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
       const page = render(groups, lines, at, data.sources, watch ? data : null);
-      await mkdir(directory, { recursive: true, mode: 0o700 });
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {
