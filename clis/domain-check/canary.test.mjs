@@ -91,9 +91,9 @@ test('the summary names every broken source, and the request budget is a failure
 
 test('the canary workflow runs daily at 06:17 UTC and on demand, and opens or updates one issue per broken source', async () => {
   const workflow = await readFile(new URL('../../.github/workflows/canary.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /schedule:\n\s+- cron: '17 6 \* \* \*'/);
+  assert.match(workflow, /schedule:\r?\n\s+- cron: '17 6 \* \* \*'/);
   assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /permissions:\n\s+contents: read\n\s+issues: write/);
+  assert.match(workflow, /permissions:\r?\n\s+contents: read\r?\n\s+issues: write/);
   assert.match(workflow, /node-version: lts\/\*/);
   assert.match(workflow, /node scripts\/canary\.mjs/);
   assert.match(workflow, /Canary: \$\{source\} broken|"Canary: \$source broken"/);

@@ -1034,8 +1034,14 @@ test('without Playwright an unconfirmed free domain says check at shop with a li
 test('starts the MCP server from the executable bin and from server.mjs, from any directory', async () => {
   const bin = new URL('./bin/domain-hound.mjs', import.meta.url);
   const { readFile, stat } = await import('node:fs/promises');
-  assert.ok((await stat(bin)).mode & 0o111, 'bin is executable');
-  assert.match(await readFile(bin, 'utf8'), /^#!\/usr\/bin\/env node\n/);
+  const binText = await readFile(bin, 'utf8');
+  if (process.platform === 'win32') {
+    // Windows has no execute bit and a CRLF checkout is valid there: npm runs the bin through a .cmd shim built from this shebang.
+    assert.match(binText, /^#!\/usr\/bin\/env node\r?\n/);
+  } else {
+    assert.ok((await stat(bin)).mode & 0o111, 'bin is executable');
+    assert.match(binText, /^#!\/usr\/bin\/env node\n/);
+  }
   const { capabilityDir } = await import('./server.mjs');
   assert.equal(capabilityDir, fileURLToPath(new URL('./clis/domain-check/', import.meta.url)));
   assert.ok((await stat(join(capabilityDir, 'index.mjs'))).isFile());
