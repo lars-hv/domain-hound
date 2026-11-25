@@ -14,7 +14,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');
 const published = flag >= 0 ? process.argv[flag + 1] : null;
@@ -34,7 +34,7 @@ try {
     const [packed] = JSON.parse(stdout);
     const paths = packed.files.map(file => file.path);
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
-      'watch.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/handles.mjs',
+      'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }

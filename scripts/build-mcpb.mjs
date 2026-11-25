@@ -35,7 +35,7 @@ try {
   }));
   const paths = pack.files.map(file => file.path).filter(path =>
     ['package.json', 'README.md', 'LICENSE', entry, 'display.mjs', 'results.mjs', 'results-style.mjs', 'share.mjs',
-      'site/r/share-format.mjs', 'watch.mjs'].includes(path)
+      'site/r/share-format.mjs', 'watch.mjs', 'dossier.mjs'].includes(path)
     || /^(?:assets|clis|bin)\//.test(path));
   for (const path of [...paths, 'package-lock.json']) {
     const target = join(bundle, path);

@@ -18,7 +18,7 @@ for (const [address, prefix] of [['2001::', 23], ['2001:db8::', 32], ['2002::', 
 const globalIpv6 = new BlockList();
 globalIpv6.addSubnet('2000::', 3, 'ipv6');
 
-function publicAddress({ address, family }) {
+export function publicAddress({ address, family }) {
   return family === 4 ? !restricted.check(address)
     : globalIpv6.check(address, 'ipv6') && !restricted.check(address, 'ipv6');
 }
@@ -27,7 +27,7 @@ const timeoutCodes = new Set(['ETIMEOUT', 'ETIMEDOUT', 'ECANCELLED', 'ABORT_ERR'
 // A check that ran out of time is unknown, never "no site": a slow server is not a missing one.
 const unanswered = { state: 'unknown', why: 'no answer in time' };
 
-function lookupPublic(signal) {
+export function lookupPublic(signal) {
   const hosts = new Map();
   return (host, options, done) => {
     if (signal.aborted) return done(new Error('Site lookup timed out'));

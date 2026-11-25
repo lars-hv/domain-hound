@@ -68,6 +68,7 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 - `triage_names` screens a new shortlist or a name you already have against registration, marks, apps, companies and handles.
 - `naming_method` explains the recipe if you want to see how the shortlist is made.
 - `watch_domain` checks the registry, expiry and website. To start a free watch, give your assistant the email it should use. Confirm the watch in your inbox. Optional news requires a separate choice in that confirmation.
+- `taken_domain_dossier` checks a taken domain’s registry record, website, and public Atom listings. It shows sources, priced alternatives, and a draft inquiry when useful. Other marketplaces have manual links. The tool leaves sending, buying, and starting a watch to you.
 
 Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. On macOS, naming and batch results open in the background. Windows and Wayland request a background open where the desktop supports it. Exact checks and watch results stay in chat with a file link. Set `DOMAIN_HOUND_OPEN=off` on the MCP server to keep every page closed.
 
