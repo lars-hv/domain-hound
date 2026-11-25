@@ -9,6 +9,7 @@ import { canRecommend, eligibilityNotes, mergeQuote, nameCandidates, normalizeNa
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
 import { lookupRegistrations } from './registry.mjs';
 import { namingRecipe, purchaseLine } from './naming-method.mjs';
+import { progressReporter } from './progress.mjs';
 import { namePresence, triageNames } from './triage.mjs';
 import { refreshTranco } from './traction.mjs';
 import {
@@ -452,6 +453,7 @@ export async function agentResult(input, options = {}) {
   let complete = fast.complete || !rows.some(row => row.registryReason === 'Registry lookup timed out');
   const quotes = new Map();
   if (targets.length) {
+    options.onProgress?.({ stage: 'quotes' });
     const catalog = await loadCachedCatalog(options.directory);
     const listFor = (target, shop) => datedListPrices(catalog, target.split('.').at(-1), options.now ?? new Date(),
       options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog).find(row => row.id === shop) ?? null;
@@ -467,6 +469,7 @@ export async function agentResult(input, options = {}) {
     || firstQuote.status === 'premium' && firstQuote.price == null);
   if (fallback && remaining() >= 1000) {
     // The headless browser runs only when the person explicitly asks for it.
+    options.onProgress?.({ stage: 'browser' });
     const confirm = options.confirm ?? confirmDomain;
     let timer;
     try {
@@ -599,6 +602,9 @@ function runConfirmation(shop, domain) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const { options, positional } = lookupArgs(args.slice(1));
+  // The MCP server reads these to answer with progress when a lookup outlasts its budget.
+  const onProgress = progressReporter();
+  if (onProgress) options.onProgress = onProgress;
   const refreshDir = process.env.DOMAIN_HOUND_PRICE_CACHE;
   if (args[0] === '--naming-method' && !positional.length) {
     console.log(namingRecipe(options.about));

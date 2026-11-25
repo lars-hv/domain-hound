@@ -27,6 +27,16 @@ export function md(value) {
 const money = value => '$' + Number(value).toFixed(2);
 const label = name => String(name).normalize('NFKD').toLowerCase().replace(/[^a-z0-9-]/g, '');
 const fullDomain = (name, d) => d.includes('.') ? d : name + '.' + d;
+const suffix = domain => domain.split('.').at(-1);
+
+function preferredFirst(values, preferred, endingOf = value => value) {
+  if (!preferred?.length) return values;
+  const rank = value => {
+    const index = preferred.indexOf(suffix(endingOf(value)));
+    return index < 0 ? preferred.length : index;
+  };
+  return [...values].sort((a, b) => rank(a) - rank(b));
+}
 
 export function safeLink(url, domain) {
   if (!/^[a-z0-9-]+\.[a-z0-9-]+$/i.test(domain) ||
@@ -260,10 +270,45 @@ export function checkLines(row, short = false) {
   });
 }
 
+const verdictRank = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
+
+// The cheapest free ending this buyer can register, at the name's own price or the standard list price.
+function cheapestEligible(row, prices, eligible) {
+  let best = null;
+  for (const ending of Array.isArray(row?.free) ? row.free : []) {
+    const quote = row.own?.[ending] ?? prices?.[ending];
+    if (!canRecommend(ending, eligible) || quote?.now == null) continue;
+    if (!best || quote.now < best.now) best = { ending, now: quote.now, renew: quote.renew ?? null, term: quote.term ?? null };
+  }
+  return best;
+}
+
+// Three ranked picks once three or more names are screened: the screen's own ranking first, then the other
+// names by verdict and cheapest eligible price. Each pick carries its cheapest eligible domain and price.
+export function topPicks(result) {
+  const rows = (result.names ?? []).filter(Boolean);
+  const prices = result.prices ?? {};
+  const picks = (Array.isArray(result.top) ? result.top : []).filter(Boolean).slice(0, 3).map(pick => {
+    if (pick.ending || pick.domain) return pick;
+    const cheapest = cheapestEligible(rows.find(row => row.name === pick.name), prices, result.eligible);
+    return cheapest ? { ...pick, ...cheapest } : pick;
+  });
+  if (rows.length < 3) return picks;
+  const rest = rows.map((row, index) => ({ row, index, cheapest: cheapestEligible(row, prices, result.eligible) }))
+    .filter(({ row }) => !picks.some(pick => pick.name === row.name))
+    .sort((a, b) => (verdictRank[a.row.verdict] ?? 3) - (verdictRank[b.row.verdict] ?? 3)
+      || (a.cheapest?.now ?? Infinity) - (b.cheapest?.now ?? Infinity) || a.index - b.index);
+  for (const { row, cheapest } of rest.slice(0, 3 - picks.length)) {
+    picks.push({ name: row.name, verdict: row.verdict, reason: row.reason,
+      ...(cheapest && { ...cheapest, domain: fullDomain(label(row.name), cheapest.ending) }) });
+  }
+  return picks;
+}
+
 function topLines(result, showReason, showValue = true) {
-  return ['**Top picks**', ...result.top.map(row => {
+  return ['**Top picks**', ...topPicks(result).map(row => {
     const ending = row.domain ?? (row.ending && '.' + row.ending);
-    const domain = ending ? ', ' + priced(ending, row) : '';
+    const domain = ending ? ', ' + priced(ending, row) : ', no eligible free ending';
     const value = !showValue ? '' : typeof row.bestValue === 'string'
       ? rowBestValue(result.names.find(candidate => candidate.name === row.name), result.prices)
       : row.bestValue && bestValueLine(row.bestValue.domain, row.bestValue);
@@ -288,19 +333,16 @@ export function tractionLine(row, compact = false) {
   return parts.length ? '<br>' + md(parts.join(' · ')) : '';
 }
 
-export function triageDisplay(result, prior, sharePrices = false, short = false) {
+// Every row lists each free ending on its own line with its price.
+export function triageDisplay(result, prior, { short = false, compact = false, preferred } = {}) {
   const prices = result.prices ?? {};
   const rows = (result.names ?? []).filter(Boolean);
   const earlierRows = new Map((prior?.names ?? []).map(row => [row.name, row.free ?? []]));
   const lines = [];
-  if (result.top?.length) lines.push(...topLines(result, !prior, !prior), '');
+  if (topPicks(result).length) lines.push(...topLines(result, !prior && rows.length !== 5, !prior && rows.length !== 5), '');
   lines.push(prior ? '**Name screen** (USD ex. VAT, estimates)' :
     '**Name screen** (USD ex. VAT; list prices, the shop shows the final price; 2y = each payment covers two years)');
   if (result.eligibility) lines.push(eligibilityLine(result));
-  if (sharePrices) {
-    const standard = Object.entries(prices).map(([ending, price]) => priced('.' + ending, price));
-    if (standard.length) lines.push('Standard today/renewal: ' + standard.join(', '));
-  }
   const checkoutHeading = prior ? 'Cheapest eligible / checkout' : 'Checkout';
   lines.push('', '| Name | Verdict and reason | Free endings, one per line, today/renewal | ' + checkoutHeading + ' | Search checks |',
     '|---|---|---|---|---|');
@@ -308,51 +350,48 @@ export function triageDisplay(result, prior, sharePrices = false, short = false)
     const base = label(row.name);
     const free = Array.isArray(row.free) ? row.free : [];
     const first = free.find(ending => canRecommend(ending, result.eligible));
-    const cheapestYear = free.filter(ending => canRecommend(ending, result.eligible))
-      .find(ending => {
-        const quote = row.own?.[ending] ?? prices[ending];
-        return quote?.now != null && (quote.term ?? 1) === 1;
-      });
     const link = first && base ? safeLink(row.buy, fullDomain(base, first)) : null;
     const checkoutPrice = prior && link && (row.own?.[first] ?? prices[first]);
     const earlier = earlierRows.get(base) ?? [];
     // An earlier premium answer, or a shop quote above the list price, replaces the list price for that ending.
     const premiumQuote = ending => earlier.find(option => option.d === ending && (option.s === 'prem' || option.prem ||
       (option.s === 'ok' && option.now != null && option.now > ((row.own?.[ending] ?? prices[ending])?.now ?? Infinity) + 0.01)));
-    const cell = free.map(ending => {
+    const cell = preferredFirst(free, preferred).map(ending => {
       const own = row.own?.[ending];
       const premium = premiumQuote(ending);
       if (premium) {
         return premium.s === 'prem' || premium.now == null ? '.' + ending + ' premium, price at shop'
           : priced('.' + ending, premium) + (premium.prem === true ? ' premium' : ' possible premium') + ' shop quote';
       }
-      return sharePrices && !own && prices[ending] && (ending !== cheapestYear || (checkoutPrice && ending === first))
-        ? '.' + ending : priced('.' + ending, own ?? prices[ending]);
+      return priced('.' + ending, own ?? prices[ending]);
     });
     const previous = option => priced('.' + option.d, option.now != null ? option : prior.listPrices?.[option.d]);
     const recheck = earlier.filter(option => row.shop_check?.includes(option.d));
     const taken = earlier.filter(option => row.taken?.includes(option.d));
     const exact = earlier.filter(option => option.s === 'ok' && free.includes(option.d) && !premiumQuote(option.d) &&
       option.now !== (row.own?.[option.d] ?? prices[option.d])?.now);
-    if (row.premium?.length) cell.push('premium, price at shop: ' + row.premium.map(ending => '.' + ending).join(' '));
-    if (row.shop_check?.length) cell.push('check at shop: ' + row.shop_check.map(ending => '.' + ending).join(' '));
-    if (recheck.length) cell.push('earlier price, recheck: ' + recheck.map(previous).join(', '));
-    if (taken.length) cell.push('earlier price, now taken: ' + taken.map(previous).join(', '));
-    if (exact.length) cell.push('earlier shop quote: ' + exact.map(previous).join(', '));
-    const checkout = checkoutPrice ? priced(link, checkoutPrice) : link ?? '—';
-    const value = rowBestValue(row, prices);
-    lines.push('| ' + md(row.name) + ' | ' + md(row.verdict) + ': ' + md(row.reason) + tractionLine(row, Boolean(prior) || short) + ' | '
+    for (const [key, heading] of [['premium', 'premium, price at shop'], ['taken', 'taken'], ['shop_check', 'check at shop']]) {
+      if (row[key]?.length) cell.push(heading + ': ' + preferredFirst(row[key], preferred).map(ending => '.' + ending).join(' '));
+    }
+    if (!compact && recheck.length) cell.push('earlier price, recheck: ' + recheck.map(previous).join(', '));
+    if (!compact && taken.length) cell.push('earlier price, now taken: ' + taken.map(previous).join(', '));
+    if (!compact && exact.length) cell.push('earlier shop quote: ' + exact.map(previous).join(', '));
+    const checkout = checkoutPrice && !compact ? priced(link, checkoutPrice) : compact ? '—' : link ?? '—';
+    const value = !compact && rowBestValue(row, prices);
+    const reason = compact ? shorten(String(row.reason ?? '').split(' · ', 1)[0], 80) : row.reason;
+    const checks = compact ? checkLines(row, false).map(line => line.split(' · [search]', 1)[0]) : checkLines(row, short);
+    lines.push('| ' + md(row.name) + ' | ' + md(row.verdict) + ': ' + md(reason) + (compact ? '' : tractionLine(row, Boolean(prior) || short)) + ' | '
       + (cell.join('<br>') || 'none free') + (value ? '<br>' + value : '') + ' | ' + checkout + ' | '
-      + checkLines(row, short).join('<br>') + ' |');
+      + checks.join('<br>') + ' |');
   }
-  if (!prior) lines.push('', 'Choose a favorite, if you want, and ask for its exact quote.');
+  lines.push('', 'Choose a favorite and ask for its exact quote.');
   return lines.join('\n');
 }
 
 const shorten = (value, length) => value.length > length ? value.slice(0, length - 1).trimEnd() + '…' : value;
 
 function denseDisplay(result, short = false, links = true) {
-  const heading = result.top?.length ? topLines(result, false).join('\n') : '**Name screen**';
+  const heading = topPicks(result).length ? topLines(result, false).join('\n') : '**Name screen**';
   const results = (result.names ?? []).filter(Boolean);
   const checksFor = row => checkLines(row, short).map(line =>
     links ? line : line.replace(/\[([^\]]+)\]\(https:\/\/[^)]+\)/g, '$1'));
@@ -380,7 +419,66 @@ const withDisplay = (display, { display: ignored, ...data } = {}) => JSON.string
 
 export const errorText = message => withDisplay(attributed(message));
 
-export function checkText(result, shortlist = false, { purchase = false } = {}) {
+const progressStage = {
+  quotes: 'Registry checks are in; shop prices are being checked.',
+  browser: 'The live shop check is running.',
+  rivals: 'Domain checks are in; trademark, app and rival checks are still running.',
+};
+
+// The answer when a lookup outlasts this call's budget: what the registries have answered so far, the elapsed
+// time against the budget, and how to collect the finished result from the lookup that keeps running.
+// rows lists every requested name in input order with the domains it checks: each requested ending for a bare name,
+// or the exact domain itself. A row without answers yet still shows every ending as still checking.
+export function progressText(progress, { rows = [], elapsedMs = 0, budgetMs = 0, triage = false, purchase = false } = {}) {
+  const answers = progress?.answers instanceof Map ? progress.answers : new Map(progress?.answers ?? []);
+  const kinds = { 'probably-free': 'free', taken: 'taken', premium: 'premium' };
+  const names = rows.map(({ name, domains }) => {
+    const exact = String(name).includes('.') && domains.length === 1 && domains[0] === name;
+    const groups = { free: [], taken: [], premium: [], shop_check: [], checking: [] };
+    for (const domain of domains) {
+      const status = answers.get(domain);
+      groups[status === undefined ? 'checking' : kinds[status] ?? 'shop_check'].push(exact ? domain : domain.slice(domain.indexOf('.') + 1));
+    }
+    // The same row shapes as the finished result: check_domains rows list free endings as objects.
+    const free = triage ? groups.free : [...groups.free.map(d => ({ d, s: 'nc' })), ...groups.premium.map(d => ({ d, s: 'prem' }))];
+    return { name, ...(groups.taken.length && { taken: groups.taken }), ...(free.length && { free }),
+      ...(triage && groups.premium.length && { premium: groups.premium }),
+      ...(groups.shop_check.length && { shop_check: groups.shop_check }), ...(groups.checking.length && { checking: groups.checking }),
+      _groups: groups, _exact: exact };
+  });
+  const waiting = names.reduce((count, row) => count + row._groups.checking.length, 0);
+  const total = names.reduce((count, row) => count + Object.values(row._groups).flat().length, 0);
+  const seconds = ms => (Math.max(0, ms) / 1000).toFixed(1) + ' s';
+  const show = (row, endings) => endings.map(d => row._exact ? md(d) : '.' + md(d)).join(' ');
+  const lines = [
+    '**Still checking** after ' + seconds(elapsedMs) + ' (answer budget ' + seconds(budgetMs) + '). The lookup keeps running.',
+    'Registry answers so far: ' + (total - waiting) + ' of ' + total + ' domains.',
+    ...names.map(row => '- ' + md(row.name) + ': ' + [
+      ['free', row._groups.free], ['taken', row._groups.taken], ['premium', row._groups.premium],
+      ['not settled', row._groups.shop_check], ['still checking', row._groups.checking],
+    ].filter(([, endings]) => endings.length).map(([kind, endings]) => kind + ' ' + show(row, endings)).join(' · ')
+      + (row._groups.checking.length ? ', ask again' : '')),
+    ...(progressStage[progress?.stage] ? [progressStage[progress.stage]] : []),
+    'Prices, ' + (triage ? 'verdicts, ' : '') + 'links and every ending come with the finished result. '
+      + 'Call the same tool again with the same input to collect it from this lookup.',
+  ];
+  for (const row of names) {
+    delete row._groups;
+    delete row._exact;
+  }
+  return withDisplay(attributed(lines.join('\n'), purchase), {
+    complete: false, pending: true, elapsedMs: Math.round(elapsedMs), budgetMs: Math.round(budgetMs),
+    ...(progressStage[progress?.stage] && { stage: progress.stage }), names,
+  });
+}
+
+export function checkText(result, shortlist = false, { purchase = false, preferred } = {}) {
+  if (preferred?.length) result = { ...result, names: result.names.map(row => ({ ...row,
+    ...(row.free && { free: preferredFirst(row.free, preferred, option => option.d) }),
+    ...(row.taken && { taken: preferredFirst(row.taken, preferred) }),
+    ...(row.resale && { resale: preferredFirst(row.resale, preferred) }),
+    ...(row.shop_check && { shop_check: preferredFirst(row.shop_check, preferred) }),
+  })) };
   const initialLevel = (result.names?.length ?? 0) >= 10 ? 3 : 0;
   const shown = checkDisplay(result, initialLevel, purchase);
   const exact = (result.names ?? []).length === 1 && String(result.names[0]?.name ?? '').includes('.');
@@ -405,12 +503,16 @@ export function checkText(result, shortlist = false, { purchase = false } = {}) 
     }
     const groups = new Map();
     for (const row of data.names) {
-      const available = (row?.free ?? []).map(option => '.' + option.d
-        + (option.s === 'prem' || option.prem ? ' (premium)' : '')).join(' ') || 'none found';
-      if (!groups.has(available)) groups.set(available, []);
-      groups.get(available).push(md(row?.name));
+      const free = (row.free ?? []).map(option => '.' + option.d + (option.s === 'prem' || option.prem ? ' (premium)' : ''));
+      const statuses = ['Free ' + (free.join(' ') || 'none found')];
+      for (const [key, heading] of [['taken', 'taken'], ['resale', 'resale'], ['shop_check', 'check at shop']]) {
+        if (row[key]?.length) statuses.push(heading + ' ' + row[key].map(ending => '.' + ending).join(' '));
+      }
+      const statusesText = statuses.join(' · ');
+      if (!groups.has(statusesText)) groups.set(statusesText, []);
+      groups.get(statusesText).push(md(row.name));
     }
-    const lines = ['**Preliminary domain screen** (free endings)', ...[...groups].map(([available, names]) =>
+    const lines = ['**Preliminary domain screen**', ...[...groups].map(([available, names]) =>
       names.join(', ') + ' — ' + available)];
     if (result.eligibility) lines.push(eligibilityLine(result));
     const confirmed = shown.split('\n').filter(line => line.startsWith('Confirmed at ') || line.startsWith('Check at shop: ['));
@@ -457,17 +559,19 @@ export function checkText(result, shortlist = false, { purchase = false } = {}) 
 }
 
 // Keep structured evidence keys in the MCP response when secondary details need to fit a shortlist.
-export function triageText(result, prior, { purchase = false } = {}) {
-  let shared = false;
+export function triageText(result, prior, { purchase = false, preferred } = {}) {
   let dense = false;
   let short = false;
-  const render = () => attributed(dense ? denseDisplay(result, short) : triageDisplay(result, prior, shared, short), purchase);
+  const render = () => attributed(dense ? denseDisplay(result, short) : triageDisplay(result, prior, { short, preferred }), purchase);
   let display = render();
   const count = result.names?.length ?? 0;
   const data = structuredClone(result);
   if (typeof data.legend === 'string') data.legend = compactTriageLegend;
   // The display carries the three check lines; google stays for the client to fill.
-  for (const row of data.names ?? []) delete row.checks;
+  for (const row of data.names ?? []) {
+    delete row.checks;
+    for (const key of ['free', 'taken', 'premium', 'shop_check']) if (Array.isArray(row[key])) row[key] = preferredFirst(row[key], preferred);
+  }
   let { top, ...fields } = data;
   const serialize = () => JSON.stringify({ display, ...(top && { top }), ...fields });
   const limit = count <= 1 ? 5900 : count <= 5 ? (prior ? 3800 : 5900) : 7800;
@@ -493,11 +597,6 @@ export function triageText(result, prior, { purchase = false } = {}) {
   ]) {
     if (bytes(text) <= limit) break;
     fields.names.forEach(trim);
-    text = serialize();
-  }
-  if (count > 1 && bytes(text) > limit) {
-    shared = true;
-    display = render();
     text = serialize();
   }
   if (prior && count <= 5 && bytes(text) > limit) {
@@ -605,11 +704,7 @@ export function triageText(result, prior, { purchase = false } = {}) {
     ...(row.bestValue && { bestValue: row.bestValue }),
     ...(row.google?.search && { google: row.google }),
   }));
-  const summary = result.names.map(row => '- **' + md(row.name) + '** — ' + md(row.verdict)
-    + (row.reason ? ': ' + md(shorten(row.reason, 200)) : ''));
-  const header = ['**Name screen** (prices and reasons in the results)', ...(result.eligibility ? [eligibilityLine(result)] : [])];
-  const dataOnly = { names, prices: result.prices };
-  const fit = lines => JSON.stringify({ display: attributed([...header, ...lines].join('\n'), purchase), ...dataOnly });
-  const links = fit(summary.map((line, index) => line + '  \n  ' + checkLines(result.names[index], true).join('  \n  ')));
-  return bytes(links) < maxBytes ? links : fit(summary);
+  for (const row of names) for (const key of ['free', 'taken', 'shop_check']) if (Array.isArray(row[key])) row[key] = preferredFirst(row[key], preferred);
+  const compactDisplay = attributed(triageDisplay(result, prior, { compact: true, preferred }), purchase);
+  return withDisplay(compactDisplay, { names, prices: result.prices });
 }

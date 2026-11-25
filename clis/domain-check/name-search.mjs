@@ -175,6 +175,7 @@ export async function searchCandidates(groups, options = {}) {
   const onResult = ({ domain, tld, exact }, registry) => {
     if (timeLeft() <= 0) return;
     lookedUp.set(domain, registry);
+    options.onProgress?.({ domain, status: registrationStatus(registry) });
     if (registry.status !== 'taken' || !exact || !siteEndings.includes(tld)) return;
     const timeout = Math.min(options.siteTimeout ?? 1200, timeLeft());
     sites.set(domain, { pending: (options.comSite ?? checkDomainSite)(domain, timeout, options.siteDetails).then(site => {

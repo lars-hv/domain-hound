@@ -327,6 +327,7 @@ export async function triageNames(inputs, options = {}) {
     startEvidence(traction, rivals);
     return rivals;
   });
+  options.onProgress?.({ stage: 'rivals' });
   const evidence = await traction.settle();
   const rows = domains.groups.map(({ name, results, sites }, index) => {
       const marks = marksByName[index];

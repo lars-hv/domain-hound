@@ -55,7 +55,8 @@ async function smokeMcp(label, command, args, options) {
     const first = await request(3, 'tools/call', { name: 'check_domains', arguments: { names: [query] } });
     const firstLookup = Math.round(performance.now() - firstStarted);
     assert.equal(first.isError, false, JSON.stringify(first.content));
-    const batch = JSON.parse(first.content[0].text);
+    const batch = first.structuredContent;
+    assert.deepEqual(first.content, [{ type: 'text', text: batch.display }]);
     assert.match(batch.priceListDate ?? '', /^\d{4}-\d{2}-\d{2}$/, 'First call has no price date');
     for (const ending of endings) {
       assert.ok(batch.listPrices?.[ending]?.now > 0, 'First call has no list price for .' + ending);
@@ -66,7 +67,8 @@ async function smokeMcp(label, command, args, options) {
     const result = await request(4, 'tools/call', { name: 'check_domains', arguments: { query } });
     const lookup = Math.round(performance.now() - lookupStarted);
     assert.equal(result.isError, false, JSON.stringify(result.content));
-    const { display, names } = JSON.parse(result.content[0].text);
+    const { display, names } = result.structuredContent;
+    assert.deepEqual(result.content, [{ type: 'text', text: display }]);
     assert.equal(names[0].name, query);
     assert.ok(display.includes(query));
     assert.match(display, /Check at shop[^\n]*\]\(https:\/\//i);

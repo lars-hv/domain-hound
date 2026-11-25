@@ -1,9 +1,51 @@
+import { appendFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { progressReporter } from '../clis/domain-check/progress.mjs';
+import { defaultEndings } from '../clis/domain-check/name-search.mjs';
 
 const [mode, query, ...rest] = process.argv.slice(2);
 if (!['--agent', '--triage'].includes(mode) || dirname(fileURLToPath(import.meta.url)) !== process.cwd()) {
   throw new Error('Wrong command or working directory');
+}
+// Tests count capability runs through this log.
+if (process.env.DOMAIN_HOUND_TEST_RUNS) appendFileSync(process.env.DOMAIN_HOUND_TEST_RUNS, JSON.stringify([mode, query]) + '\n');
+if (query === 'endingsample' || query === 'Ending Sample') {
+  // A forwarded --endings flag behaves like the capability's filter, so a test can catch it at the wire.
+  const flag = rest.indexOf('--endings');
+  const endings = flag < 0 ? defaultEndings : rest[flag + 1].split(',');
+  const price = { now: 8, renew: 12.5 };
+  const rows = mode === '--triage'
+    ? { prices: Object.fromEntries(endings.map(ending => [ending, price])),
+      names: [{ name: query, free: endings, verdict: 'Check first', reason: 'Review the available options' }] }
+    : { complete: true, names: [{ name: query, free: endings.map(d => ({ d, s: 'nc', ...price })) }] };
+  console.log(JSON.stringify(rows));
+  process.exit(0);
+}
+// A deliberately slow lookup: two registry answers at once, the final result after DOMAIN_HOUND_TEST_DELAY ms.
+const slowBatch = query === '--names' ? rest[0]?.split(',') : null;
+if (query === 'slowroom' || query === 'Slow Room' || slowBatch?.includes('slowroom')) {
+  const progress = progressReporter();
+  progress?.({ domain: 'slowroom.com', status: 'taken' });
+  progress?.({ domain: 'slowroom.dev', status: 'probably-free' });
+  setTimeout(() => {
+    progress?.({ domain: 'slowroom.app', status: 'probably-free' });
+    progress?.({ stage: mode === '--triage' ? 'rivals' : 'quotes' });
+  }, 50);
+  await new Promise(resolve => setTimeout(resolve, Number(process.env.DOMAIN_HOUND_TEST_DELAY ?? 1500)));
+  if (mode === '--triage') {
+    console.log(JSON.stringify({ prices: { dev: { now: 8, renew: 12.5, shop: 'Spaceship' }, app: { now: 8.28, renew: 14.49, shop: 'Spaceship' } },
+      names: [{ name: query, verdict: 'No conflict found', reason: 'No close US mark, app or site overlap',
+        free: ['dev', 'app'], taken: ['com'], buy: 'https://www.spaceship.com/domain-search/?query=slowroom.dev' }] }));
+  } else {
+    const price = { now: 8, renew: 12.5, shop: 'Spaceship' };
+    console.log(JSON.stringify({ complete: true, checkedAt: '2026-11-24T12:00:00.000Z', priceListDate: '2026-11-24',
+      names: (slowBatch ?? ['slowroom']).map(name => name === 'slowroom'
+        ? { name, taken: ['com'], free: [{ d: 'dev', s: 'nc', ...price }, { d: 'app', s: 'nc', ...price }] }
+        : { name, free: [{ d: name.includes('.') ? name.split('.')[1] : 'com', s: 'nc', ...price }] }),
+      buyUrlTemplate: { Spaceship: 'https://www.spaceship.com/domain-search/?query={domain}' } }));
+  }
+  process.exit(0);
 }
 if (mode === '--triage') {
   // Mirrors the compact triage shape; flags echo the forwarded arguments for the tests.

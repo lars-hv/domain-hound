@@ -208,3 +208,33 @@ Local evidence is in `.verify/gate-full.json`, `.verify/gate-repeat.json`, and `
 - Local validation covers the MCPB and Claude plugin manifests. GitHub Actions issue creation and the future GitHub release URL require the branch and artifact to be published before they can be verified. [MCP Registry package types](https://github.com/modelcontextprotocol/registry/blob/main/docs/modelcontextprotocol-io/package-types.mdx) · [MCPB manifest specification](https://github.com/modelcontextprotocol/mcpb/blob/main/MANIFEST.md)
 - The homepage, privacy and support metadata are prepared. The privacy and support URLs returned HTTP 200. The website terms URL returned HTTP 404, so a terms URL is still needed for public review. [OpenAI submission metadata](https://developers.openai.com/plugins/deploy/submission) · [Claude plugin manifest](https://code.claude.com/docs/en/plugins/manifest-reference)
 - Smithery's official notice says its old CLI and account services were retired on October 31, 2026. The bundle is ready locally, and Smithery ingestion remains unverified. [Smithery service notice](https://smithery.ai/future)
+
+## 0.1.2-b
+
+`check_domains` and `triage_names` check and show all ten default endings for bare names. Preferences change the display order within each status. Exact-domain lookups still check the specific domain. At the 14-second response budget, the server shows every requested name, the registry results so far, and which endings are still checking. A repeat can join the running lookup or collect its finished result from the server's cache.
+
+The five-name screen starts with three ranked picks and their cheapest eligible domains, then shows each name, verdict, and every free ending with its first and renewal payments. The MCP response carries the display in one text block and puts the machine-readable fields in `structuredContent`.
+
+- **Unit suite.** All 154 tests passed, including both optional browser tests. The new regressions cover preference ordering in both tools, partial results for all seven requested names, and a background result collected in under 300 ms without starting a second lookup.
+- **Live lookup.** Seven fresh synthetic names returned in **11.086 s** with all names and all ten endings per name. The tool display was 413 B and the compact structured response was 1,963 B. A second complete lookup of the same names took 2.774 s.
+- **Package.** `npm run smoke` passed through the CLI, source MCP executable, and a fresh `npx` install from the packed tarball.
+
+### Client gates
+
+The unchanged full gate passed **7/14** including case g. Claude Code passed **7/7** and Codex passed **0/7**.
+
+| Case | Claude Code | Codex |
+| --- | --- | --- |
+| a · exact domain | Pass | Fail |
+| b · naming | Pass | Fail |
+| c · established name | Pass | Fail |
+| d · 20-name batch | Pass | Fail |
+| e · validation and recovery | Pass | Fail |
+| f · purchase request | Pass | Fail |
+| g · existing name and web search | Pass | Fail |
+
+The harness reads only client text blocks and calls `JSON.parse` on their contents. Claude Code exposes the structured result as JSON in those blocks. Codex exposes the plain display, so the grader sees empty structured fields and fails all seven Codex cases. In the full naming case, Codex began its answer with the exact five-row display and the grader counted zero names. The full Codex purchase answer also omitted the checkout limitation.
+
+The Codex repeat gate passed **0/10**, with **0/5** in b and **0/5** in f. All five naming answers reproduced the full display verbatim and four put it first. The five naming displays ranged from 2,453 to 2,531 B. Four purchase answers explained the checkout limitation. The grader still required structured evidence from each purchase result, so all five failed.
+
+The grader and prompts were unchanged. New evidence is in `.verify/gate-0.1.2-b-full.json`, `.verify/gate-0.1.2-b-repeat.json`, and `.verify/lookup-0.1.2-b.log`.

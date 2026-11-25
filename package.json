@@ -39,6 +39,7 @@
     "clis/domain-check/price-catalog.mjs",
     "clis/domain-check/price-snapshot.json",
     "clis/domain-check/prices.mjs",
+    "clis/domain-check/progress.mjs",
     "clis/domain-check/registry.mjs",
     "clis/domain-check/terms.json",
     "clis/domain-check/traction.mjs",
