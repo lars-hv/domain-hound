@@ -5,7 +5,9 @@ export const dossierTool = {
   name: 'taken_domain_dossier',
   description: 'Use when someone wants a domain that is already taken. Builds a read-only broker dossier: registry facts '
     + '(created, expiry, registrar, name servers, status), what the site does now, public listing evidence, likely owner type, '
-    + 'the track (listed, not listed, expiring), a price range only from shown evidence, 3 free alternatives with prices, '
+    + 'the track (listed, not listed, expiring), a price range only from shown evidence, up to 3 free alternatives (best '
+    + '3-year value for the exact name, a .com variant, the next strongest ending) with first-year, renewal and 3-year '
+    + 'list prices and a quick US trademark, app and rival screen, '
     + 'and a draft for the owner when an inquiry makes sense. Relay the display with its sources. Provide follow-up drafts only '
     + 'on request. Never send a draft, start a watch automatically, or reveal maxBudget to the owner.',
   annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, openWorldHint: true },
@@ -99,6 +101,56 @@ function trackLine(data) {
   return 'Next: if you want to inquire, review the draft and use a public contact route.';
 }
 
+const roleText = { 'best-value': 'best 3-year value for the exact name', variant: '.com variant', 'exact-com': 'exact .com',
+  'exact-ending': 'same name, other ending' };
+
+// First payment, renewal with the jump flag, minimum term and the three-year total, all list prices.
+function costText(row) {
+  const term = row.minimumYears > 1;
+  const first = term && row.firstPayment != null
+    ? money(row.firstPayment) + ' first payment (' + row.minimumYears + '-year minimum, ' + money(row.price) + '/year)'
+    : money(row.price) + ' first year';
+  const renewal = row.renewal != null ? ', renews at ' + money(row.renewal) + '/year' + (row.renewalJump ? ' (renewal jump)' : '') : '';
+  const total = row.threeYear != null ? ', ' + money(row.threeYear) + ' over 3 years' : '';
+  return first + renewal + total;
+}
+
+function screenText(screen, isBase = false) {
+  const name = isBase ? 'Base name screen' : 'Name screen';
+  if (!screen || screen.state !== 'settled') {
+    return name + (screen?.state === 'unavailable' ? ' unavailable. ' : ' pending. ');
+  }
+  if (screen.verdict === 'No conflict found') return '';
+  return (isBase ? 'Base name ' : '') + '**' + md(screen.verdict) + '**. ' + md(screen.reason) + '. ';
+}
+
+function screenTail(screen, showNoConflict = true) {
+  if (screen?.state !== 'settled') return '';
+  const found = [screen.trademark && 'US mark ' + source(screen.trademark, screen.trademarkUrl),
+    ...(screen.appEvidence ?? []).map(app => app.store + ' app ' + source(app.name, app.url)),
+    screen.traction?.domain && source('Rival website', 'https://' + screen.traction.domain + '/')].filter(Boolean);
+  const lead = showNoConflict && screen.verdict === 'No conflict found' ? ' No conflict found in the sources checked (marks, apps, rivals).' : '';
+  return lead + (found.length ? ' Evidence from ' + found.join(', ') + '.' : '');
+}
+
+function registrySource(row) {
+  return source(row.registrySource?.method?.toUpperCase() ?? 'Registry', row.registrySource?.url)
+    + ', ' + time(row.registryCheckedAt) + '.';
+}
+
+function alternativeLine(row) {
+  const role = roleText[row.role] ? ' (' + roleText[row.role] + ')' : '';
+  return '- ' + screenText(row.screen) + md(row.domain) + role + ': ' + costText(row) + '. '
+    + source(row.shop ?? 'List price', row.priceUrl) + ', ' + time(row.priceCheckedAt) + '. '
+    + registrySource(row) + screenTail(row.screen, !row.baseScreen)
+    + (row.baseScreen ? ' ' + screenText(row.baseScreen, true).trimEnd() + screenTail(row.baseScreen) : '');
+}
+
+function priceContextLine(row) {
+  return 'Lowest first payment elsewhere is ' + md(row.domain) + ' at ' + costText(row) + '. '
+    + source(row.shop ?? 'List price', row.priceUrl) + ', ' + time(row.priceCheckedAt) + '. ' + registrySource(row);
+}
+
 export function dossierDisplay(data) {
   const owner = data.owner.type === 'unknown' ? 'Owner type: unknown.'
     : 'Owner type: likely ' + data.owner.type + ' (' + data.owner.confidence + ' confidence). '
@@ -108,14 +160,12 @@ export function dossierDisplay(data) {
     registryLine(data), siteLine(data), owner, ...listingLines(data), rangeLine(data), trackLine(data),
   ];
   if (data.alternatives.length) {
-    lines.push('', 'Alternatives that appear available (list prices, USD)', ...data.alternatives.map(row => '- '
-      + md(row.domain) + ' ' + money(row.price) + (row.renewal != null ? ', renews at ' + money(row.renewal) : '')
-      + '. ' + source(row.shop, row.priceUrl) + ', ' + time(row.priceCheckedAt) + '. '
-      + source(row.registrySource?.method?.toUpperCase() ?? 'Registry', row.registrySource?.url)
-      + ', ' + time(row.registryCheckedAt) + '.'));
+    lines.push('', 'Alternatives that appear available (USD list prices)',
+      ...data.alternatives.map(alternativeLine));
   } else {
     lines.push('No available alternatives with a price were verified.');
   }
+  if (data.priceContext) lines.push(priceContextLine(data.priceContext));
   if (data.drafts) {
     lines.push('', 'Draft opening note', '', ...data.drafts.opening.split('\n').map(line => '> ' + line));
   }

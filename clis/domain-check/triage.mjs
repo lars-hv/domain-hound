@@ -311,9 +311,12 @@ export async function triageNames(inputs, options = {}) {
     startHomes(name, (result ?? []).filter(row => row.brand).flatMap(row => (row.website ?? []).map(siteDomain))
       .filter(domain => domain?.split('.')[0].includes(name)));
   });
-  const domainsDone = searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
-    siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite,
-    siteFilter: domain => screenedDomains.has(domain.slice(0, domain.indexOf('.'))) });
+  // A caller that already holds registry answers and site evidence (the broker dossier) passes them in, so the screen
+  // reuses them and makes no registry or site calls of its own.
+  const domainsDone = options.domainSearch ? Promise.resolve().then(() => options.domainSearch(groups))
+    : searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
+      siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite,
+      siteFilter: domain => screenedDomains.has(domain.slice(0, domain.indexOf('.'))) });
   // GitHub and npm accounts are same-name evidence for every screened name; they share one run of controls.
   const evidenceHandles = options.deferHandles ? Promise.resolve(new Map()) : checkSocialHandles(screened.map(([name]) => ({ name, platforms: ['GitHub', 'npm'], links: false })),
     { ...options, signal });
@@ -558,7 +561,7 @@ function likelyEndings(rows) {
 }
 
 // Best value is the lowest total of the payments due in three years; the cheaper first payment breaks a tie.
-function bestValue(options) {
+export function bestValue(options) {
   return options.filter(row => Number.isFinite(row.threeYear)).reduce((best, row) => !best || row.threeYear < best.threeYear
     || (row.threeYear === best.threeYear && row.firstPayment < best.firstPayment) ? row : best, undefined);
 }

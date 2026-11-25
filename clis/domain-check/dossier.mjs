@@ -1,12 +1,13 @@
 // Broker dossier for a taken domain (read only). Registry facts, what the site does, public listing evidence, a
-// likely owner type from public signals, the track, a price range only from shown evidence, three free
-// alternatives from the name engine, and drafted (never sent) notes to the owner. Nothing is sent, submitted or
+// likely owner type from public signals, the track, a price range only from shown evidence, up to three free
+// alternatives from the name engine with the triage name screen, and drafted (never sent) notes to the owner. Nothing is sent, submitted or
 // bought, no shop credentials are used, and no background refresh starts. Every part shares one total deadline.
 import { classifyComSite } from './com-site.mjs';
 import { anySignal, cacheDir, readCache } from './cache.mjs';
 import { asciiDomain, canRecommend, defaultEndings, domainEnding, listQuote, nameCandidates, premiumRisk, searchCandidates,
-  supportedEndings } from './name-search.mjs';
+  supportedEndings, unicodeName } from './name-search.mjs';
 import { bundledCatalog, loadCachedCatalog } from './price-catalog.mjs';
+import { bestValue, triageNames } from './triage.mjs';
 import { bootstrap, bootstrapUrl, documentedWhois, lookupRegistrations, rdapBase, rdapDomainUrl, systemResolveNs } from './registry.mjs';
 import { saleMarketplace } from './parking.mjs';
 import { checkListings, marketplaceFor, providers, stopReason, urlBindsDomain } from './marketplaces.mjs';
@@ -303,11 +304,90 @@ export function chooseTrack(registry, listing, outlook) {
   return 'not-listed';
 }
 
+// Broker ending order: the anchors, then established mainstream endings. .xyz and .tech are a fallback tier, ranked
+// after every mainstream ending however cheap their first year is. Other supported endings follow in catalog order.
+const brokerEndings = ['com', 'ai', 'si', 'io', 'app', 'dev', 'me', 'co', 'net', 'org'];
+const brokerEndingOrder = [...new Set([...brokerEndings, 'xyz', 'tech', ...supportedEndings])];
+const labelOf = domain => domain.slice(0, domain.indexOf('.'));
+const threeYearOf = row => Number.isFinite(row?.threeYear) ? row.threeYear : Infinity;
+
+// No renewal jump sits above an option without one whose three-year total is the same or lower, whatever slot put it
+// there. Each move takes one jump-above-non-jump pair away, so the loop ends.
+export function orderByValue(options) {
+  const ordered = [...options];
+  for (let moved = true; moved;) {
+    moved = false;
+    search: for (let i = 0; i < ordered.length; i++) {
+      if (!ordered[i].renewalJump) continue;
+      for (let j = i + 1; j < ordered.length; j++) {
+        if (!ordered[j].renewalJump && threeYearOf(ordered[j]) <= threeYearOf(ordered[i])) {
+          ordered.splice(i, 0, ...ordered.splice(j, 1));
+          moved = true;
+          break search;
+        }
+      }
+    }
+  }
+  return ordered;
+}
+
+function variantForms(name) {
+  return nameCandidates(name, { endings: ['com'] }).filter(row => !row.exact).map(row => row.domain).filter(domain => {
+    const label = labelOf(domain);
+    return label.endsWith(name) ? !name.startsWith(label.slice(0, -name.length)) : !name.endsWith(label.slice(name.length));
+  });
+}
+
+// Pick the best value for the exact name, a natural .com variant, and the strongest remaining exact ending.
+// Fill open slots in ending order, then with additional variants.
+export function pickAlternatives(rows, domain) {
+  const name = labelOf(domain);
+  const forms = variantForms(name);
+  const pool = rows.filter(row => row.domain !== domain && ['probably-free', 'confirmed'].includes(row.status)
+    && row.price != null && canRecommend(row.tld) && !premiumRisk(row.domain)
+    && (row.exact ? labelOf(row.domain) === name : forms.includes(row.domain)));
+  const exact = pool.filter(row => row.exact)
+    .sort((a, b) => brokerEndingOrder.indexOf(a.tld) - brokerEndingOrder.indexOf(b.tld));
+  const variants = pool.filter(row => !row.exact)
+    .sort((a, b) => threeYearOf(a) - threeYearOf(b) || a.domain.length - b.domain.length
+      || forms.indexOf(a.domain) - forms.indexOf(b.domain));
+  const picks = [];
+  const open = list => list.filter(row => !picks.some(pick => pick.row === row));
+  const take = (row, role) => { if (row && open([row]).length) picks.push({ row, role }); };
+  const attractive = exact.filter(row => brokerEndings.includes(row.tld));
+  take(bestValue(attractive) ?? bestValue(exact), 'best-value');
+  take(variants[0], 'variant');
+  for (const row of [...open(exact), ...open(variants)]) {
+    if (picks.length >= 3) break;
+    take(row, !row.exact ? 'variant' : row.tld === 'com' ? 'exact-com' : 'exact-ending');
+  }
+  const chosen = orderByValue(picks.map(({ row, role }) => ({ ...row, role })));
+  const cheapest = pool.reduce((best, row) => !best || (row.firstPayment ?? Infinity) < (best.firstPayment ?? Infinity)
+    || (row.firstPayment === best.firstPayment && threeYearOf(row) < threeYearOf(best)) ? row : best, undefined);
+  const covered = cheapest && chosen.some(row => (row.firstPayment ?? Infinity) <= (cheapest.firstPayment ?? Infinity));
+  return { picks: chosen, priceContext: cheapest && !covered ? cheapest : null };
+}
+
+function alternativeRow(row, services) {
+  const rdap = row.source === 'rdap' && rdapBase(row.tld, services);
+  return {
+    domain: row.domain, label: labelOf(row.domain), exact: Boolean(row.exact), ...(row.role && { role: row.role }),
+    status: row.status, registryCheckedAt: row.checkedAt ?? null,
+    registrySource: row.source ? { method: row.source, url: rdap ? rdapDomainUrl(rdap, row.domain) : bootstrapUrl,
+      ...(row.source === 'whois' && documentedWhois.has(row.tld) && { host: documentedWhois.get(row.tld) }) } : null,
+    price: row.price, renewal: row.renewal ?? null, firstPayment: row.firstPayment ?? null,
+    renewalPayment: row.renewalPayment ?? null, minimumYears: row.minimumYears ?? 1, threeYear: row.threeYear ?? null,
+    renewalJump: Boolean(row.renewalJump),
+    shop: row.shop ?? null, priceCheckedAt: row.priceCheckedAt ?? null, priceUrl: priceSourceUrl(row, row.tld),
+  };
+}
+
 // The existing name engine for free alternatives: list prices from the local cache or the bundled snapshot only,
-// so no refresh starts and no shop credentials are read.
+// so no refresh starts and no shop credentials are read. The checked rows come back too, so the name screen reuses
+// the registry answers instead of asking again.
 export async function findAlternatives(domain, { search = searchCandidates, budgetMs = 6500, clock = () => new Date(),
   directory = cacheDir } = {}) {
-  const name = domain.split('.')[0];
+  const name = labelOf(domain);
   const tld = domainEnding(domain);
   const endings = [...new Set([tld, ...defaultEndings])].filter(ending => supportedEndings.includes(ending));
   const candidates = nameCandidates(name, { endings }).filter(row => row.domain !== domain);
@@ -319,21 +399,55 @@ export async function findAlternatives(domain, { search = searchCandidates, budg
       return null;
     } });
   const services = (await readCache(directory, 'iana.json'))?.value;
-  return (group?.results ?? [])
-    .filter(row => ['probably-free', 'confirmed'].includes(row.status) && row.price != null && canRecommend(row.tld)
-      && !premiumRisk(row.domain))
-    .sort((a, b) => (a.firstPayment ?? Infinity) - (b.firstPayment ?? Infinity) || (a.threeYear ?? Infinity) - (b.threeYear ?? Infinity))
-    .slice(0, 3)
-    .map(row => {
-      const rdap = row.source === 'rdap' && rdapBase(row.tld, services);
-      return {
-        domain: row.domain, status: row.status, registryCheckedAt: row.checkedAt ?? null,
-        registrySource: row.source ? { method: row.source, url: rdap ? rdapDomainUrl(rdap, row.domain) : bootstrapUrl,
-          ...(row.source === 'whois' && documentedWhois.has(row.tld) && { host: documentedWhois.get(row.tld) }) } : null,
-        price: row.price, renewal: row.renewal ?? null, firstPayment: row.firstPayment ?? null, threeYear: row.threeYear ?? null,
-        shop: row.shop ?? null, priceCheckedAt: row.priceCheckedAt ?? null, priceUrl: priceSourceUrl(row, row.tld),
-      };
-    });
+  const results = group?.results ?? [];
+  const { picks, priceContext } = pickAlternatives(results, domain);
+  return { rows: picks.map(row => alternativeRow(row, services)),
+    priceContext: priceContext ? alternativeRow(priceContext, services) : null, results, endings };
+}
+
+const screenTrim = (value, limit) => value && value.length > limit ? value.slice(0, limit - 1).trimEnd() + '…' : value ?? null;
+
+// The same trademark, iOS and Android app and rival judgement as triageNames, run on one name label. Registry
+// answers and site evidence come in from the dossier, handle rows stay off and no search key is read.
+export async function screenName(label, { endings, domains, budgetMs, clock = () => new Date(), directory = cacheDir,
+  triage = triageNames } = {}) {
+  const report = await triage([unicodeName(label) ?? label], { endings, budgetMs: Math.max(1, Math.floor(budgetMs)), now: clock(), directory,
+    domainSearch: () => domains, deferHandles: true, handleRows: false, env: {} });
+  const row = report?.names?.[0];
+  if (!row || report.error) return null;
+  const competition = row.competition ?? {};
+  const app = value => Array.isArray(value) ? value[0] ?? null : value ?? null;
+  const ios = app(competition.AppStore);
+  const android = app(competition.GooglePlay);
+  return {
+    state: 'settled', verdict: row.verdict,
+    // The first two reasons, short: the verdict's cause and the strongest supporting fact.
+    reason: screenTrim(String(row.reason ?? '').split(' · ').slice(0, 2).join(' · '), 180),
+    trademark: typeof competition.US === 'string' ? competition.US : null,
+    trademarkUrl: competition.mark ?? null,
+    apps: row.details?.appName ?? null,
+    appEvidence: [ios && { store: 'iOS', name: ios.name, url: ios.url ?? null },
+      android && { store: 'Android', name: android.name, url: android.url ?? null }].filter(Boolean),
+    sameName: competition.sameName?.summary ?? null,
+    ...(row.traction && { traction: row.traction }),
+    google: row.google?.link ?? null,
+  };
+}
+
+// The registry rows the alternatives search already holds for one label, plus the taken domain and its site.
+function screenGroup(label, domain, alternatives, registry, site) {
+  const results = (alternatives?.results ?? []).filter(row => labelOf(row.domain) === label);
+  const sites = {};
+  if (label === labelOf(domain)) {
+    const tld = domainEnding(domain);
+    const state = { live: 'live', parked: 'parked', 'for-sale-lander': 'for-sale' }[site?.state];
+    if (state) sites[tld] = { state, host: site.host ?? domain };
+    if (registry?.registered === 'taken' || state) {
+      results.push({ domain, tld, exact: true, status: 'taken', checkedAt: registry?.checkedAt ?? null,
+        source: registry?.source?.method ?? 'web' });
+    }
+  }
+  return { groups: [{ name: label, candidates: [], results, sites, comSite: sites.com ?? null }], complete: true, priceDate: null };
 }
 
 // What the owner pays to renew at a list price, as one cost fact (never a value estimate).
@@ -392,22 +506,58 @@ function bounded(promise, ms, fallback) {
   ]).finally(() => clearTimeout(timer));
 }
 
+// The screen stops this long before the dossier deadline, so its own partial answer arrives before the cut.
+export const screenReserveMs = 400;
+const pendingScreen = { state: 'pending', verdict: null,
+  reason: 'Name screen still running at the deadline: no trademark, app or rival result yet' };
+
+// Older alternatives callers return a plain list; the engine returns rows, price context and the checked rows.
+const alternativesOf = value => Array.isArray(value) ? { rows: value, priceContext: null, results: [], endings: [] }
+  : value && typeof value === 'object' ? { rows: value.rows ?? [], priceContext: value.priceContext ?? null,
+    results: value.results ?? [], endings: value.endings ?? [] } : null;
+
 export async function buildDossier(domain, { maxBudget, budgetMs = totalBudgetMs, clock = () => new Date(),
   registry = registryFacts, site = siteFacts, listings = checkListings, alternatives = findAlternatives,
-  renewal = renewalFact, providerList = providers, ...deps } = {}) {
+  renewal = renewalFact, providerList = providers, screen = screenName, ...deps } = {}) {
   const started = performance.now();
   const deadline = started + budgetMs;
   const controller = new AbortController();
   const stop = setTimeout(() => controller.abort(), budgetMs);
   const { signal } = controller;
   const left = share => Math.max(0, Math.min(budgetMs * share, deadline - performance.now()));
+  const screenLeft = () => Math.max(0, deadline - performance.now() - screenReserveMs);
   try {
-    const [registryResult, siteResult, listingRows, alternativeRows, renewalResult] = await Promise.all([
-      bounded(registry(domain, { ...deps, signal, deadline: started + left(0.5), clock }), left(0.55), null),
-      bounded(site(domain, { ...deps, signal, clock }), left(0.6), null),
+    const registryRun = bounded(registry(domain, { ...deps, signal, deadline: started + left(0.5), clock }), left(0.55), null);
+    const siteRun = bounded(site(domain, { ...deps, signal, clock }), left(0.6), null);
+    const alternativesRun = bounded(alternatives(domain, { ...deps, budgetMs: Math.floor(left(0.55)), clock }), left(0.7), null)
+      .then(alternativesOf);
+    // One screen per name label: two exact endings share one. The taken name's own label starts at once, alongside
+    // the registry and price work, and gets the reused answers when they land; a variant label starts once picked.
+    const screens = new Map();
+    const name = labelOf(domain);
+    const startScreen = (label, endings, domains) => {
+      if (screens.has(label)) return;
+      screens.set(label, Promise.resolve().then(() => screen(label, { endings, domains, budgetMs: screenLeft(), clock,
+        directory: deps.directory })).catch(() => null));
+    };
+    const exactEndings = [...new Set([domainEnding(domain), ...defaultEndings])].filter(ending => supportedEndings.includes(ending));
+    startScreen(name, exactEndings, Promise.all([alternativesRun, registryRun, siteRun])
+      .then(([found, facts, siteNow]) => screenGroup(name, domain, found, facts, siteNow)));
+    const screened = alternativesRun.then(async found => {
+      if (!found?.rows.length) return new Map();
+      const labels = [...new Set([name, ...found.rows.map(row => row.label ?? labelOf(row.domain))])];
+      for (const label of labels.slice(1)) startScreen(label, ['com'], screenGroup(label, domain, found, null, null));
+      const settled = await Promise.all(labels.map(label =>
+        bounded(screens.get(label), Math.max(0, deadline - performance.now() - 50), undefined)));
+      return new Map(labels.map((label, index) => [label, settled[index] === undefined ? pendingScreen
+        : settled[index] ?? { state: 'unavailable', verdict: null, reason: 'Name screen could not run' }]));
+    });
+    const [registryResult, siteResult, listingRows, alternativeData, renewalResult, screenResults] = await Promise.all([
+      registryRun, siteRun,
       bounded(listings(domain, { list: providerList, signal, clock }), left(0.8), null),
-      bounded(alternatives(domain, { ...deps, budgetMs: Math.floor(left(0.55)), clock }), left(0.7), null),
+      alternativesRun,
       bounded(renewal(domain, { ...deps, clock }), left(0.2), null),
+      screened,
     ]);
     const now = clock();
     const registryData = registryResult ?? { registered: 'unknown', checkedAt: now.toISOString(), source: null, created: null,
@@ -421,6 +571,7 @@ export async function buildDossier(domain, { maxBudget, budgetMs = totalBudgetMs
     const track = chooseTrack(registryData, listing, outlook);
     const range = fairRange(listing.listed);
     const asking = range && range.low != null && range.low === range.high ? { amount: range.low, currency: range.currency } : null;
+    const baseScreen = screenResults.get(name);
     return {
       domain, checkedAt: now.toISOString(), elapsedMs: Math.round(performance.now() - started),
       track, registry: registryData, expiry: outlook, site: siteData,
@@ -433,7 +584,14 @@ export async function buildDossier(domain, { maxBudget, budgetMs = totalBudgetMs
       },
       owner: ownerSignal(registryData, siteData, listing),
       fairRange: range, renewalCost: renewalResult,
-      alternatives: alternativeRows ?? [],
+      alternatives: (alternativeData?.rows ?? []).map(row => {
+        const label = row.label ?? labelOf(row.domain);
+        return { ...row, screen: screenResults.get(label) ?? pendingScreen,
+          ...(label !== name && baseScreen && baseScreen.verdict !== 'No conflict found' && { baseScreen }) };
+      }),
+      priceContext: alternativeData?.priceContext ?? null,
+      // One entry per screened name label, shared by every alternative with that label.
+      screens: Object.fromEntries(screenResults),
       drafts: ['available', 'unknown', 'expiring'].includes(track) ? null
         : draftNotes(domain, { asking, maxBudget, throughMarketplace: listing.listed.some(row => row.source !== 'own site') }),
       private: { maxBudget: maxBudget ?? null, note: 'Private: never in drafts or messages to the owner.' },

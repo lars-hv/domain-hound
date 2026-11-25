@@ -7,7 +7,11 @@ import { domainDossier, dossierTool } from './dossier.mjs';
 import { serve } from './server.mjs';
 import { publicAddress } from './clis/domain-check/com-site.mjs';
 import { buildDossier, chooseTrack, draftNotes, dossierDomain, expiryOutlook, fairRange, findAlternatives, listingEvidence,
-  ownerSignal, readOwnSale, readRdap, readSite, registryFacts, siteFacts } from './clis/domain-check/dossier.mjs';
+  orderByValue, ownerSignal, pickAlternatives, readOwnSale, readRdap, readSite, registryFacts, screenName, siteFacts,
+  totalBudgetMs } from './clis/domain-check/dossier.mjs';
+import { rankName } from './clis/domain-check/name-search.mjs';
+import { triageNames } from './clis/domain-check/triage.mjs';
+import { bootstrapUrl } from './clis/domain-check/registry.mjs';
 import { acceptAnswer, checkListings, providers, stopReason, urlBindsDomain } from './clis/domain-check/marketplaces.mjs';
 import { evidenceUrl, followSite, metaRefresh, robotsAllow, safeUrl } from './clis/domain-check/safe-web.mjs';
 
@@ -230,7 +234,7 @@ test('expiring track names the date and the watch, with no backorder', async () 
   const data = await buildDossier(domain, { clock, budgetMs: 2000, providerList: manualProviders,
     registry: async () => registry({ expires: '2026-12-20T00:00:00.000Z' }),
     site: async () => ({ state: 'parked', checkedAt: fixedNow.toISOString(), url: 'https://example.com/', chain: [] }),
-    alternatives: async () => [], renewal: async () => null });
+    alternatives: async () => [], renewal: async () => null, screen: async () => null });
   assert.equal(data.track, 'expiring');
   const { dossierDisplay } = await import('./dossier.mjs');
   const display = dossierDisplay(data);
@@ -254,18 +258,21 @@ test('alternatives use the name engine with cached prices only and keep evidence
   let seen;
   const search = async (groups, options) => {
     seen = { groups, options };
-    const row = (name, tld, status, price) => ({ domain: name + '.' + tld, tld, status, price, renewal: price + 4, firstPayment: price,
+    const row = (name, tld, status, price) => ({ domain: name + '.' + tld, tld, exact: name === 'example', status, price, renewal: price + 4, firstPayment: price,
       threeYear: price * 3, shop: 'Spaceship', priceCheckedAt: '2026-11-24T00:00:00.000Z', buyUrl: 'https://www.spaceship.com/domain-search/?query=' + name + '.' + tld,
       checkedAt: fixedNow.toISOString(), source: 'rdap' });
     return { groups: [{ results: [row('example', 'dev', 'probably-free', 8), row('example', 'no', 'probably-free', 5),
       row('example', 'io', 'taken', 30), row('getexample', 'com', 'probably-free', 10), row('example', 'me', 'probably-free', 9),
       row('example', 'app', 'premium', 2), row('example', 'xyz', 'probably-free', 12)] }] };
   };
-  const rows = await findAlternatives(domain, { search, clock, directory: null });
+  const { rows, priceContext, results } = await findAlternatives(domain, { search, clock, directory: null });
   assert.equal(seen.options.cachedOnly, true);
   assert.equal(seen.options.skipComSite, true);
   assert.ok(!seen.groups[0].candidates.some(row => row.domain === domain));
-  assert.deepEqual(rows.map(row => row.domain), ['example.dev', 'example.me', 'getexample.com']);
+  assert.deepEqual(rows.map(row => [row.domain, row.role]),
+    [['example.dev', 'best-value'], ['getexample.com', 'variant'], ['example.me', 'exact-ending']]);
+  assert.equal(priceContext, null, 'the cheapest first payment is already a pick');
+  assert.equal(results.length, 7, 'the checked rows come back for the name screen');
   for (const row of rows) {
     assert.ok(row.priceCheckedAt && row.priceUrl && row.registryCheckedAt && row.registrySource.method);
   }
@@ -275,7 +282,7 @@ test('the whole dossier keeps its deadline when every source hangs', async () =>
   const never = () => new Promise(() => {});
   const started = performance.now();
   const data = await buildDossier(domain, { clock, budgetMs: 400, registry: never, site: never, alternatives: never, renewal: never,
-    listings: never });
+    listings: never, screen: never });
   assert.ok(performance.now() - started < 1500);
   assert.equal(data.track, 'unknown');
   assert.equal(data.fairRange, null);
@@ -314,7 +321,8 @@ test('the tool validates input, keeps the budget private and shows sources and t
       checkedAt: fixedNow.toISOString(), url: 'https://example.com/', finalUrl: 'https://example.com/', host: domain, chain: [] }),
     alternatives: async () => [{ domain: 'example.dev', price: 8, renewal: 12.5, shop: 'Spaceship', priceCheckedAt: '2026-11-24T00:00:00.000Z',
       priceUrl: 'https://www.spaceship.com/domain-search/?query=example.dev', registryCheckedAt: fixedNow.toISOString(), registrySource: { method: 'rdap' } }],
-    renewal: async () => ({ renewal: 10.68, shop: 'Spaceship', checkedAt: '2026-11-24T00:00:00.000Z', url: 'https://www.spaceship.com/domain-search/?query=example.com' }) });
+    renewal: async () => ({ renewal: 10.68, shop: 'Spaceship', checkedAt: '2026-11-24T00:00:00.000Z', url: 'https://www.spaceship.com/domain-search/?query=example.com' }),
+    screen: async () => ({ state: 'settled', verdict: 'No conflict found', reason: 'No US mark found', appEvidence: [] }) });
   assert.equal(data.track, 'listed');
   assert.equal(data.drafts.kind, 'offer-listed-price');
   assert.equal(data.private.maxBudget, 9750);
@@ -322,8 +330,148 @@ test('the tool validates input, keeps the budget private and shows sources and t
   assert.doesNotMatch(JSON.stringify(data.drafts), /9,?750/);
   assert.match(data.display, /\[RDAP\]\([^\n]+\), 2026-11-25 12:00:00 UTC/);
   assert.match(data.display, /Public asking price: \$4,900\./);
-  assert.match(data.display, /example\.dev \$8, renews at \$12\.50\. \[Spaceship\][^\n]+2026-11-24/);
+  assert.match(data.display, /example\.dev: \$8 first year, renews at \$12\.50\/year\. \[Spaceship\][^\n]+2026-11-24/);
+  assert.match(data.display, /No conflict found in the sources checked/);
+  assert.doesNotMatch(data.display, /\bclear(?:ed)?\b/i);
   assert.match(data.display, /Manual marketplace checks: \[Afternic/);
+});
+
+// Priced free rows as the name engine returns them, with the real term math (.ai has a two-year minimum).
+const priced = (list, base = 'example') => rankName(list.map(([name, tld, price, renewal]) => ({ domain: name + '.' + tld, tld,
+  exact: name === base, status: 'probably-free', price, renewal, shop: 'Spaceship', source: 'rdap',
+  checkedAt: fixedNow.toISOString(), priceCheckedAt: '2026-11-24T00:00:00.000Z' })));
+
+test('alternatives rank by three-year value, not a cheap first year with a renewal jump', () => {
+  const rows = priced([['example', 'io', 2, 60], ['example', 'dev', 12, 12], ['example', 'xyz', 1, 14], ['example', 'ai', 70, 70],
+    ['getexample', 'com', 10, 10], ['tryexample', 'com', 10, 10], ['example', 'app', 14, 14]]);
+  const { picks, priceContext } = pickAlternatives(rows, domain);
+  assert.deepEqual(picks.map(row => [row.domain, row.role]),
+    [['example.dev', 'best-value'], ['getexample.com', 'variant'], ['example.ai', 'exact-ending']]);
+  const ai = picks.find(row => row.tld === 'ai');
+  assert.deepEqual([ai.minimumYears, ai.firstPayment, ai.threeYear], [2, 140, 280]);
+  assert.equal(priceContext.domain, 'example.xyz', 'the cheapest first payment is context, not a pick');
+  assert.equal(priceContext.renewalJump, true);
+  assert.ok(!picks.some(row => row.domain === 'example.io'), 'a $2 first year that renews at $60 is not the best value');
+});
+
+test('no renewal jump sits above a non-jump with an equal or lower three-year total', () => {
+  // Slot order would be .io (best value among attractive endings), the variant, then the fallback-tier .tech.
+  const rows = priced([['example', 'io', 5, 40], ['getexample', 'com', 20, 25], ['example', 'tech', 20, 20]]);
+  const { picks } = pickAlternatives(rows, domain);
+  assert.deepEqual(picks.map(row => [row.domain, row.role, row.renewalJump, row.threeYear]), [
+    ['getexample.com', 'variant', false, 70], ['example.tech', 'exact-ending', false, 60], ['example.io', 'best-value', true, 85]]);
+  const ordered = orderByValue([{ domain: 'a', renewalJump: true, threeYear: 20 }, { domain: 'b', renewalJump: false, threeYear: 20 },
+    { domain: 'c', renewalJump: true, threeYear: 10 }, { domain: 'd', renewalJump: false, threeYear: 50 }]);
+  assert.deepEqual(ordered.map(row => row.domain), ['b', 'a', 'c', 'd'], 'a cheaper jump may stay above a dearer non-jump');
+});
+
+test('a natural variant gets its own slot even when the exact .com is available', () => {
+  const io = pickAlternatives(priced([['example', 'com', 10, 10], ['example', 'dev', 5, 5], ['example', 'app', 14, 14],
+    ['getexample', 'com', 9, 9]]), 'example.io');
+  assert.deepEqual(io.picks.map(row => [row.domain, row.role]),
+    [['example.dev', 'best-value'], ['getexample.com', 'variant'], ['example.com', 'exact-com']]);
+  const variants = pickAlternatives(priced([['examplehq', 'com', 10, 10], ['useexample', 'com', 10, 10], ['example', 'dev', 12, 12]]), domain);
+  assert.deepEqual(variants.picks.map(row => row.domain), ['example.dev', 'examplehq.com', 'useexample.com']);
+  const repeated = pickAlternatives(priced([['getgetexample', 'com', 5, 5], ['getexamplehq', 'com', 10, 10],
+    ['getexample', 'dev', 12, 12]], 'getexample'), 'getexample.com');
+  assert.deepEqual(repeated.picks.map(row => row.domain), ['getexample.dev', 'getexamplehq.com']);
+  assert.equal(repeated.priceContext, null, 'a repeated add-on is excluded from price context too');
+  const fallback = pickAlternatives(priced([['example', 'xyz', 1, 14], ['example', 'tech', 5, 5]]), domain);
+  assert.deepEqual(fallback.picks.map(row => [row.domain, row.role]), [['example.tech', 'best-value'], ['example.xyz', 'exact-ending']]);
+  assert.equal(fallback.priceContext, null);
+  const short = pickAlternatives(priced([['abc', 'dev', 5, 5]], 'abc'), 'abc.com');
+  assert.deepEqual(short.picks, [], 'a possible premium short name is never a pick');
+});
+
+const altRow = (name, tld, price, renewal, role) => ({ domain: name + '.' + tld, label: name, exact: name === 'example', role,
+  price, renewal, firstPayment: price, renewalPayment: renewal, minimumYears: 1, threeYear: price + 2 * renewal,
+  renewalJump: renewal > 2 * price, shop: 'Spaceship', priceCheckedAt: '2026-11-24T00:00:00.000Z',
+  priceUrl: 'https://www.spaceship.com/domain-search/pricing/', registryCheckedAt: fixedNow.toISOString(),
+  registrySource: { method: 'rdap', url: 'https://rdap.example/domain/' + name + '.' + tld } });
+const quick = { clock, providerList: manualProviders, registry: async () => registry(), renewal: async () => null,
+  site: async () => ({ state: 'live', host: domain, checkedAt: fixedNow.toISOString(), url: 'https://example.com/', chain: [] }) };
+const threeAlternatives = async () => ({
+  rows: [altRow('example', 'dev', 12, 12, 'best-value'), altRow('getexample', 'com', 10, 10, 'variant'),
+    altRow('example', 'app', 14, 14, 'exact-ending')],
+  priceContext: altRow('example', 'xyz', 1, 14), results: [{ domain: 'example.dev', tld: 'dev', exact: true, status: 'probably-free' }],
+  endings: ['com', 'dev', 'app'],
+});
+
+test('one screen per label, with the base name warning carried onto the variant', async () => {
+  const calls = [];
+  const screen = async (label, { domains, endings, budgetMs }) => {
+    calls.push({ label, endings, budgetMs, group: await domains });
+    return label === 'example'
+      ? { state: 'settled', verdict: 'Check first', reason: 'Near-identical: EXAMPLE (Example Corp, 009)',
+        trademark: 'Near-identical: EXAMPLE (Example Corp, 009)', trademarkUrl: 'https://tsdr.uspto.gov/#caseNumber=1',
+        appEvidence: [{ store: 'iOS', name: 'Example App', url: 'https://apps.apple.com/app/id1' }] }
+      : { state: 'settled', verdict: 'No conflict found', reason: 'No exact matches', appEvidence: [] };
+  };
+  const data = await buildDossier(domain, { ...quick, budgetMs: 2000, alternatives: threeAlternatives, screen });
+  assert.deepEqual(calls.map(call => call.label).sort(), ['example', 'getexample'], 'two exact endings share one screen');
+  const exactCall = calls.find(call => call.label === 'example');
+  assert.ok(exactCall.endings.includes('com') && exactCall.budgetMs > 0 && exactCall.budgetMs < 2000);
+  const sourceRow = exactCall.group.groups[0].results.find(row => row.domain === domain);
+  assert.equal(sourceRow.status, 'taken', 'the screen reuses the dossier registry answer');
+  assert.deepEqual(exactCall.group.groups[0].sites.com, { state: 'live', host: domain }, 'and its site check');
+  assert.ok(exactCall.group.groups[0].results.some(row => row.domain === 'example.dev'), 'and the alternatives rows');
+  assert.equal(calls.find(call => call.label === 'getexample').endings[0], 'com');
+  assert.equal(data.alternatives.find(row => row.domain === 'example.app').screen.verdict, 'Check first');
+  const variant = data.alternatives.find(row => row.role === 'variant');
+  assert.equal(variant.screen.verdict, 'No conflict found');
+  assert.equal(variant.baseScreen.verdict, 'Check first');
+  assert.deepEqual(Object.keys(data.screens).sort(), ['example', 'getexample']);
+  const display = data.display ?? (await import('./dossier.mjs')).dossierDisplay(data);
+  assert.match(display, /- \*\*Check first\*\*\. Near-identical: EXAMPLE \(Example Corp, 009\)\. example\.dev \(best 3-year value for the exact name\): \$12 first year/);
+  assert.match(display, /- getexample\.com \(\.com variant\)[^\n]+Base name \*\*Check first\*\*/);
+  assert.match(display, /Evidence from US mark \[Near-identical[^\]]*\]\(<https:\/\/tsdr\.uspto\.gov[^>]*>\), iOS app \[Example App\]/);
+  assert.match(display, /Lowest first payment elsewhere is example\.xyz at \$1 first year, renews at \$14\/year \(renewal jump\), \$29 over 3 years/);
+  assert.doesNotMatch(display, /No conflict found|\bclear/i);
+});
+
+test('a hanging name screen still returns the priced alternatives and any settled screen', async () => {
+  const started = performance.now();
+  const data = await buildDossier(domain, { ...quick, budgetMs: 700, alternatives: threeAlternatives,
+    screen: label => label === 'example' ? Promise.resolve({ state: 'settled', verdict: 'No conflict found',
+      reason: 'No US mark, same-name app or active company found in the sources checked', appEvidence: [] }) : new Promise(() => {}) });
+  assert.ok(performance.now() - started < 1500);
+  assert.deepEqual(data.alternatives.map(row => [row.domain, row.price]), [['example.dev', 12], ['getexample.com', 10], ['example.app', 14]]);
+  assert.equal(data.screens.example.state, 'settled');
+  assert.equal(data.screens.getexample.state, 'pending');
+  assert.equal(data.priceContext.domain, 'example.xyz');
+  const { dossierDisplay } = await import('./dossier.mjs');
+  const display = dossierDisplay(data);
+  assert.match(display, /- Name screen pending\. getexample\.com \(\.com variant\): \$10 first year/);
+  assert.match(display, /example\.dev \(best 3-year value for the exact name\)[^\n]+No conflict found in the sources checked/);
+  const thrown = await buildDossier(domain, { ...quick, budgetMs: 700, alternatives: threeAlternatives,
+    screen: async () => { throw Error('source down'); } });
+  assert.equal(thrown.alternatives.length, 3);
+  assert.equal(thrown.screens.example.state, 'unavailable');
+  assert.ok(totalBudgetMs < 15_000);
+});
+
+test('the screen runs the triage judgement on reused registry rows with no registry call or search key', async () => {
+  const urls = [];
+  const asked = [];
+  const options = { fetcher: async url => {
+    urls.push(String(url));
+    if (url === bootstrapUrl) return Response.json({ services: [] });
+    if (String(url).includes('wikidata.org')) return Response.json({ search: [] });
+    if (String(url).includes('itunes.apple.com')) return Response.json({ results: [] });
+    return new Response(null, { status: 404 });
+  }, launch: async () => { throw Error('Fixture has no browser'); },
+  resolveNs: async name => { asked.push(name); throw Error('no registry call expected'); },
+  queryWhois: async name => { asked.push(name); return ''; } };
+  let seen;
+  const result = await screenName('getexample', { endings: ['com'], budgetMs: 2500, clock,
+    domains: Promise.resolve({ groups: [{ name: 'getexample', candidates: [], sites: {}, results: priced([['getexample', 'com', 10, 10]]) }] }),
+    triage: (names, triageOptions) => { seen = triageOptions; return triageNames(names, { ...triageOptions, ...options }); } });
+  assert.deepEqual(asked, []);
+  assert.ok(!urls.some(url => /rdap|whois|getexample\.com\/?$/.test(url)), urls.join('\n'));
+  assert.deepEqual([seen.deferHandles, seen.handleRows, seen.env], [true, false, {}]);
+  assert.equal(result.state, 'settled');
+  assert.ok(['No conflict found', 'Check first', 'Avoid'].includes(result.verdict));
+  assert.ok(result.reason.length <= 180);
 });
 
 test('the server lists the dossier tool and dispatches to it', async () => {
