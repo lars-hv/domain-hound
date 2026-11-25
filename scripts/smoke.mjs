@@ -12,7 +12,7 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 const endings = defaultEndings;
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 

@@ -93,6 +93,8 @@ export function readRegistry(facts, now) {
     problems,
     registrar: facts.registrar ?? null,
     created: facts.created ?? null,
+    // The registry's own transfer event, when it publishes one. Never inferred from "last changed".
+    transferred: facts.transferred ?? null,
     expires: facts.expires ?? null,
     daysLeft,
     status,
@@ -422,7 +424,7 @@ export async function checkDomain(domain, { signal, now = new Date(), catalog = 
   const activeNameservers = Array.isArray(nameservers) && nameservers.length ? nameservers : record.nameservers;
   const money = moneyFacts(domain, record.registrar, catalog, now);
   if (record.state !== 'ok' || record.autoRenewGrace || record.status.includes('pending transfer')
-    || now.getTime() - Date.parse(record.created) < 60 * day) money.move = null;
+    || now.getTime() - Date.parse(record.created) < 60 * day || now.getTime() - Date.parse(record.transferred) < 60 * day) money.move = null;
   return {
     domain,
     checkedAt: now.toISOString(),

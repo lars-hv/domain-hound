@@ -108,7 +108,25 @@ To find the contact ID, use Spaceship's `contacts_list` or read `contacts.regist
 
 **Last resort: checkout.** After a valid quote, the answer ends with a Spaceship checkout link, for when Spaceship's MCP cannot be used and nothing was submitted. Check the same term, price limits, privacy and auto-renew before you pay, then ask Domain Hound to verify and set up the domain. After an unclear order there is no checkout link: check your Spaceship account first.
 
-Quotes, DNS plans, order claims and receipts stay in `~/.domain-hound/purchases/`. `DOMAIN_HOUND_PURCHASE_DIR` moves them; a relative path is resolved once, when the server starts.
+## Move a domain to a cheaper shop
+
+`move_domain` plans a transfer for any exact domain you own. It reads the same public registry facts and dated list prices as `my_domains` and saves nothing to your list. The plan shows:
+
+- the current registrar and its renewal price (a price is "unavailable" when no list price can be trusted)
+- the transfer price at each shop and the total for 3 years. The total adds what the transfer covers (one year for most endings, two for .ai) and the renewals for the remaining years, counted per year
+- the target: Spaceship when it is the cheapest or within $2 a year of the cheapest, otherwise the cheapest shop
+- what blocks a move now: a registration or registry transfer event under 60 days old (gTLDs and .io), a registry lock or pending status, an expiry under 15 days or an expired domain
+- the rules for the ending (ICANN's Transfer Policy, and the .ai and .io terms) and the steps at the current registrar to unlock the domain and get the auth code. Steps link to the official guides for GoDaddy, Namecheap, Squarespace, Cloudflare, Porkbun, Dynadot, Hover, Gandi and IONOS
+
+The plan reads a transfer date only from the registry's own `transfer` event, never from the last-changed date.
+
+With a Spaceship key (`domains:read`), the plan adds a live transfer quote from Spaceship's pricing API. It is bound to your account, the domain, the current registrar and expiry, the term Spaceship adds, the amount, the regular price (shown when a promotion applies), the renewal and the currency. The quote expires in 10 minutes. `move_domain` with `quote_id` and `max_usd` checks all of that again, plus the blockers, `max_usd` and `DOMAIN_HOUND_MAX_USD`, and stops on any change.
+
+**Default: Spaceship's transfer checkout.** Spaceship's MCP ([tool reference](https://www.spaceship.com/knowledgebase/spaceship-mcp/)) has no tool for transfers into Spaceship, and `domain_register` only registers new names. So the answer links to Spaceship's transfer page with the limits to check. You enter the auth code there; it never passes through the chat. If Spaceship's MCP later offers a transfer tool with a preview and a confirmation step, your agent may use it with the same limits.
+
+**Opt-in: direct transfer.** This uses the same `DOMAIN_HOUND_DIRECT_PURCHASE=1` and `DOMAIN_HOUND_SPACESHIP_CONTACT_ID` as direct purchase. The key also needs `domains:billing`, `domains:transfer` and `asyncoperations:read`. Preview with a dry run. After your approval, `confirm: true` with the auth code from your private tool input sends one request. It enables high privacy and auto-renew and uses your owner contact for each role. Direct execution requires a standard price, a verified transfer term, an unlocked domain and no pending transfer. Both the promotional and regular upfront prices must fit both limits. Spaceship has no API field for a hard charge limit and sets the final charge. Domain Hound uses the code for the request and omits it from output and local state. A documented refusal releases the local claim. An unclear result keeps the claim and blocks a repeat. `move_domain` with `status: true` follows the transfer without a code.
+
+Quotes, transfer quotes, DNS plans, order and transfer claims and receipts stay in `~/.domain-hound/purchases/`. `DOMAIN_HOUND_PURCHASE_DIR` moves them; a relative path is resolved once, when the server starts.
 
 ## Privacy and lookup hosts
 

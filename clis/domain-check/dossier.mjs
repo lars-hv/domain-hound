@@ -50,6 +50,9 @@ export function readRdap(data, domain) {
   if (String(data?.ldhName ?? '').toLowerCase().replace(/\.$/, '') !== domain) return null;
   const events = Array.isArray(data.events) ? data.events : [];
   const event = action => iso(events.find(row => row?.eventAction === action)?.eventDate);
+  // Multiple transfers can appear. Canonical ISO timestamps sort with the newest first.
+  const transferred = events.filter(row => row?.eventAction === 'transfer').map(row => iso(row.eventDate))
+    .reduce((latest, date) => date && (!latest || date > latest) ? date : latest, null);
   const registrar = (Array.isArray(data.entities) ? data.entities : [])
     .find(entity => Array.isArray(entity?.roles) && entity.roles.includes('registrar'));
   const card = Array.isArray(registrar?.vcardArray?.[1]) ? registrar.vcardArray[1] : [];
@@ -57,7 +60,8 @@ export function readRdap(data, domain) {
   const ianaId = (Array.isArray(registrar?.publicIds) ? registrar.publicIds : [])
     .find(row => /iana/i.test(String(row?.type)))?.identifier;
   return {
-    created: event('registration'), expires: event('expiration'), changed: event('last changed'),
+    // "transfer" is its own RDAP event action (RFC 9083); "last changed" is never read as a transfer.
+    created: event('registration'), expires: event('expiration'), changed: event('last changed'), transferred,
     registrar: name, registrarIanaId: /^\d{1,6}$/.test(String(ianaId ?? '')) ? String(ianaId) : null,
     status: (Array.isArray(data.status) ? data.status : [])
       .filter(value => typeof value === 'string' && /^[a-z ]{3,40}$/i.test(value)).map(normalizeStatus).slice(0, 24),
@@ -116,7 +120,7 @@ export async function registryFacts(domain, { fetcher = globalThis.fetch, resolv
     registered, checkedAt, source,
     created: facts.created ?? null,
     expires: facts.expires ?? iso(basic?.expires) ?? null,
-    changed: facts.changed ?? null,
+    changed: facts.changed ?? null, transferred: facts.transferred ?? null,
     registrar: facts.registrar ?? null, registrarIanaId: facts.registrarIanaId ?? null,
     status: facts.status ?? [], nameservers,
     marketplaceNameservers: saleMarketplace(nameservers),

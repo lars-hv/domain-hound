@@ -6,15 +6,17 @@ import { createServer } from 'node:http';
 // GET pricing: https://docs.spaceship.dev/#tag/Domain-Pricing/operation/getSingleDomainPricing
 // GET domain info: https://docs.spaceship.dev/#tag/Domain-Management/operation/getDomainInfo
 // POST registration: https://docs.spaceship.dev/#tag/Domain-Management/operation/domainCreate
+// POST transfer: https://docs.spaceship.dev/#tag/Domain-Management/operation/transferRequest
+// GET transfer: https://docs.spaceship.dev/#tag/Domain-Management/operation/getTransferInfo
 // GET operation: https://docs.spaceship.dev/#tag/Async-Operations/operation/getAsyncOperationDetails
 // GET DNS: https://docs.spaceship.dev/#tag/DNS-records/operation/getResourceRecordsList
 // PUT DNS: https://docs.spaceship.dev/#tag/DNS-records/operation/saveRecords
 // DELETE DNS: https://docs.spaceship.dev/#tag/DNS-records/operation/deleteRecords
 const fields = { A: ['address'], AAAA: ['address'], ALIAS: ['aliasName'], CNAME: ['cname'], MX: ['exchange', 'preference'], TXT: ['value'] };
 const same = (a, b) => a.type === b.type && a.name === b.name && (fields[a.type] ?? []).every(field => String(a[field]) === String(b[field]));
-const price = (amount, currency) => ({ finalPrice: { amount, currency }, regularPrice: { amount, currency } });
-const priceList = (terms, currency) => Object.entries(terms).map(([years, amount]) => ({
-  period: { value: Number(years), unit: 'y' }, priceInDefaultCurrency: price(amount, currency) }));
+const price = (amount, currency, regular = amount) => ({ finalPrice: { amount, currency }, regularPrice: { amount: regular, currency } });
+const priceList = (terms, currency, regular = {}) => Object.entries(terms).map(([years, amount]) => ({
+  period: { value: Number(years), unit: 'y' }, priceInDefaultCurrency: price(amount, currency, regular[years]) }));
 
 // A contact ID in the documented shape: 27 to 32 letters and digits.
 export const ownerContactId = '1ZdMXpapqp9sle5dl8BlppTJXAzf5';
@@ -31,7 +33,7 @@ export function productionFetchTo(mockBaseUrl, productionBase = 'https://spacesh
 
 export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secret' } = {}) {
   const state = { offers: new Map(), domains: new Map(), records: new Map(), operations: new Map(), requests: [],
-    createMode: 'success', nextOperation: 1, dnsPageSize: 100, dnsSaveFails: false, beforePricing: null, beforeCreate: null };
+    createMode: 'success', transferMode: 'success', transfers: new Map(), nextOperation: 1, dnsPageSize: 100, dnsSaveFails: false, beforePricing: null, beforeCreate: null };
 
   const server = createServer(async (request, response) => {
     let text = '';
@@ -58,7 +60,34 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
       const offer = state.offers.get(domain);
       if (!offer) return send(404, { detail: 'Not found' });
       return send(200, { domain, priceClass: offer.priceClass,
-        prices: { register: priceList(offer.register, offer.currency), renew: priceList(offer.renew, offer.currency) } });
+        prices: { register: priceList(offer.register, offer.currency),
+          ...(offer.transfer && { transfer: priceList(offer.transfer, offer.currency, offer.regular?.transfer) }),
+          renew: priceList(offer.renew, offer.currency, offer.regular?.renew) } });
+    }
+    if ((match = path.match(/^\/v1\/domains\/([^/]+)\/transfer$/))) {
+      const domain = decodeURIComponent(match[1]);
+      if (request.method === 'GET') {
+        const transfer = state.transfers.get(domain);
+        return transfer ? send(200, transfer) : send(404, { detail: 'Not found' });
+      }
+      if (request.method === 'POST') {
+        // The same failure modes as registration, plus { status, type, body } answers that may echo the request.
+        let mode = state.transferMode;
+        if (typeof mode === 'function') mode = mode(body);
+        if (mode === 'drop') return request.socket.destroy();
+        if (mode === 'error500') return send(500, { detail: 'Internal error for ' + body?.authCode });
+        if (mode && typeof mode === 'object') {
+          response.writeHead(mode.status, { ...(mode.type === null ? {} : { 'content-type': mode.type ?? 'application/problem+json' }), ...mode.headers });
+          return response.end(mode.body ?? '');
+        }
+        if (mode === 'noid') return send(202);
+        const id = 'op-' + state.nextOperation++;
+        state.operations.set(id, { id, status: mode === 'failed' ? 'failed' : mode === 'success' ? 'success' : 'pending',
+          type: 'domains_Transfer', details: { domain } });
+        state.transfers.set(domain, { startedAt: '2026-11-25T12:00:00.000Z', finishedAt: null, direction: 'in',
+          status: mode === 'failed' ? 'failed' : 'pending' });
+        return send(202, undefined, { 'spaceship-async-operationid': id });
+      }
     }
     if ((match = path.match(/^\/v1\/domains\/([^/]+)$/))) {
       const domain = decodeURIComponent(match[1]);
@@ -138,8 +167,8 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
   return {
     baseUrl: 'http://127.0.0.1:' + port + '/api', key, secret, state,
     setOffer(domain, { result = 'available', premiumPricing = [], priceClass = 'standard', register = { 1: '9.98' },
-      renew = { 1: '12.98' }, currency = 'USD' } = {}) {
-      state.offers.set(domain, { result, premiumPricing, priceClass, register, renew, currency });
+      renew = { 1: '12.98' }, currency = 'USD', transfer = null, regular = null } = {}) {
+      state.offers.set(domain, { result, premiumPricing, priceClass, register, renew, currency, transfer, regular });
     },
     setDomain(domain, { provider = 'basic', hosts = ['launch1.spaceship.net', 'launch2.spaceship.net'], records = [] } = {}) {
       state.domains.set(domain, { name: domain, lifecycleStatus: 'registered', autoRenew: true, privacyProtection: { level: 'high' },

@@ -303,7 +303,7 @@ test('sorts by urgency and keeps the say short, with only the two next-step line
   assert.equal(lines[1], 'lapsed.com: expired 2 days ago.');
   assert.equal(lines[2], 'soon.com: expires in 12 days (2026-12-07) at Spaceship, Inc.');
   assert.match(lines.join('\n'), /mailless\.com: mail without DMARC\./);
-  assert.ok(lines.includes('Next: move to save $58.46 over 3 years on cheaper.com. [Spaceship transfer](https://www.spaceship.com/domains/transfer/). List prices from 2026-11-25.'));
+  assert.ok(lines.includes('Next: move to save $58.46 over 3 years on cheaper.com. [Spaceship transfer](https://www.spaceship.com/domains/transfer/). List prices from 2026-11-25. Ask to plan the move with move_domain.'));
   assert.ok(lines.includes('Next: watch expiry by email for soon.com (2026-12-07).'));
   // An unknown check is never listed as a failure.
   assert.doesNotMatch(lines.join('\n'), /silent\.com/);

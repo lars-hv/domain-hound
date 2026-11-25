@@ -5,6 +5,9 @@ import { mailProviders, websiteProviders } from './dns.mjs';
 import { exactDomain, offerLine, quoteTimes } from './quote.mjs';
 import { applySetup, previewSetup } from './setup.mjs';
 import { purchaseDir, stateStore } from './store.mjs';
+import { issueTransferQuote, transferDomain, transferOfferLine, transferStatus } from './transfer.mjs';
+import { loadCatalog } from '../portfolio/checks.mjs';
+import { planFromFacts, planLines, transferRegistryRecord } from '../portfolio/move.mjs';
 
 // The three tools that act in the person's own Spaceship account. server.mjs only registers and dispatches them.
 const domainField = { type: 'string', minLength: 3, maxLength: 253, description: 'The exact domain, like example.com.' };
@@ -73,7 +76,29 @@ export const setupTool = {
   }, required: ['domain'], additionalProperties: false },
 };
 
-export const purchaseTools = [quoteTool, buyTool, setupTool];
+export const moveTool = {
+  name: 'move_domain',
+  description: 'Plan moving a domain the person owns to a cheaper registrar, from public registry facts and dated prices: current registrar '
+    + 'and renewal, transfer prices (Spaceship first when within $2/yr of the cheapest), 3-year saving, blockers (60-day locks, transfer '
+    + 'lock, expiry under 15 days, .ai and .io rules) and the steps to unlock and get the auth code. Works for any exact domain and saves '
+    + 'nothing to the portfolio. With a Spaceship key it adds a live transfer quote_id (10 minutes). COSTS MONEY with quote_id and max_usd: re-checks '
+    + 'the quote and hands off to Spaceship’s transfer checkout, where the person enters the auth code. Direct transfers need server '
+    + 'opt-in, confirm: true after approval and auth_code from the person; never repeat the code. status: true follows a transfer. '
+    + 'Relay the display as written.',
+  annotations: { title: 'Move a domain (plan; transfer costs money)', readOnlyHint: false, destructiveHint: true, idempotentHint: false,
+    openWorldHint: true },
+  inputSchema: { type: 'object', properties: {
+    domain: domainField,
+    quote_id: { type: 'string', maxLength: 40, description: 'The transfer quote ID from the plan.' },
+    max_usd: { type: 'number', exclusiveMinimum: 0, maximum: 100000, description: 'The most the person agreed to pay for the transfer, in USD.' },
+    confirm: { type: 'boolean', description: 'Direct transfers only: true after the person saw the dry run and said yes.' },
+    auth_code: { type: 'string', minLength: 1, maxLength: 50, description: 'Direct transfers only, with confirm: true. Pass the code from '
+      + 'the person’s private input. Keep it out of chat, logs and results.' },
+    status: { type: 'boolean', description: 'True, alone with domain, to follow a transfer into the person’s Spaceship account.' },
+  }, required: ['domain'], additionalProperties: false },
+};
+
+export const purchaseTools = [quoteTool, buyTool, setupTool, moveTool];
 export const purchaseToolNames = new Set(purchaseTools.map(tool => tool.name));
 
 // Replace stale global claims in the check tools with the handoff, whatever the rest of their wording says.
@@ -131,7 +156,7 @@ function checkInput(tool, args) {
   if (extra) throw Error(tool.name + ' does not take ' + JSON.stringify(extra.slice(0, 40)) + '.');
   const domain = exactDomain(args.domain);
   if (!domain) throw Error('Give one exact domain, such as example.com.');
-  for (const flag of ['confirm', 'apply', 'replace', 'verify']) {
+  for (const flag of ['confirm', 'apply', 'replace', 'verify', 'status']) {
     if (Object.hasOwn(args, flag) && typeof args[flag] !== 'boolean') throw Error(flag + ' must be true or false.');
   }
   return domain;
@@ -142,7 +167,7 @@ function checkInput(tool, args) {
 // The purchase folder comes from the same env and is resolved here, once.
 export function purchaseHandlers({ env = process.env, credentials = () => spaceshipCredentials({ env }),
   clientFor = keys => spaceshipClient({ ...keys, env }), store = stateStore(purchaseDir(env)), registry, now = () => new Date(),
-  sleep } = {}) {
+  sleep, facts, catalog = () => loadCatalog() } = {}) {
   async function client() {
     const keys = await credentials();
     return keys ? clientFor(keys) : null;
@@ -241,7 +266,76 @@ export function purchaseHandlers({ env = process.env, credentials = () => spaces
     return result(say, { domain, ...data });
   }
 
-  const handlers = { quote_domain: quote, buy_domain: buy, setup_domain: setup };
+  // move_domain: a public plan by default; a live Spaceship transfer quote when a key is set; then the guarded transfer or
+  // its status. The auth code is only read in the direct transfer call and never appears in any answer or file.
+  async function move(args) {
+    const domain = checkInput(moveTool, args);
+    const has = key => Object.hasOwn(args, key);
+    if (has('auth_code') && typeof args.auth_code !== 'string') throw Error('auth_code must be text.');
+    if (has('status')) {
+      if (args.status !== true || Object.keys(args).some(key => key !== 'domain' && key !== 'status')) throw Error('status takes only domain and status: true.');
+      const api = await client();
+      if (!api) return result(missingKeyText('transferStatus'), { domain, transfer: null });
+      const { say, ...data } = await transferStatus(domain, { client: api, store });
+      return result(say, data);
+    }
+    if (!has('quote_id')) {
+      if (['max_usd', 'confirm', 'auth_code'].some(has)) throw Error('max_usd, confirm and auth_code need the quote_id from the plan.');
+      return plan(domain);
+    }
+    if (typeof args.quote_id !== 'string' || !args.quote_id) throw Error('Give the quote_id from the plan.');
+    if (typeof args.max_usd !== 'number' || !Number.isFinite(args.max_usd) || args.max_usd <= 0 || args.max_usd > 100_000) {
+      throw Error('Give max_usd, the most the person agreed to pay in USD.');
+    }
+    if (has('auth_code') && !directPurchaseEnabled(env)) {
+      throw Error('Direct transfer is off, so Domain Hound takes no auth code. The person enters it at Spaceship checkout. Nothing was sent.');
+    }
+    if (has('auth_code') && args.confirm !== true) throw Error('auth_code goes only with confirm: true, after the person approved the dry run.');
+    let apiPromise;
+    const live = async () => {
+      const api = await (apiPromise ??= client());
+      if (!api) throw new SpaceshipError(missingKeyText(directPurchaseEnabled(env) ? 'transferDirect' : 'transfer'));
+      return api;
+    };
+    const lazyClient = Object.fromEntries(['pricing', 'info', 'startTransfer', 'transferInfo', 'operation']
+      .map(method => [method, async (...rest) => (await live())[method](...rest)]));
+    const { say, ...data } = await transferDomain({ domain, quote_id: args.quote_id, max_usd: args.max_usd, confirm: args.confirm === true,
+      authCode: args.auth_code }, { client: lazyClient, accountBinding: async () => (await live()).accountBinding, store, facts, env, now,
+      ...(sleep && { sleep }) });
+    return result(say, { domain, ...data });
+  }
+
+  async function plan(domain) {
+    const at = now();
+    const [record, prices, api] = await Promise.all([transferRegistryRecord(domain, { facts, now: at }), catalog(), client()]);
+    let made = planFromFacts(domain, record, prices, at);
+    const extra = [];
+    let quoteData = null;
+    const canQuote = made.current.shop !== 'Spaceship' && made.verdict !== 'blocked';
+    if (!api) {
+      if (canQuote) extra.push('For a live Spaceship transfer price, set a Spaceship key with domains:read (see the README).');
+    } else if (canQuote) {
+      try {
+        const { offer, quote: issued } = await issueTransferQuote(domain, { client: api, store, record, now: at });
+        if (issued) {
+          made = planFromFacts(domain, record, prices, at, issued);
+          quoteData = { ...issued, amountUsd: issued.amount / 100, renewalUsd: issued.renewal.amount / 100 };
+          extra.push(transferOfferLine(issued), quoteTimes(issued) + ' Quote ID ' + issued.id + '.',
+            made.target?.id !== 'spaceship' ? 'This quote is for the Spaceship option. Use it only if the person chooses Spaceship.'
+              : directPurchaseEnabled(env) ? 'Show the person this quote and use move_domain with quote_id and max_usd for a dry run.'
+                : 'Show the person this quote and use move_domain with quote_id and max_usd for the Spaceship checkout handoff.');
+        } else {
+          extra.push('No live Spaceship transfer quote: ' + (offer.status === 'priced' ? offer.blockers.join('; ') + '.' : offer.reason));
+        }
+      } catch (problem) {
+        extra.push('No live Spaceship transfer quote: ' + (problem instanceof Error ? problem.message : 'Spaceship did not answer.'));
+      }
+    }
+    const say = [...planLines(made), ...extra].join('\n');
+    return result(say, { domain, plan: made, quote: quoteData });
+  }
+
+  const handlers = { quote_domain: quote, buy_domain: buy, setup_domain: setup, move_domain: move };
   return async function call(name, args) {
     try {
       return await handlers[name](args);

@@ -98,7 +98,7 @@ export function sayLines(rows) {
   if (best) {
     const move = best.money.move;
     lines.push('Next: move to save ' + money(move.saving) + ' over 3 years on ' + md(best.domain) + '. [' + md(move.to) + ' transfer](' + move.url + '). '
-      + (move.estimate ? 'Snapshot' : 'List') + ' prices from ' + day(move.checkedAt) + '.');
+      + (move.estimate ? 'Snapshot' : 'List') + ' prices from ' + day(move.checkedAt) + '. Ask to plan the move with move_domain.');
   }
   const soonest = rows.filter(row => row.registry.daysLeft !== null && row.registry.daysLeft >= 0)
     .sort((a, b) => a.registry.daysLeft - b.registry.daysLeft)[0];

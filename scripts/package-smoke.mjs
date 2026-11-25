@@ -19,7 +19,7 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
 const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier', 'my_domains',
-  'quote_domain', 'buy_domain', 'setup_domain'];
+  'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');
 const published = flag >= 0 ? process.argv[flag + 1] : null;
@@ -50,7 +50,8 @@ try {
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
       'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
-      'share.mjs', 'site/r/share-format.mjs', 'clis/spaceship/tools.mjs']) {
+      'share.mjs', 'site/r/share-format.mjs', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
+      'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
     assert.ok(!paths.some(file => /\.test\.mjs$|^fixtures\/|^test-support\/|^scripts\/|^\.github\//.test(file)), 'Tarball ships test or build files');
