@@ -261,9 +261,10 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   for (const [endings, value] of [[['co', 'si'], 'co'], [['dev', 'me'], 'me']]) {
     const single = await triageNames(['DappleBear'], { ...options, endings });
     assert.equal(single.names[0].bestValue, value);
-    assert.equal(single.top[0].bestValue.domain, 'dapplebear.' + value);
+    if (value === 'co') assert.deepEqual(single.top, []); // The known 3-year price is over $60.
+    else assert.equal(single.top[0].bestValue.domain, 'dapplebear.' + value);
   }
-  assert.equal(report.top[1].verdict, 'Check first');
+  assert.equal(report.top.length, 1); // Domain Sparrow exceeds 12 letters.
   const withNorway = structuredClone(catalog);
   withNorway.catalogs.dynadot.prices.no = { shop: 'Dynadot', firstYear: 2, renewal: 2 };
   await writeCache(directory, 'prices.json', withNorway);
@@ -274,9 +275,10 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.equal(defaultBuyer.names[0].bestValue, 'me');
   const onlyAi = await triageNames(['DappleBear'], { ...options, endings: ['ai'] });
   assert.deepEqual(onlyAi.names[0].free, ['ai']);
-  assert.equal(onlyAi.top[0].domain, null);
+  assert.deepEqual(onlyAi.top, []);
   const budgetedAi = await triageNames(['DappleBear'], { ...options, endings: ['ai'], upfrontCap: 500 });
-  assert.equal(budgetedAi.top[0].domain, 'dapplebear.ai');
+  assert.deepEqual(budgetedAi.top, []);
+  assert.match(budgetedAi.names[0].score.filtered, /within \$60\.00 over 3 years/);
   // An eligibility opt-in puts .no right after .com, so it becomes the pick within $60.
   const eligible = await triageNames(['DappleBear'], { ...options, eligible: ['no'] });
   assert.equal(eligible.top[0].domain, 'dapplebear.no');
@@ -433,8 +435,8 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.ok(all.names.every(row => row.verdict && row.reason));
   for (const row of [...all.names, ...compact.names, ...unchecked.names]) {
     // traction is present only for a rival with traction or an agent GEO answer; meaning only for a rude word
-    // ("Cloud Otter xxx").
-    const fields = value => Object.keys(value).filter(key => key !== 'traction' && key !== 'meaning').sort();
+    // ("Cloud Otter xxx"); score only for the first five names, and only while the size cap leaves room.
+    const fields = value => Object.keys(value).filter(key => !['traction', 'meaning', 'score'].includes(key)).sort();
     assert.deepEqual(fields(row), fields(clear));
     assert.deepEqual(Object.keys(row.competition).sort(), Object.keys(clear.competition).sort());
     assert.ok(Array.isArray(row.free) && Array.isArray(row.taken));

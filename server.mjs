@@ -12,6 +12,8 @@ import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
 import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
+import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
+import { scoreLogger } from './clis/domain-check/score-log.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -73,6 +75,7 @@ const checkTool = {
         description: '1 to 20 bare names, exact domains or both, e.g. ["lanternbay","quietbook","lanternbay.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
       shortlist: { type: 'boolean', description: 'Legacy: true for a preliminary bare-name batch. The naming recipe now goes straight to triage_names.' },
       purchase: { type: 'boolean', description: 'Pass true when asked to buy or register, even for an exact domain that may be taken. State the checkout limitation from the display in the answer.' },
+      picked: { type: 'boolean', description: 'Pass true with an exact query only after the person explicitly chooses a name already shown. Used by the opt-in local score log.' },
       confirm: { type: 'boolean', description: 'True only when the person explicitly asks for a live shop check. Uses an optional headless browser and is slower.' },
     },
     additionalProperties: false,
@@ -102,6 +105,15 @@ const triageTool = {
         description: 'Extra check links only when requested. Snapchat, Reddit, Twitch, Threads, Pinterest or Discord.' },
       category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for relevant trademark classes and competitors. Use travel, software, finance, retail, health, education, food or media.' },
       about: { type: 'string', minLength: 1, maxLength: 160, description: 'A short description of what your product does, to identify overlapping sites and apps.' },
+      candidates: { type: 'object', maxProperties: 20,
+        additionalProperties: { type: 'object', additionalProperties: false, properties: Object.fromEntries(Object.entries(candidateFields)
+          .map(([key, rule]) => [key, rule === 'boolean' ? { type: 'boolean' } : rule === 'integer' ? { type: 'integer', minimum: 1, maximum: 5 }
+            : { type: 'string', enum: rule }])) },
+        description: 'Naming evidence per name for the Name score, from your own judgment: recipe; relation to the subject (direct, loose, none); '
+          + 'spellings when heard (1 = one obvious spelling); realWord (contains a real word); descriptive (two subject words or subject + generic word); '
+          + 'misspelled; narrow (names one feature); soundsLike (none, competitor, drug, pokemon); badMeaning in 14 languages (none, mild, severe); '
+          + 'language (english, asked, other). Missing evidence counts as not checked and keeps the name out of Strong. '
+          + 'Example: {"Loomfox":{"recipe":"odd-pair","relation":"direct","spellings":1,"realWord":true,"descriptive":false,"misspelled":false,"narrow":false,"soundsLike":"none"}}.' },
       geo: { type: 'object', maxProperties: 20,
         additionalProperties: { type: 'string', minLength: 1, maxLength: 160, pattern: '^\\s*(?:[Kk]nown\\b.*\\S.*|[Uu]nknown)\\s*$' },
         description: geoInstruction + ' Example: {"ExampleBoard":"known: a team notes workspace","QuietOtter":"unknown"}.' },
@@ -113,7 +125,8 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_method',
-  description: 'Read the naming recipe when the person asks for the method. To find or screen names directly, use triage_names.',
+  description: 'Read the naming method (process, recipes, bans, steering question and real names by type) before generating names, '
+    + 'or when the person asks for the method. To screen names, use triage_names.',
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'An optional one-sentence product description.' },
   }, additionalProperties: false },
@@ -205,6 +218,10 @@ function cliArguments(args) {
   if (Object.hasOwn(args, 'shortlist') && typeof args.shortlist !== 'boolean') {
     throw new Error('shortlist must be a boolean.');
   }
+  if (Object.hasOwn(args, 'picked') && (typeof args.picked !== 'boolean'
+    || (args.picked && (!hasQuery || typeof args.query !== 'string' || !args.query.includes('.'))))) {
+    throw new Error('picked must be a boolean and requires an exact domain query when true.');
+  }
   const names = hasQuery ? [] : batchNames(args.names);
   if (args.shortlist && (hasQuery || names.some(name => name.includes('.')))) {
     throw new Error('Use shortlist only with bare names in names.');
@@ -244,6 +261,17 @@ function geoValue(geo, names) {
   return Object.fromEntries(Object.entries(geo).map(([name, text]) => [name, text.trim()]));
 }
 
+// Naming evidence per screened name; the keys must be names in the list, like geo.
+function candidatesValue(candidates, names) {
+  const valid = isObject(candidates) && Object.keys(candidates).length <= 20
+    && Object.entries(candidates).every(([name, entry]) => name.length >= 1 && name.length <= 100 && validCandidate(entry));
+  if (!valid) throw new Error('candidates must map each name to naming evidence with the supported fields and values.');
+  const screened = new Set(names.map(normalizeName).filter(Boolean));
+  const extra = Object.keys(candidates).find(name => !screened.has(normalizeName(name)));
+  if (extra !== undefined) throw new Error('candidates names ' + showValue(extra) + ', which is not in names.');
+  return candidates;
+}
+
 function triageArguments(args) {
   if (!isObject(args) || Object.keys(args).some(key => !Object.hasOwn(triageTool.inputSchema.properties, key))) {
     throw new Error('Supply an object with names and an optional about.');
@@ -280,6 +308,7 @@ function triageArguments(args) {
     flags.push('--about', args.about);
   }
   if (Object.hasOwn(args, 'geo')) flags.push('--geo', JSON.stringify(geoValue(args.geo, args.names)));
+  if (Object.hasOwn(args, 'candidates')) flags.push('--candidates', JSON.stringify(candidatesValue(args.candidates, args.names)));
   return ['--triage', args.names.join(','), '--compact', '--receipt', ...flags];
 }
 
@@ -422,7 +451,7 @@ function pendingTriage(progress, rows) {
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
   pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
-  onLookupEvent,
+  onLookupEvent, scoreLog = scoreLogger(),
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -531,8 +560,44 @@ export async function serve({
         evidence.handlesPending = true;
         running = true;
       }
+      rescore(evidence, handleRows);
     }
-    return writeTriagePage(lookup, evidence, args, running);
+    const page = await writeTriagePage(lookup, evidence, args, running);
+    if (!running && !lookup.scoreLogged) {
+      lookup.scoreLogged = true;
+      logShown(evidence, args.shortlist);
+    }
+    return page;
+  }
+
+  // The screen scored names before the handle checks; score again with GitHub, npm and Bluesky as they land, and
+  // put the top picks back in score order.
+  function rescore(evidence, handleRows) {
+    evidence.receiptDetails = evidence.receiptDetails.map((detail, index) => {
+      const rows = handleRows.get(evidence.names[index].name);
+      if (!detail?.scoreInput || !rows) return detail;
+      const score = scoreName({ ...detail.scoreInput, handles: scoreHandles(rows) });
+      if (detail.score?.overridesAvoid && score.value != null) score.overridesAvoid = true;
+      evidence.names[index] = { ...evidence.names[index], score: compactScore(score) };
+      return { ...detail, score };
+    });
+    if (Array.isArray(evidence.top)) {
+      const scoreOf = name => evidence.names.find(row => row.name === name)?.score;
+      evidence.top = evidence.top.map((row, index) => ({ row, index }))
+        .sort((a, b) => compareScores(scoreOf(a.row.name), scoreOf(b.row.name)) || a.index - b.index).map(({ row }) => row);
+    }
+  }
+
+  // One log line per scored name, once its checks are done; only when the person turned the local log on.
+  function logShown(evidence, shortlist) {
+    if (!scoreLog?.enabled) return;
+    const rows = (evidence.receiptDetails ?? []).flatMap((detail, index) => {
+      const row = evidence.names[index];
+      const score = detail?.score;
+      return !Number.isInteger(score?.value) || score.pending || (shortlist && !scoreEligible({ ...row, ...detail }))
+        ? [] : [{ label: normalizeName(row.name), name: row.name, score }];
+    });
+    track(scoreLog.shown(rows.sort((a, b) => compareScores(a.score, b.score))));
   }
 
   // After the answer: run the handle checks and collect the follow-up, rewriting the same page as each one lands.
@@ -684,8 +749,12 @@ export async function serve({
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    return reply(await runLookup(args, cliArguments, checkRows, data => pages(data, args).then(page => withCheckQuoteOffer(page, args)),
-      (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact })));
+    const result = await runLookup(args, cliArguments, checkRows, data => pages(data, args).then(page => withCheckQuoteOffer(page, args)),
+      (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact }));
+    if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
+      track(scoreLog?.picked(args.query, 'check_domains'));
+    }
+    return reply(result);
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });

@@ -1,0 +1,37 @@
+{
+  "_note": "Name score v1 examples from the spec (2026-11-25). Synthetic evidence, shaped like the triage score input; no real check results.",
+  "loomfox": {
+    "about": "agent orchestration",
+    "expected": { "value": 91, "band": "Strong",
+      "reasons": [".com is free, $29.00 for 3 years", "Not checked: EU trademarks", "Handle taken: GitHub"],
+      "components": { "domain": 22, "price": 3, "trademark": 20, "rivals": 20, "apps": 8, "handles": 4, "quality": 14 } },
+    "input": {
+      "name": "Loomfox",
+      "candidate": { "recipe": "odd-pair", "relation": "direct", "spellings": 1, "realWord": true, "descriptive": false,
+        "misspelled": false, "narrow": false, "soundsLike": "none", "badMeaning": "none", "language": "english" },
+      "domains": [{ "ending": "com", "total": 29, "registry": true }, { "ending": "dev", "total": 40, "registry": true }],
+      "marks": { "us": "ok", "eu": "off", "list": [] },
+      "rivals": { "state": "ok", "list": [], "company": false },
+      "apps": { "state": "ok", "list": [] },
+      "handles": { "GitHub": "taken", "npm": "free", "Bluesky": "free" },
+      "meaning": null
+    }
+  },
+  "mesa": {
+    "about": "AI monitoring",
+    "expected": { "value": 33, "band": "Advise against",
+      "reasons": ["Short and easy to say", "Best free ending is .tech", "Same-name rival with strong traction"],
+      "components": { "domain": 2, "price": 1, "trademark": 12, "rivals": 4, "apps": 1, "handles": 2, "quality": 11 } },
+    "input": {
+      "name": "Mesa",
+      "candidate": { "recipe": "other", "relation": "none", "spellings": 1, "realWord": true, "descriptive": false,
+        "misspelled": false, "narrow": false, "soundsLike": "none", "badMeaning": "none", "language": "english" },
+      "domains": [{ "ending": "tech", "total": 50, "registry": true }],
+      "marks": { "us": "ok", "eu": "off", "list": [{ "tier": "Exact", "sameClass": false, "live": true }] },
+      "rivals": { "state": "ok", "list": [{ "level": "strong", "sameSubject": false }], "company": false },
+      "apps": { "state": "ok", "list": [{ "sameCategory": true }] },
+      "handles": { "GitHub": "taken", "npm": "taken", "Bluesky": "free" },
+      "meaning": null
+    }
+  }
+}

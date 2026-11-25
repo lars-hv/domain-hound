@@ -1,5 +1,6 @@
-import { canRecommend, comparePicks, defaultEndings, eligibilityNotes, nameCandidates, pickName, normalizeName, searchCandidates, searchKey,
-  validEligibility, validEndings } from './name-search.mjs';
+import { canRecommend, comparePicks, defaultEndings, eligibilityNotes, nameCandidates, pickName, normalizeName, searchCandidates,
+  searchKey, validEligibility, validEndings } from './name-search.mjs';
+import { compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './name-score.mjs';
 import { shopSearchUrl } from './prices.mjs';
 import { checkHandles, compactText, handleSearches, letters, markOrder, searchApps, searchEntities, searchMarks, trademarkSearches }
   from './triage-sources.mjs';
@@ -71,6 +72,13 @@ function describedBusiness(name, text, about, category) {
   return businessWords(description).some(word => words.has(word))
     || typicalProducts.some(([stem, pattern]) =>
       (pattern.test(description) || (!about && stem.test(name))) && pattern.test(descriptor));
+}
+
+// The caller's evidence for one name (triage_names candidates), matched by DNS label like geo. Invalid entries count as missing.
+function candidateFor(candidates, name) {
+  if (!candidates || typeof candidates !== 'object') return {};
+  const entry = Object.entries(candidates).find(([key]) => normalizeName(key) === name)?.[1];
+  return validCandidate(entry) ? entry : {};
 }
 
 export function memorability(name, input) {
@@ -198,6 +206,12 @@ function explainedGoogle(name, raw, judged, entities) {
   return topics.every(row => explained.has(row)) && brands.every(row => explained.has(row))
     && hosts.every(domain => explained.has(domain))
     && (words === 0 || judged.rivals.some(row => row.level !== 'unknown' && row.rival.autocomplete === words && words > 0));
+}
+
+function googleRival(google, explained, subjectKnown) {
+  if (explained || !google?.result || google.result === 'open') return [];
+  const owned = google.result.startsWith('owned by');
+  return [{ level: 'some', sameSubject: owned && google.sameBusiness ? true : owned && !subjectKnown ? null : false }];
 }
 
 // The applet's fast domain lookup stays independent of the slower name checks.
@@ -569,7 +583,47 @@ export async function triageNames(inputs, options = {}) {
           ...(entity.brand && { brand: true }) } : entities ? [] : null,
         sameName,
       };
+      // Name score evidence. A source that did not answer is null, one the follow-up still runs is 'pending'.
+      const state = (answer, ...sources) => answer != null ? 'ok' : sources.some(source => pending.includes(source)) ? 'pending' : null;
+      const subjectKnown = Boolean(options.about || options.category);
+      const euSandbox = (options.env ?? process.env).DOMAIN_HOUND_EUIPO_SANDBOX === '1';
+      const eu = euSandbox ? undefined : offices.find(result => result.office === 'EU');
+      const rivalSources = ['Google', 'Wikidata', 'App Store', 'Google Play', 'websites'];
+      const rivalsAnswered = google.google != null && entities != null && apps != null && android != null && !sitesSilent
+        && judged.rivals.every(row => row.level !== 'unknown');
+      const sameSectorCompany = norway?.matches.some(({ match, homepage }) => {
+        const domain = siteDomain(homepage);
+        return match === 'exact' && domain && judged.rivals.some(({ rival }) =>
+          rival.sameBusiness && rival.domains.includes(domain));
+      }) ?? false;
+      const scoreInput = {
+        name: names.get(name), candidate: candidateFor(options.candidates, name),
+        // Free endings in scope with a registry answer (never DNS alone) and their payments due in 3 years.
+        domains: recommendable.filter(row => row.status === 'probably-free' && ['rdap', 'whois'].includes(row.source))
+          .map(row => ({ ending: row.tld, total: row.threeYear ?? null, registry: true })),
+        marks: { us: state(marks, 'USPTO') ?? 'unknown',
+          eu: eu && officeAnswered(eu) ? 'ok' : eu && pending.includes(officeNames.EU) ? 'pending' : eu?.state === 'off' || !eu ? 'off' : 'unknown',
+          list: allMarks.filter(item => !euSandbox || item.office !== 'EU').map(item => ({ tier: item.tier, live: item.live === true ? true : item.live === false ? false : null,
+            // Classes unknown: null. Only a verified class overlap can hard-filter.
+            sameClass: !item.classes?.length ? null : (item.relevantClasses?.length ?? 0) > 0 })) },
+        // Measured rivals count even when another source failed; the state says whether the rival check is complete.
+        // A registry homepage links an exact-name company to an independently checked site in the same subject.
+        rivals: { state: rivalsAnswered ? 'ok' : rivalSources.some(source => pending.includes(source)) ? 'pending' : 'unknown',
+          list: [...judged.rivals.filter(row => row.level !== 'unknown').map(row => ({ level: row.dormant ? 'dormant' : row.level,
+            sameSubject: subjectKnown ? Boolean(row.rival.sameBusiness) : null })),
+          // Web search evidence no measured rival explains: one brand owning the results, or several uses, counts as
+          // a same-name use with some traction (in your subject when the search says so).
+          ...googleRival(google.google, explainedGoogle(key, google.raw, judged, entities), subjectKnown)], company: sameSectorCompany },
+        apps: { state: apps != null && android != null ? 'ok'
+          : ['App Store', 'Google Play'].some(source => pending.includes(source)) ? 'pending' : 'unknown',
+        list: storeApps.map(row => ({ sameCategory: subjectKnown
+          ? describedBusiness(key, [row.name, row.category, row.description].join(' '), options.about, options.category) : null })) },
+        handles: options.deferHandles ? {} : social ? scoreHandles(social)
+          : Object.fromEntries(Object.entries(handles).map(([platform, value]) => [platform,
+            value === 'taken' ? 'taken' : value === 'not-found' ? 'free' : null])),
+      };
       return {
+        _scoreInput: scoreInput,
         // Small and dormant same-name uses are notes after the reason; they never change the verdict.
         name: names.get(name), verdict: decision, reason: [reason, ...tractionNotes(judged)].join(' · '),
         _free: available, _recommendable: recommendable, _pick: best, _mark: mark, _googleExplained: googleExplained,
@@ -603,13 +657,27 @@ export async function triageNames(inputs, options = {}) {
     }
     row.checks = options.compact ? null
       : nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
+    // Only the fully screened names get a Name score; bans and hard filters run first, inside scoreName.
+    if (row._scoreInput) {
+      row._scoreInput.meaning = meaning ? { how: meaning.how } : null;
+      row._score = scoreName(row._scoreInput);
+      // A legacy Avoid stays a guard. The one exception: the only Avoid is a strong rival with affirmative evidence of a
+      // different subject; the score carries that penalty, so the name may still rank.
+      const rivals = row._scoreInput.rivals.list;
+      if (row._score.value != null && row.verdict === 'Avoid' && /^David vs Goliath: /.test(row.reason) && !row.google?.sameBusiness
+        && rivals.some(rival => rival.level === 'strong') && rivals.every(rival => rival.level !== 'strong' || rival.sameSubject === false)) {
+        row._score.overridesAvoid = true;
+      }
+      row.score = compactScore(row._score);
+    }
   }
   for (const row of googleCandidates(rows, requestedEndings, options.eligible, options.upfrontCap)) row.google.search = true;
   const sourcesSummary = Object.fromEntries(Object.entries(counts).map(([source, answered]) =>
     [source, Math.round(100 * answered / Math.min(names.size, screenLimit))]));
-  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, meaning, _receiptEndings, _handles, _waiting }) =>
+  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, meaning, _receiptEndings, _handles, _waiting,
+    _score, _scoreInput }) =>
     ({ competition, details, traction, google, reason, meaning, endings: _receiptEndings, handles: _handles,
-      ...(_waiting?.().length && { waiting: _waiting() }) }))) : null;
+      ...(_waiting?.().length && { waiting: _waiting() }), ...(_score && { score: _score, scoreInput: _scoreInput }) }))) : null;
   const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible, requestedEndings, options.upfrontCap);
   // The first pass of a follow-up run says more checks are coming.
   if (answerBy && waiting.size) result.followUp = true;
@@ -677,9 +745,11 @@ export function bestValue(options) {
 
 const pickOption = ({ _pick }) => _pick && { domain: _pick.domain, now: _pick.firstPayment, total: _pick.threeYear };
 
+// Score-ranked picks come first. Unscreened names use the previous verdict and domain order.
 function rankedRows(rows, requested = [], eligible = [], budget) {
   const order = { 'No conflict found': 0, 'Check first': 1 };
-  return rows.filter(row => row.verdict !== 'Avoid').sort((a, b) => order[a.verdict] - order[b.verdict]
+  return rows.filter(row => scoreEligible(row)).sort((a, b) => compareScores(a.score, b.score)
+    || order[a.verdict] - order[b.verdict]
     || Number(!pickOption(a)) - Number(!pickOption(b))
     || (pickOption(a) && pickOption(b) ? comparePicks(pickOption(a), pickOption(b), { requested, eligible, budget }) : 0));
 }
@@ -703,7 +773,8 @@ function packTriage(rows, sources, compact, endings, eligible, requested = [], b
   const top = topChoices(rows, requested, eligible, budget);
   // Handle states for the top names: taken, not_found (no public profile found) or check (check yourself).
   const handles = Object.fromEntries(rows.filter(row => row._social).map(row => [row.name, row._social]));
-  const names = rows.map(({ _free, _recommendable, _pick, _mark, _googleExplained, _receiptEndings, _handles, _social, _waiting, ...row }) => {
+  const names = rows.map(({ _free, _recommendable, _pick, _mark, _googleExplained, _receiptEndings, _handles, _social, _waiting, _score, _scoreInput,
+    ...row }) => {
     const own = {};
     for (const option of _free) {
       const entry = priceEntry(option);
@@ -727,7 +798,10 @@ function packTriage(rows, sources, compact, endings, eligible, requested = [], b
     // Platforms not listed under taken or not_found are "check yourself"; the results page lists them all.
     () => { for (const value of Object.values(result.handles ?? {})) delete value.check; },
     // GitHub and npm stand in the handle states and the same-name summary too.
+    // The results page and say read the full score from the receipt; the machine field keeps value and band.
+    row => { if (row.score) { delete row.score.reasons; delete row.score.notChecked; } },
     row => { if (row.details) delete row.details.presence; },
+    row => { delete row.score; },
     row => { row.details = null; },
     row => { row.buy = null; },
     row => { if (row.traction) delete row.traction.geo; },

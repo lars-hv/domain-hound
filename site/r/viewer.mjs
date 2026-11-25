@@ -1,4 +1,4 @@
-import { readShareFragment } from './share-format.mjs';
+import { readShareFragment, scoreLabel } from './share-format.mjs';
 
 const receipt = document.getElementById('receipt');
 const groups = document.getElementById('groups');
@@ -68,11 +68,22 @@ function takenFooter(name, targets) {
   return foot;
 }
 
-function nameGroup({ name, verdict, records, takenDomains: targets }, checkedAt, checkTime) {
+// "Name score 91/100 - how clear the road is", the band, and how many checks were not done.
+function scoreLine(score) {
+  const line = element('p', 'name-score', 'Name score ' + score.value + '/100 - ' + scoreLabel);
+  line.append(element('span', 'chip score-band', score.band));
+  if (score.notChecked) {
+    line.append(element('span', 'status', score.notChecked + (score.notChecked === 1 ? ' check incomplete' : ' checks incomplete')));
+  }
+  return line;
+}
+
+function nameGroup({ name, verdict, records, takenDomains: targets, score }, checkedAt, checkTime) {
   const card = element('article', 'paper');
   const heading = element('header', 'group-heading');
   heading.append(element('h2', '', name));
   if (verdict) heading.append(element('p', 'verdict', verdict));
+  if (score) heading.append(scoreLine(score));
   const meta = element('p', 'group-meta');
   const free = records.filter(record => record.status === registryFree).length;
   if (free) {
