@@ -41,13 +41,12 @@ const whoisLimitWords = /\b(?:rate limit|limit exceeded|exceeded (?:the |your )?
 const whoisTurns = new Map();
 
 function whoisPacer(host) {
-  if (!whoisTurns.has(host)) whoisTurns.set(host, { next: 0, limitedUntil: 0 });
+  if (!whoisTurns.has(host)) whoisTurns.set(host, { nextStart: 0, limitedUntil: 0 });
   return whoisTurns.get(host);
 }
 
-// One query at a time per host, each start at least the spacing after the previous one. Resolves to a release
-// function, or null when the slot comes too late or the host is cooling down.
-async function whoisTurn(host, timeLeft, pause, directory) {
+// Run one registry query at a time per host, spacing starts on a monotonic clock.
+async function queryRegistryWhois(host, domain, query, timeLeft, pause, directory) {
   const pacer = whoisPacer(host);
   if (!pacer.loaded) {
     pacer.loaded = readCache(directory, whoisCooldownFile(host)).then(saved => {
@@ -57,22 +56,38 @@ async function whoisTurn(host, timeLeft, pause, directory) {
   const previous = pacer.tail ?? Promise.resolve();
   let release;
   pacer.tail = new Promise(resolve => { release = resolve; });
-  await Promise.all([pacer.loaded, previous]);
-  const now = Date.now();
-  const spacing = [...documentedWhois.values()].includes(host) ? whoisSpacing.identity : whoisSpacing.other;
-  const start = Math.max(now, pacer.next);
-  // Leave at least 300 ms for the query itself.
-  if (pacer.limitedUntil > now || start - now + 300 > timeLeft()) {
+  try {
+    await Promise.all([pacer.loaded, previous]);
+    const spacing = [...documentedWhois.values()].includes(host) ? whoisSpacing.identity : whoisSpacing.other;
+    let waitForSlot = pause;
+    let timeout;
+    while (true) {
+      if (pacer.limitedUntil > Date.now()) return { reason: 'Registry WHOIS rate limit' };
+      const wait = Math.max(0, pacer.nextStart - performance.now());
+      const remaining = timeLeft();
+      // Leave at least 300 ms for the query itself, even after a late wake-up.
+      if (wait + 300 > remaining) return { reason: 'Registry WHOIS timed out' };
+      if (wait === 0) {
+        timeout = Math.min(1500, remaining);
+        break;
+      }
+      await waitForSlot(Math.ceil(wait));
+      // An early wake-up still needs a timer until the slot opens.
+      waitForSlot = delay;
+    }
+    let response;
+    try {
+      response = query(host, domain, timeout);
+    } finally {
+      // Start the gap once the query has been dispatched, before waiting for its reply.
+      pacer.nextStart = performance.now() + spacing;
+    }
+    const reply = String(await response ?? '');
+    if (await whoisLimited(host, reply, directory)) return { reason: 'Registry WHOIS rate limit' };
+    return { reply };
+  } finally {
     release();
-    return null;
   }
-  pacer.next = start + spacing;
-  if (start > now) await pause(start - now);
-  if (pacer.limitedUntil > Date.now()) {
-    release();
-    return null;
-  }
-  return release;
 }
 
 async function whoisLimited(host, reply, directory) {
@@ -251,19 +266,8 @@ async function lookupWhois(domain, tld, query, timeLeft, referrals, { pause = de
     host = iana.match(/^(?:refer|whois):[ \t]*([a-z\d.-]+)[ \t\r]*$/im)?.[1];
   }
   if (!host) return unknown('whois', 'IANA WHOIS has no registry referral');
-  const release = await whoisTurn(host, timeLeft, pause, directory);
-  if (!release) {
-    return unknown('whois', whoisPacer(host).limitedUntil > Date.now() ? 'Registry WHOIS rate limit' : 'Registry WHOIS timed out');
-  }
-  let result;
-  try {
-    const timeout = Math.min(1500, timeLeft());
-    if (timeout <= 0) return unknown('whois', 'Registry WHOIS timed out');
-    result = String(await query(host, domain, timeout) ?? '');
-    if (await whoisLimited(host, result, directory)) return unknown('whois', 'Registry WHOIS rate limit');
-  } finally {
-    release();
-  }
+  const { reply: result, reason } = await queryRegistryWhois(host, domain, query, timeLeft, pause, directory);
+  if (reason) return unknown('whois', reason);
   const name = result.match(/^\s*Domain(?: Name)?:[ \t]*(\S+)/im)?.[1];
   // DENIC and EURid echo the queried name on negative answers.
   const statusFree = /^\s*Status:[ \t]*free\s*$/im.test(result)

@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { documentedWhois, lookupRegistrations, resetWhoisPacing, whoisCooldownMs, whoisSpacing } from './registry.mjs';
 
@@ -64,8 +65,11 @@ test('while Identity Digital RDAP cools down, .ai/.io/.me go to their IANA-liste
   await writeCache(directory, 'rdap-cooldown-rdap.identitydigital.services.json', { until: Date.now() + 3_600_000 });
   const rdap = [];
   const starts = [];
+  let waits = 0;
   const result = await lookupRegistrations(identityBatch(['one.ai', 'two.ai', 'three.ai', 'one.io', 'one.me']), {
     directory, resolveNs: async () => [], timeLeft: () => 6000,
+    // Simulate one late wake-up and then one early wake-up between the .ai queries.
+    pause: ms => delay(ms + (waits++ === 0 ? 80 : -20)),
     fetcher: async url => {
       rdap.push(url);
       if (String(url).startsWith('https://data.iana.org/')) return Response.json({ services: [[['ai'], ['https://rdap.identitydigital.services/rdap/']]] });
@@ -86,7 +90,8 @@ test('while Identity Digital RDAP cools down, .ai/.io/.me go to their IANA-liste
   const ai = starts.filter(row => row.host === 'whois.nic.ai').map(row => row.at);
   assert.equal(ai.length, 3);
   for (let index = 1; index < ai.length; index++) {
-    assert.ok(ai[index] - ai[index - 1] >= whoisSpacing.identity - 25, 'gap ' + (ai[index] - ai[index - 1]));
+    const gap = ai[index] - ai[index - 1];
+    assert.ok(gap >= whoisSpacing.identity - 3, 'gap ' + gap);
   }
 });
 
