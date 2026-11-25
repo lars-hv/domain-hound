@@ -77,8 +77,8 @@ test('searches glued and split phrases plus fuzzy marks, keeps live close matche
 });
 
 test('maps every category and distinguishes the travel lookalikes from near-identical spellings', async () => {
-  const categories = { travel: ['039', '043'], software: ['009', '042'], finance: ['036'], retail: ['035'],
-    health: ['044'], education: ['041'], food: ['043', '030'], media: ['038', '041'], other: ['009', '042'] };
+  const categories = { travel: ['039', '043'], software: ['009', '035', '042'], finance: ['036'], retail: ['035'],
+    health: ['044'], education: ['041'], food: ['043', '030'], media: ['038', '041'], other: ['009', '035', '042'] };
   for (const [category, classes] of Object.entries(categories)) {
     const [row] = await searchMarks('testbrand', 'TestBrand', { category, fetcher: async (_, { body }) => {
       const { query: { bool } } = JSON.parse(body);
@@ -422,8 +422,9 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.ok(all.names.every(row => new URL(row.google.link).hostname === "www.google.com"));
   assert.ok(all.names.every(row => row.verdict && row.reason));
   for (const row of [...all.names, ...compact.names, ...unchecked.names]) {
-    // traction is present only for a rival with traction or an agent GEO answer.
-    const fields = value => Object.keys(value).filter(key => key !== 'traction').sort();
+    // traction is present only for a rival with traction or an agent GEO answer; meaning only for a rude word
+    // ("Cloud Otter xxx").
+    const fields = value => Object.keys(value).filter(key => key !== 'traction' && key !== 'meaning').sort();
     assert.deepEqual(fields(row), fields(clear));
     assert.deepEqual(Object.keys(row.competition).sort(), Object.keys(clear.competition).sort());
     assert.ok(Array.isArray(row.free) && Array.isArray(row.taken));
