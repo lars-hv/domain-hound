@@ -168,8 +168,13 @@ function exactDisplay(result) {
     // The ending's standard list price, labelled as a benchmark: this name is not for sale at it.
     const standard = result.listPrices?.[ending];
     const date = listDate(result);
-    const benchmark = standard?.now != null && !notEligible && !premiumRisk(domain)
-      ? ['Standard .' + ending + ' list price (benchmark' + (date ? ' from ' + date : '') + ', USD ex. VAT): ' + priceText(standard) + '.']
+    const showBenchmark = standard?.now != null && !notEligible && (ending === 'ai' || !premiumRisk(domain));
+    const term = standard?.term ?? 1;
+    const renewal = ending === 'ai' && standard?.renew != null
+      ? money(standard.renew / term) + '/yr renewal, billed as ' + money(standard.renew) + ' every ' + term + ' years'
+      : showBenchmark ? priceText(standard) : '';
+    const benchmark = showBenchmark
+      ? ['Standard .' + ending + ' list price (benchmark' + (date ? ' from ' + date : '') + ', USD ex. VAT): ' + renewal + '.']
       : [];
     return ['**' + name + ' is taken, and ' + checkoutLimitation + '**' + resale + checked, ...benchmark, ...tail].join('\n');
   }

@@ -233,8 +233,11 @@ test('an exact .com adds one list-price line for the other endings and a benchma
   assert.ok(eligible.otherEndings.no);
   const singleBatch = await agentResult(['lanternbay.com'], options);
   assert.deepEqual(singleBatch.otherEndings, result.otherEndings);
-  // Other exact endings get no other-endings line.
+  // Other exact endings get no other-endings line. A taken .ai still explains its standard renewal term.
   assert.equal((await agentResult('lanternbay.io', options)).otherEndings, undefined);
+  const takenShortAi = displayOf(await agentResult('qxvo.ai', options));
+  assert.match(takenShortAi, /Standard \.ai list price .*\$79\.98\/yr renewal, billed as \$159\.96 every 2 years/);
+  assert.doesNotMatch(takenShortAi, /\]\(https:/);
 });
 
 test('Retry-After is read as seconds or an HTTP date, including waits longer than a day', () => {

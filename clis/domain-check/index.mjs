@@ -342,8 +342,9 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       const premium = row.status === 'premium';
       const confirmed = row.status === 'confirmed' || (premium && row.price != null && row.source === 'shop');
       const price = agentPrice({ ...row, shop });
-      // A taken exact domain keeps its ending's standard list price as a benchmark.
-      const benchmark = !batch && row.exact && row.status === 'taken' && row.listPrice && !premiumRisk(row.domain);
+      // A taken exact domain can show a standard ending benchmark. For .ai this explains its two-year renewal.
+      const benchmark = !batch && row.exact && row.status === 'taken' && row.listPrice
+        && (row.tld === 'ai' || !premiumRisk(row.domain));
       if ((batch || benchmark) && !confirmed && !premium && row.status !== 'reserved' && listPrices[d]?.now == null) {
         const listed = row.listPrice ? agentPrice(row.listPrice) : price;
         if (Object.keys(listed).length) listPrices[d] = listed;
