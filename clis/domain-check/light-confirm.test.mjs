@@ -164,7 +164,7 @@ test('by default a keyed shop API is asked about the pick only, and the receipt 
   const free = ['quietfern.com', 'quietfern.me', 'quietfern.co'];
   const asked = [];
   const result = await agentResult(['quietfern'], { ...registry(free), directory, now, cachedOnly: true, env: spaceshipKeys,
-    endings: ['com', 'me', 'co'],
+    endings: ['com', 'me', 'co'], preferredEndings: ['me'],
     fetcher: async (url, init) => {
       if (url.startsWith('https://spaceship.dev/')) {
         asked.push(...JSON.parse(init.body).domains);
@@ -176,8 +176,8 @@ test('by default a keyed shop API is asked about the pick only, and the receipt 
     },
     confirm: async () => assert.fail('The browser runs only on the explicit confirm flag'),
   });
-  assert.equal(new Set(asked).size, 1);
-  assert.deepEqual(result.shopAsked, [...new Set(asked)]);
+  assert.deepEqual([...new Set(asked)], ['quietfern.me']);
+  assert.deepEqual(result.shopAsked, ['quietfern.me']);
   // Without a key no shop is asked at all.
   const keyless = await agentResult(['quietfern'], { ...registry(free), directory: await cache(t), now, cachedOnly: true, env: {},
     endings: ['com', 'me', 'co'], fetcher: async url => url === 'https://data.iana.org/rdap/dns.json'

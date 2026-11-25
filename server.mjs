@@ -84,7 +84,7 @@ const legacyTool = { ...checkTool, name: 'broker_find',
 const triageTool = {
   name: 'triage_names',
   description: 'Use for “find a name and domain” or “can I use this name?”. For a new name, generate five distinct, easy-to-say candidates now. '
-    + 'Call triage_names once with those names, a short product description and shortlist: true. No preliminary tool or web search is needed. '
+    + 'Call triage_names once with those names, an about description under 160 characters, and shortlist: true. No preliminary tool or web search is needed. '
     + 'Put the person’s own name first if supplied. The tool checks fourteen endings, US marks, apps and rivals. The receipt fills in slow checks and top-three handles. '
     + 'Use the returned verdicts. Report checks in progress as pending and give the page link. ' + relay,
   inputSchema: {
@@ -197,6 +197,8 @@ function cliArguments(args) {
     throw new Error('Supply an object with query or names.');
   }
   const flags = lookupFlags(args);
+  if (args.endings) flags.push('--prefer-endings', args.endings.join(','));
+  if (args.budget !== undefined) flags.push('--upfront-cap', String(args.budget));
   const hasQuery = Object.hasOwn(args, 'query');
   if (hasQuery === Object.hasOwn(args, 'names')) throw new Error('Supply exactly one of query or names.');
   if (Object.hasOwn(args, 'shortlist') && typeof args.shortlist !== 'boolean') {

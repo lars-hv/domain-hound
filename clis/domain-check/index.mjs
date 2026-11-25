@@ -444,9 +444,12 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
 // the pick is sent to a shop, so no shop sees the other names. DOMAIN_HOUND_SHOP_QUOTES=top4 adds up to three runners-up.
 export const shopQuoteCount = (env = process.env) => env?.DOMAIN_HOUND_SHOP_QUOTES === 'top4' ? 4 : 1;
 
-export function lightTargets(rows, eligible, count = 1) {
-  const top = pickName(rows, eligible);
-  const others = rankName(rows.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
+export function lightTargets(rows, eligible, count = 1, preferred = [], cap) {
+  const inScope = rows.filter(row => (!preferred.length || preferred.includes(row.tld))
+    && (cap == null || (row.firstPayment ?? Infinity) <= cap));
+  const top = preferred.length ? preferred.map(tld => pickName(inScope.filter(row => row.tld === tld), eligible)).find(Boolean)
+    : pickName(inScope, eligible);
+  const others = rankName(inScope.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
     && canRecommend(row.tld, eligible)));
   return [top, ...others].filter(Boolean).slice(0, count);
 }
@@ -481,7 +484,7 @@ export async function agentResult(input, options = {}) {
   const rows = fast.groups.flatMap(group => group.results);
   const targets = domain ? rows.filter(row => canRecommend(row.tld, options.eligible)
     && ['probably-free', 'check-at-shop', 'premium'].includes(row.status))
-    : lightTargets(rows, options.eligible, shopQuoteCount(options.env ?? process.env));
+    : lightTargets(rows, options.eligible, shopQuoteCount(options.env ?? process.env), options.preferredEndings, options.upfrontCap);
   const [candidate] = targets;
   // A Google retry can settle every row that the first pass left waiting.
   let complete = fast.complete || !rows.some(row => row.registryReason === 'Registry lookup timed out');
@@ -665,6 +668,8 @@ function lookupArgs(args) {
     const arg = args[index];
     if (arg === '--ai') options.ai = true;
     else if (arg === '--endings' && !options.endings) options.endings = (args[++index] ?? '').split(',');
+    else if (arg === '--prefer-endings' && !options.preferredEndings) options.preferredEndings = (args[++index] ?? '').split(',');
+    else if (arg === '--upfront-cap' && options.upfrontCap === undefined) options.upfrontCap = Number(args[++index]);
     else if (arg === '--eligible' && !options.eligible) options.eligible = (args[++index] ?? '').split(',');
     else if (arg === '--category' && !options.category) options.category = (args[++index] ?? '').slice(0, 100);
     else if (arg === '--compact') options.compact = true;
