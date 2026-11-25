@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { resultsLine } from '../results.mjs';
 import { defaultEndings } from '../clis/domain-check/name-search.mjs';
 
 const exec = promisify(execFile);
@@ -74,7 +75,7 @@ async function smokeMcp(label, command, args, options) {
     assert.equal(names[0].name, query);
     assert.ok(display.includes(query));
     assert.equal(display, result.structuredContent.say);
-    assert.match(display.split('\n').at(-1), /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/);
+    assert.equal(display.split('\n')[0], resultsLine(result.structuredContent.resultPage));
     const html = await readFile(new URL(result.structuredContent.resultPage), 'utf8');
     assert.ok(endings.every(ending => html.includes(query + '.' + ending)));
 

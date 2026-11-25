@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkSocialHandles, handlePriorities, pendingHandleRows, requestPlatforms } from './clis/domain-check/handles.mjs';
 import { progressPrefix } from './clis/domain-check/progress.mjs';
 import { attributed, errorText, progressText } from './display.mjs';
-import { resultPages } from './results.mjs';
+import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
@@ -53,17 +53,13 @@ const lookupProperties = {
   eligible: { type: 'array', uniqueItems: true, items: { type: 'string', enum: restrictedEndings },
     description: 'Restricted endings the buyer qualifies to register. Pass no or eu only when the buyer qualifies for that ending.' },
 };
-const relay = 'Relay `say` as written. You may add advice, but no domain, price or verdict that is not in it. Keep advice consistent with the tool verdict. The complete local results page has all checked endings.';
+const relay = 'The answer starts with the clickable Markdown link on the first line of say. Then give the relevant facts from say.';
 const checkTool = {
   name: 'check_domains',
-  description: relay + ' '
-    + 'For any request to buy or register, pass purchase: true and explicitly say “Domain Hound cannot buy or complete checkout,” even when the domain is taken. '
-    + 'Use to check domain availability and prices, whether a domain is taken, or to find a domain for a startup name. '
-    + 'Input: query for one name or exact domain ({"query":"lanternbay.me"}), or names for 1 to 20 names in one call ({"names":["lanternbay","lanternbay.me"]}). A bare name checks fourteen endings, including .ai, .net and .org. '
-    + 'For a bare name, put any ending preference in endings. Use exact lookup for a full domain. '
-    + 'For a batch, make one call and report check-at-shop endings as returned. Recheck only when the person asks. '
-    + 'Set confirm true only when the person asks for a live shop check (slower). '
-    + 'Prices are list prices unless marked confirmed at a shop; premium names show the shop price or "premium, price at shop". For new names, call naming_method first; to screen an existing name, use triage_names. With shortlist true, pass one DNS label per name (Quiet Otter becomes quietotter).',
+  description: 'Check availability and dated list prices for one domain or up to 20 names or domains. Use triage_names to find or vet a product name. '
+    + 'For one check, pass query, for example {"query":"lanternbay.com"}. For a batch, pass names. '
+    + 'For a buy or register request, set purchase: true and state the checkout limitation. Set confirm: true only for an explicit live shop check. '
+    + 'Keep list, shop-confirmed and premium prices distinct. ' + relay,
   inputSchema: {
     type: 'object',
     properties: {
@@ -73,7 +69,7 @@ const checkTool = {
       names: { type: 'array', minItems: 1, maxItems: 20,
         items: nameSchema,
         description: '1 to 20 bare names, exact domains or both, e.g. ["lanternbay","quietbook","lanternbay.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
-      shortlist: { type: 'boolean', description: 'Use true for the preliminary bare-name batch specified by naming_method.' },
+      shortlist: { type: 'boolean', description: 'Legacy: true for a preliminary bare-name batch. The naming recipe now goes straight to triage_names.' },
       purchase: { type: 'boolean', description: 'Pass true when asked to buy or register, even for an exact domain that may be taken. State the checkout limitation from the display in the answer.' },
       confirm: { type: 'boolean', description: 'True only when the person explicitly asks for a live shop check. Uses an optional headless browser and is slower.' },
     },
@@ -83,21 +79,21 @@ const checkTool = {
 };
 
 const legacyTool = { ...checkTool, name: 'broker_find',
-  description: relay + ' Legacy alias for Domain Hound check_domains, same input. Never buys.' };
+  description: 'Legacy alias for check_domains. ' + relay };
 
 const triageTool = {
   name: 'triage_names',
-  description: relay + ' '
-    + 'Use to screen 1 to 20 product names, or once with a bare name when asked whether an existing name is safe or whether an app name or handle is taken: {"names":["Quiet Otter","Hush Room"],"about":"book quiet meeting rooms"}. Checks every domain ending, including .ai, for all names; same-name rivals and their traction, live US marks, iOS and Android apps, and public company results for the first five names. Social handles for the top three run after the result and can be collected with the same call. Put the strongest names first. '
-    + 'Verdicts weigh each same-name rival by its traction: a strong rival (David vs Goliath) or a same-business rival with traction means Avoid; small or dormant same-name uses are notes that never lower the verdict. '
-    + 'Put the name the person came with first. Fill geo for each name from memory, never from search. '
-    + 'The tool checks Google itself. If you check a gap using built-in search, use it for context and keep the evidence-backed results unchanged. Let the person choose.',
+  description: 'Use for “find a name and domain” or “can I use this name?”. For a new name, generate five distinct, easy-to-say candidates now. '
+    + 'Call triage_names once with those names, a short product description and shortlist: true. No preliminary tool or web search is needed. '
+    + 'Put the person’s own name first if supplied. The tool checks fourteen endings, US marks, apps and rivals. The receipt fills in slow checks and top-three handles. '
+    + 'Use the returned verdicts. Report checks in progress as pending and give the page link. ' + relay,
   inputSchema: {
     type: 'object',
     properties: {
       ...lookupProperties,
       names: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 },
         description: '1 to 20 bare names without endings, e.g. ["Quiet Otter","Hush Room"].' },
+      shortlist: { type: 'boolean', description: 'True when generating names. Returns a short chat answer and a full receipt.' },
       purchase: { type: 'boolean', description: 'True when the person asks to buy or register a domain.' },
       companyType: { type: 'string', enum: Object.keys(handlePriorities),
         description: 'Use developer, consumer, b2b or media when it fits, to highlight the handles that matter.' },
@@ -116,7 +112,7 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_method',
-  description: 'Use to find a startup or product name: get the Domain Hound naming recipe for new names. For an existing name, use triage_names. The recipe and preliminary check are intermediate. For the final triage result, relay say as written.',
+  description: 'Read the naming recipe when the person asks for the method. To find or screen names directly, use triage_names.',
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'An optional one-sentence product description.' },
   }, additionalProperties: false },
@@ -257,6 +253,7 @@ function triageArguments(args) {
     throw new Error('names[' + bad + '] is not valid. Supply 1 to 20 bare names of up to 100 characters, without commas or domain endings.');
   }
   const flags = lookupFlags(args);
+  if (Object.hasOwn(args, 'shortlist') && typeof args.shortlist !== 'boolean') throw new Error('shortlist must be a boolean.');
   const { companyType, additionalHandles } = args;
   if (companyType !== undefined && !Object.hasOwn(handlePriorities, companyType)) throw new Error('Choose a supported company type.');
   if (additionalHandles !== undefined && (!Array.isArray(additionalHandles) ||
@@ -298,7 +295,8 @@ function parseOutput(stdout, failed, stoppedAfter) {
   }
   if (failed) throw new Error('Domain Hound could not complete the lookup.');
   if (!isObject(data) || !Array.isArray(data.names)) throw new Error('Domain Hound returned invalid JSON.');
-  return data;
+  const { _mcpResult, ...payload } = data;
+  return payload;
 }
 
 // Progress events from the capability: each registry answer and its current stage.
@@ -314,18 +312,47 @@ function readProgress(progress, line) {
 }
 
 // Start one capability run. It ends on its own; only the maximum lookup time or server shutdown stops it.
+// A name screen answers first with the checks done so far ({"followUp":true} on its first line) and keeps running
+// the slow checks; the re-assessed result on its next line resolves lookup.later (null when there is none).
 function startLookup(args, cwd, maxMs) {
-  const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false,
+  const triage = args[0] === '--triage';
+  const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false, exited: false,
     collect: false, outcome: null };
   const child = spawn(process.execPath, ['index.mjs', ...args], {
-    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOMAIN_HOUND_PROGRESS: '1', DOMAIN_HOUND_DEFER_HANDLES: args[0] === '--triage' ? '1' : '' },
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOMAIN_HOUND_PROGRESS: '1', DOMAIN_HOUND_MCP_OUTPUT: '1',
+      DOMAIN_HOUND_DEFER_HANDLES: triage ? '1' : '', DOMAIN_HOUND_FOLLOW_UP: triage ? '1' : '' },
   });
   lookup.child = child;
   const chunks = [];
   let size = 0;
+  let firstLine = null;
+  let answer;
+  let later;
+  lookup.done = new Promise(resolve => { answer = resolve; });
+  lookup.later = new Promise(resolve => { later = resolve; });
+  const settle = read => {
+    if (lookup.finished) return;
+    try {
+      lookup.outcome = { data: read() };
+    } catch (problem) {
+      lookup.outcome = { error: problem.message };
+    }
+    lookup.finished = true;
+    answer();
+  };
   child.stdout.on('data', chunk => {
     size += chunk.length;
     if (size <= 4_000_000) chunks.push(chunk);
+    if (firstLine !== null) return;
+    const text = Buffer.concat(chunks).toString('utf8');
+    const end = text.indexOf('\n');
+    if (end < 0) return;
+    firstLine = text.slice(0, end);
+    let first;
+    try { first = JSON.parse(firstLine); } catch { return; }
+    if ((first?._mcpResult === true || triage && first?.followUp === true) && Array.isArray(first.names)) {
+      settle(() => parseOutput(firstLine, false, 0));
+    }
   });
   createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', line => readProgress(lookup.progress, line));
   let stopped = false;
@@ -333,23 +360,26 @@ function startLookup(args, cwd, maxMs) {
     stopped = true;
     child.kill('SIGKILL');
   }, maxMs);
-  lookup.done = new Promise(resolve => {
-    let settled = false;
-    const finish = failed => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(limit);
-      try {
-        lookup.outcome = { data: parseOutput(Buffer.concat(chunks).toString('utf8'), failed, stopped && maxMs) };
-      } catch (problem) {
-        lookup.outcome = { error: problem.message };
-      }
-      lookup.finished = true;
-      resolve();
-    };
-    child.once('error', () => finish(true));
-    child.once('close', code => finish(code !== 0));
-  });
+  let closed = false;
+  const finish = failed => {
+    if (closed) return;
+    closed = true;
+    lookup.exited = true;
+    clearTimeout(limit);
+    const text = Buffer.concat(chunks).toString('utf8');
+    if (!lookup.finished) {
+      settle(() => parseOutput(text, failed, stopped && maxMs));
+      later(null);
+      return;
+    }
+    let next = null;
+    try {
+      if (!failed && !stopped) next = parseOutput(text.slice(firstLine.length + 1), false, 0);
+    } catch { /* The first answer stands; the follow-up did not finish. */ }
+    later(next);
+  };
+  child.once('error', () => finish(true));
+  child.once('close', code => finish(code !== 0));
   return lookup;
 }
 
@@ -388,7 +418,7 @@ export async function serve({
 
   // Join the running or finished lookup for the same input, or start one. Answer within the budget with the
   // result, or with the progress so far while the lookup keeps running for a repeated call to collect.
-  async function runLookup(args, buildArgs, rowsFor, render, renderProgress) {
+  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}) {
     const started = performance.now();
     let cliArgs;
     let rows;
@@ -398,7 +428,9 @@ export async function serve({
     } catch (problem) {
       return errorResult(problem.message);
     }
-    const key = JSON.stringify(cliArgs);
+    const presentation = buildArgs === triageArguments
+      ? [args.endings, args.budget, args.purchase, args.shortlist, args.companyType, args.additionalHandles?.toSorted()] : null;
+    const key = JSON.stringify([cliArgs, presentation]);
     let lookup = lookups.get(key);
     if (!lookup) {
       lookup = startLookup(cliArgs, cwd, maxLookup);
@@ -412,11 +444,12 @@ export async function serve({
         setTimeout(() => { if (lookups.get(key) === lookup) lookups.delete(key); }, keepFinishedMs).unref();
       });
     }
+    onLookup(lookup);
     if (!await within(lookup, timeout - (performance.now() - started))) {
       lookup.collect = true;
       try {
         return toolResult(await renderProgress(lookup.progress, {
-          rows, elapsedMs: performance.now() - lookup.started, budgetMs: timeout }));
+          rows, elapsedMs: performance.now() - lookup.started, budgetMs: timeout }, lookup));
       } catch {
         return errorResult('Domain Hound could not format the progress.');
       }
@@ -431,6 +464,116 @@ export async function serve({
       return errorResult('Domain Hound could not format the result.');
     }
   }
+  const track = task => {
+    const tracked = Promise.resolve(task).catch(() => {}).finally(() => background.delete(tracked));
+    background.add(tracked);
+    return tracked;
+  };
+
+  // The handle rows for one set of extra platforms, shared by every call on the same lookup.
+  function handleCheck(lookup, args) {
+    const extraPlatforms = args.additionalHandles ?? [];
+    const key = JSON.stringify(extraPlatforms.slice().sort());
+    lookup.handleChecks ??= new Map();
+    if (!lookup.handleChecks.has(key)) lookup.handleChecks.set(key, { rows: null, task: null, extraPlatforms });
+    return lookup.handleChecks.get(key);
+  }
+
+  function writeTriagePage(lookup, data, args, refresh) {
+    const work = (lookup.pageWork ?? Promise.resolve()).then(async () => {
+      const page = await pages(data, args, { triage: true, reuse: lookup.page, refresh });
+      lookup.page = page.resultPage;
+      return page;
+    });
+    lookup.pageWork = work.catch(() => {});
+    return work;
+  }
+
+  // Write the name screen's page with the handle rows known so far. The page keeps one URL per lookup, and it
+  // reloads itself while the follow-up or the handle checks are still running.
+  async function triageReceipt(lookup, args, data) {
+    lookup.args = args;
+    const { handleTargets, followUp: more, ...evidence } = data;
+    let running = Boolean(more) && !lookup.laterDone;
+    if (handleTargets?.length) {
+      const check = handleCheck(lookup, args);
+      const targets = new Map(handleTargets.map(({ name, index }) => [index, name]));
+      const entries = evidence.names.flatMap((row, index) => {
+        const target = targets.get(index);
+        if (!target) return [];
+        const rows = check.rows?.get(target) ?? pendingHandleRows(target, check.extraPlatforms);
+        return [[row.name, rows]];
+      });
+      const handleRows = new Map(entries);
+      evidence.receiptDetails = evidence.receiptDetails.map((detail, index) => ({
+        ...detail, handles: handleRows.get(evidence.names[index].name),
+      }));
+      evidence.handles = Object.fromEntries(entries.map(([name, rows]) => [name, {
+        taken: rows.filter(row => row.state === 'taken').map(row => row.platform),
+        not_found: rows.filter(row => row.state === 'not-found').map(row => row.platform),
+        check: rows.filter(row => row.state === 'check').map(row => row.platform),
+      }]));
+      if (!check.rows) {
+        evidence.handlesPending = true;
+        running = true;
+      }
+    }
+    return writeTriagePage(lookup, evidence, args, running);
+  }
+
+  // After the answer: run the handle checks and collect the follow-up, rewriting the same page as each one lands.
+  function followUp(lookup) {
+    if (lookup.following) return;
+    lookup.following = true;
+    const rewrite = () => lookup.outcome?.data && triageReceipt(lookup, lookup.args, lookup.outcome.data);
+    const { handleTargets } = lookup.outcome.data;
+    if (handleTargets?.length) {
+      const check = handleCheck(lookup, lookup.args);
+      if (!check.task) {
+        const rows = [...new Set(handleTargets.map(({ name }) => name))].map(name => ({ name, variants: true }));
+        check.task = socialLookup(rows, { extraPlatforms: check.extraPlatforms, freshRun: true })
+          .then(answers => { check.rows = answers; }, () => {
+            check.rows = new Map(rows.map(({ name }) => [name,
+              pendingHandleRows(name, check.extraPlatforms).map(row => ({ ...row, why: 'no clear answer in time' }))]));
+          });
+        track(check.task.then(rewrite));
+      }
+    }
+    if (lookup.outcome.data.followUp) {
+      track(lookup.later.then(next => {
+        lookup.laterDone = true;
+        // The re-assessed result replaces the first answer for the page and for any repeat call.
+        if (next) lookup.outcome = { data: next };
+        else {
+          const data = lookup.outcome.data;
+          const finish = row => {
+            if (!row) return row;
+            const { waiting, reason, ...rest } = row;
+            return { ...rest, ...(reason && { reason: reason.replace(/still checking [^·]+/g, 'one or more checks did not finish ') }) };
+          };
+          lookup.outcome = { data: { ...data, followUp: false, names: data.names.map(finish),
+            receiptDetails: data.receiptDetails?.map(finish) } };
+        }
+        return rewrite();
+      }));
+    }
+  }
+
+  // A lookup that outlived its call writes its finished page anyway, then continues as above.
+  function finishInBackground(lookup, args, progressPage) {
+    lookup.args = args;
+    if (lookup.background) return;
+    lookup.background = true;
+    track(lookup.done.then(async () => {
+      if (!lookup.outcome?.data) {
+        if (progressPage) await writeTriagePage(lookup, { ...progressPage, failed: true }, args, false);
+        return;
+      }
+      await triageReceipt(lookup, lookup.args, lookup.outcome.data);
+      followUp(lookup);
+    }));
+  }
+
   let initialized = false;
   let negotiated = false;
 
@@ -461,6 +604,7 @@ export async function serve({
         protocolVersion: versions.includes(version) ? version : versions[0],
         capabilities: { tools: {} },
         serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: serverVersion },
+        instructions: 'When you use Domain Hound, include its clickable Results page link in your final answer, including for a single exact domain. Copy the first line of say for the link, then give your short answer. For a new product name, generate five candidates and call triage_names once with shortlist: true.',
       });
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
@@ -488,55 +632,24 @@ export async function serve({
     }
     const purchase = isObject(args) && args.purchase === true;
     if (name === triageTool.name) {
-      let collect;
-      const result = await runLookup(args, triageArguments, triageRows, (data, lookup) => {
-        const { handleTargets, ...evidence } = data;
-        if (!handleTargets?.length) return pages(evidence, args, { triage: true });
-        const extraPlatforms = args.additionalHandles ?? [];
-        const key = JSON.stringify(extraPlatforms.slice().sort());
-        lookup.handleChecks ??= new Map();
-        let check = lookup.handleChecks.get(key);
-        if (!check) {
-          check = { rows: null, started: false };
-          lookup.handleChecks.set(key, check);
-        }
-        const targets = new Map(handleTargets.map(({ name, index }) => [index, name]));
-        const entries = evidence.names.flatMap((row, index) => {
-          const target = targets.get(index);
-          if (!target) return [];
-          const rows = check.rows?.get(target) ?? pendingHandleRows(target, extraPlatforms);
-          return [[row.name, rows]];
-        });
-        const handleRows = new Map(entries);
-        evidence.receiptDetails = evidence.receiptDetails.map((detail, index) => ({
-          ...detail, handles: handleRows.get(evidence.names[index].name),
-        }));
-        evidence.handles = Object.fromEntries(entries.map(([name, rows]) => [name, {
-          taken: rows.filter(row => row.state === 'taken').map(row => row.platform),
-          not_found: rows.filter(row => row.state === 'not-found').map(row => row.platform),
-          check: rows.filter(row => row.state === 'check').map(row => row.platform),
-        }]));
-        if (!check.rows) evidence.handlesPending = true;
-        collect = () => {
-          if (check.started) return;
-          check.started = true;
-          const rows = [...new Set(targets.values())].map(name => ({ name, variants: true }));
-          const task = socialLookup(rows, { extraPlatforms, freshRun: true })
-            .then(answers => { check.rows = answers; }, () => {
-              check.rows = new Map(rows.map(({ name }) => [name,
-                pendingHandleRows(name, extraPlatforms).map(row => ({ ...row, why: 'no clear answer in time' }))]));
-            }).finally(() => background.delete(task));
-          background.add(task);
-        };
-        return pages(evidence, args, { triage: true });
-      }, async (progress, timing) => {
-        const summary = progressText(progress, { ...timing, triage: true, purchase });
-        if (!progress.answers.size) return summary;
-        const { resultPage } = await pages(pendingTriage(progress, timing.rows), args, { triage: true });
-        return JSON.stringify({ ...JSON.parse(summary), resultPage });
-      });
+      let current;
+      const result = await runLookup(args, triageArguments, triageRows, (data, lookup) => triageReceipt(lookup, args, data),
+        async (progress, timing, lookup) => {
+          const summary = progressText(progress, { ...timing, triage: true, purchase });
+          // Without a repeat call, the finished result still reaches the same page when the lookup ends.
+          if (!progress.answers.size) {
+            finishInBackground(lookup, args);
+            return summary;
+          }
+          const progressPage = pendingTriage(progress, timing.rows);
+          const { resultPage } = await writeTriagePage(lookup, progressPage, args, true);
+          finishInBackground(lookup, args, progressPage);
+          const shown = JSON.parse(summary);
+          shown.display = resultsLine(resultPage) + '\n' + shown.display;
+          return JSON.stringify({ ...shown, resultPage });
+        }, lookup => { current = lookup; });
       reply(result);
-      if (!result.isError) collect?.();
+      if (!result.isError && current?.finished && current.outcome?.data) followUp(current);
       return;
     }
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
@@ -552,10 +665,10 @@ export async function serve({
     pending.add(response);
   }
   await Promise.all(pending);
-  await Promise.all(background);
+  while (background.size) await Promise.all(background);
   // The client has gone, so nobody can collect a lookup that is still running.
-  for (const lookup of lookups.values()) if (!lookup.finished) lookup.child.kill('SIGKILL');
-  await Promise.all([...lookups.values()].map(lookup => lookup.done));
+  for (const lookup of lookups.values()) if (!lookup.exited) lookup.child.kill('SIGKILL');
+  await Promise.all([...lookups.values()].flatMap(lookup => [lookup.done, lookup.later]));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await serve();

@@ -387,7 +387,7 @@ export async function lookupRegistrations(candidates, {
   function record({ candidate, index, dns }, registry) {
     if (registry.status === 'unknown' && dns?.reason) registry.reason = dns.reason + '; ' + registry.reason;
     results[index] = registry;
-    onResult(candidate, registry);
+    onResult(candidate, registry, dns?.code);
   }
   async function finish(row, result, filename) {
     record(row, result);

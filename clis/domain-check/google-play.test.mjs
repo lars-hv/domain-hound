@@ -95,7 +95,7 @@ test('keeps known empty Play searches and drops unknown pages or providers', asy
   const names = new Map([['mossfinch', 'Moss Finch'], ['willowsail', 'Willow Sail']]);
   const results = await searchAndroidApps(names, { directory, now, launch: noBrowser, fetcher });
   assert.deepEqual(results, new Map([['mossfinch', []]]));
-  assert.deepEqual(Object.fromEntries(searches), { 'Moss Finch': 1, 'Willow Sail': 2 });
+  assert.deepEqual(Object.fromEntries(searches), { 'Moss Finch': 1, 'Willow Sail': 3 });
   const unavailable = await searchAndroidApps(new Map([['softsparrow', 'Soft Sparrow']]),
     { directory, now, launch: noBrowser, fetcher: async () => new Response('busy', { status: 503 }) });
   assert.deepEqual(unavailable, new Map());

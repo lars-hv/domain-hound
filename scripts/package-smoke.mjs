@@ -73,7 +73,9 @@ try {
       assert.equal(names[0].name, 'example.com');
       assert.deepEqual(names[0].taken, ['com'], JSON.stringify(names[0]));
       assert.ok(display.includes('example.com'));
-      assert.match(display.split('\n').at(-1), /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/);
+      const lines = display.split('\n');
+      assert.ok(/^Results page: \[Open results\]\(.+\.html>?\)$/.test(lines[0])
+        || /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/.test(lines.at(-1)), display);
       console.log(`Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken, `
         + `${Math.round(performance.now() - started)} ms`);
     }

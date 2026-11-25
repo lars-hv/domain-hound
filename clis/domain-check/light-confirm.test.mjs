@@ -159,7 +159,33 @@ function registry(free) {
   };
 }
 
-test('the default check confirms the top pick and up to three runners-up through a keyed shop API, never a browser', async t => {
+test('by default a keyed shop API is asked about the pick only, and the receipt names what it asked', async t => {
+  const directory = await cache(t);
+  const free = ['quietfern.com', 'quietfern.me', 'quietfern.co'];
+  const asked = [];
+  const result = await agentResult(['quietfern'], { ...registry(free), directory, now, cachedOnly: true, env: spaceshipKeys,
+    endings: ['com', 'me', 'co'],
+    fetcher: async (url, init) => {
+      if (url.startsWith('https://spaceship.dev/')) {
+        asked.push(...JSON.parse(init.body).domains);
+        return Response.json(url.endsWith('/available')
+          ? { domains: JSON.parse(init.body).domains.map(domain => ({ domain, result: 'available' })) } : api.spaceshipPricing);
+      }
+      if (url === 'https://data.iana.org/rdap/dns.json') return Response.json({ services: [[['com'], ['https://rdap.example/']]] });
+      return new Response(null, { status: 404 });
+    },
+    confirm: async () => assert.fail('The browser runs only on the explicit confirm flag'),
+  });
+  assert.equal(new Set(asked).size, 1);
+  assert.deepEqual(result.shopAsked, [...new Set(asked)]);
+  // Without a key no shop is asked at all.
+  const keyless = await agentResult(['quietfern'], { ...registry(free), directory: await cache(t), now, cachedOnly: true, env: {},
+    endings: ['com', 'me', 'co'], fetcher: async url => url === 'https://data.iana.org/rdap/dns.json'
+      ? Response.json({ services: [[['com'], ['https://rdap.example/']]] }) : new Response(null, { status: 404 }) });
+  assert.equal(keyless.shopAsked, undefined);
+});
+
+test('with DOMAIN_HOUND_SHOP_QUOTES=top4 the check confirms the top pick and up to three runners-up through a keyed shop API, never a browser', async t => {
   const directory = await cache(t);
   const checkedAt = now.toISOString();
   await writeCache(directory, 'prices.json', { checkedAt, catalogs: { spaceship: { checkedAt, prices: {
@@ -170,8 +196,8 @@ test('the default check confirms the top pick and up to three runners-up through
   } } } });
   const free = ['quietfern.com', 'quietfern.io', 'quietfern.me', 'quietfern.co', 'quietfern.ai', 'quietfern.app'];
   const asked = [];
-  const result = await agentResult(['quietfern'], { ...registry(free), directory, now, cachedOnly: true, env: spaceshipKeys,
-    endings: ['com', 'io', 'me', 'co', 'ai', 'app'],
+  const result = await agentResult(['quietfern'], { ...registry(free), directory, now, cachedOnly: true,
+    env: { ...spaceshipKeys, DOMAIN_HOUND_SHOP_QUOTES: 'top4' }, endings: ['com', 'io', 'me', 'co', 'ai', 'app'],
     fetcher: async (url, init) => {
       if (url.startsWith('https://spaceship.dev/')) {
         asked.push(...JSON.parse(init.body).domains);
