@@ -13,9 +13,14 @@
   "homepage": "https://domainhound.dev",
   "repository": {
     "type": "git",
-    "url": "https://domainhound.dev"
+    "url": "git+https://github.com/lars-hv/domain-hound.git"
   },
-  "keywords": ["mcp", "domains", "claude", "codex"],
+  "keywords": [
+    "mcp",
+    "domains",
+    "claude",
+    "codex"
+  ],
   "mcpName": "dev.domainhound/domain-hound",
   "files": [
     "bin/domain-hound.mjs",
@@ -52,5 +57,8 @@
   },
   "dependencies": {
     "parse5": "^7.3.0"
+  },
+  "bugs": {
+    "url": "https://github.com/lars-hv/domain-hound/issues"
   }
 }
