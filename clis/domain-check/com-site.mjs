@@ -17,12 +17,12 @@ for (const [address, prefix] of [['2001::', 23], ['2001:db8::', 32], ['2002::', 
 const globalIpv6 = new BlockList();
 globalIpv6.addSubnet('2000::', 3, 'ipv6');
 
-function publicAddress({ address, family }) {
+export function publicAddress({ address, family }) {
   return family === 4 ? !restricted.check(address)
     : globalIpv6.check(address, 'ipv6') && !restricted.check(address, 'ipv6');
 }
 
-function lookupPublic(signal) {
+export function lookupPublic(signal) {
   return (host, options, done) => {
     if (signal.aborted) return done(new Error('Site lookup timed out'));
     const resolver = new Resolver({ timeout: 950, tries: 1 });

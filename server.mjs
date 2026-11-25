@@ -9,6 +9,7 @@ import { progressPrefix } from './clis/domain-check/progress.mjs';
 import { attributed, errorText, progressText } from './display.mjs';
 import { resultPages } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
+import { domainDossier, dossierTool } from './dossier.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -378,7 +379,7 @@ function pendingTriage(progress, rows) {
 
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
-  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles,
+  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -465,7 +466,7 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: [checkTool, triageTool, namingTool, legacyTool, watchTool] });
+    if (method === 'tools/list') return reply({ tools: [checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool] });
     const { name, arguments: args } = params ?? {};
     if (name === namingTool.name) {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
@@ -485,6 +486,13 @@ export async function serve({
       // Preserve a successful submission response even if disk space or local permissions prevent a receipt.
       const data = await pages(result, {}, { watch: true }).catch(() => ({ ...result, display: result.say }));
       return reply(toolResult(JSON.stringify(data)));
+    }
+    if (name === dossierTool.name) {
+      try {
+        return reply(toolResult(JSON.stringify(await dossier(args))));
+      } catch (problem) {
+        return reply(errorResult(problem.message));
+      }
     }
     const purchase = isObject(args) && args.purchase === true;
     if (name === triageTool.name) {

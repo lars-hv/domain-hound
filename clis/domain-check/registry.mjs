@@ -121,7 +121,7 @@ export function rdapDomainUrl(base, domain) {
   return base.replace(/\/?$/, '/') + 'domain/' + encodeURIComponent(domain);
 }
 
-async function bootstrap(directory, fetcher, now, timeLeft) {
+export async function bootstrap(directory, fetcher, now, timeLeft) {
   const saved = await readCache(directory, 'iana.json');
   const day = 86_400_000;
   const age = now - saved?.savedAt;

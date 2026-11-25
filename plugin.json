@@ -13,7 +13,7 @@
       "interface": {
         "displayName": "Domain Hound",
         "shortDescription": "Domain prices and name checks",
-        "longDescription": "Domain Hound is a local MCP server that helps you pick a product name and the best domain. It checks real registry availability, finds the cheapest trusted shop including the renewal price, and screens names for trademark conflicts, app store clashes and web traction. It has four tools: check_domains, triage_names, naming_method and watch_domain. It runs on your machine over stdio, needs no account, and is open source under the MIT license.",
+        "longDescription": "Domain Hound is a local MCP server that helps you pick a product name and the best domain. It checks real registry availability, finds the cheapest trusted shop including the renewal price, and screens names for trademark conflicts, app store clashes and web traction. It has five tools: check_domains, triage_names, naming_method, watch_domain and taken_domain_dossier. It runs on your machine over stdio, needs no account, and is open source under the MIT license.",
         "developerName": "Lars Hvinden",
         "category": "Developer Tools",
         "capabilities": [
