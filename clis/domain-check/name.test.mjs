@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { classifyComSite } from './com-site.mjs';
 import { confirmAtShops, confirmDomain, parseSpaceshipRows } from './confirm.mjs';
-import { nameCandidates, normalizeName, pickName, rankName, searchName, termCosts } from './name-search.mjs';
+import { endingTier, nameCandidates, normalizeName, pickName, rankName, searchName, termCosts } from './name-search.mjs';
 
 import { agentResult } from './index.mjs';
 import { saleMarketplace } from './parking.mjs';
@@ -145,10 +145,11 @@ test('requires an eligibility opt-in before picking a restricted ending', () => 
   const rows = rankName(nameCandidates('example', { endings: ['no', 'co'] }).map(row => ({
     ...row, status: 'probably-free', price: row.tld === 'no' ? 2 : 4, renewal: 6,
   })));
-  assert.equal(rows[0].terms.eligibility.includes('Norwegian'), true);
+  const norway = rows.find(row => row.tld === 'no');
+  assert.match(norway.terms.eligibility, /Norwegian/);
   assert.equal(pickName(rows).domain, 'example.co');
   assert.equal(pickName(rows, ['no']).domain, 'example.no');
-  assert.equal(pickName(rows.slice(0, 1)), undefined);
+  assert.equal(pickName([norway]), undefined);
 });
 
 test('serializes concurrent Spaceship confirmations and allows the next shop after a failed check', async () => {
@@ -364,7 +365,7 @@ test('agent returns a confirmed row, single-query variants and exact-domain supp
   });
   assert.deepEqual(json.names, [{
     name: 'example',
-    taken: ['com', 'ai', 'io', 'co', 'dev', 'app', 'si', 'no', 'net', 'org', 'xyz', 'tech', 'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com'],
+    taken: ['com', 'ai', 'io', 'co', 'dev', 'app', 'si', 'net', 'org', 'xyz', 'tech', 'no', 'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com'],
     free: [{ d: 'me', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship', at: '10:00' },
       { d: 'so', s: 'nc', shop: 'Namecheap' }],
   }]);
@@ -446,8 +447,8 @@ test('agent checks all fourteen endings for 20 names and keeps the priced output
   assert.ok(Buffer.byteLength(JSON.stringify(result)) + 1 < 8000);
   assert.deepEqual(result.listPrices.ai, { now: 16, renew: 38, y3: 54, term: 2, jump: true, shop: 'Dynadot' });
   for (const { free } of result.names) {
-    const prices = free.map(row => row.now ?? result.listPrices[row.d].now);
-    assert.deepEqual(prices, [...prices].sort((a, b) => a - b));
+    const prices = free.map(row => [endingTier(row.d), row.now ?? result.listPrices[row.d].now]);
+    assert.deepEqual(prices, prices.toSorted(([aTier, aNow], [bTier, bNow]) => aTier - bTier || aNow - bNow));
   }
   for (const names of [[], ['a', 'x..com'], Array(21).fill('example')]) {
     assert.equal(typeof (await agentResult(names)).error, 'string');

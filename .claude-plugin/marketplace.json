@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "domain-hound",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "source": "./",
       "description": "Check domains, compare registrar prices, and screen product names."
     }

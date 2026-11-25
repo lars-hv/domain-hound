@@ -87,17 +87,8 @@ function nameGroup({ name, verdict, records, takenDomains: targets }, checkedAt,
 
   const rows = element('ul', 'domain-list');
   rows.setAttribute('aria-label', 'Domain prices in USD');
-  const offers = [];
-  const others = [];
-  for (const record of records) {
-    if (record.status === registryFree || record.status === 'Confirmed at shop') offers.push(record);
-    else if (!(record.status === 'Taken' && record.now == null && record.renew == null && targets.includes(record.domain))) {
-      others.push(record);
-    }
-  }
-  offers.sort((a, b) => (a.now ?? Infinity) - (b.now ?? Infinity));
-  for (const record of [...offers, ...others]) rows.append(domainRow(record));
-  if (offers.length || others.length) card.append(rows);
+  for (const record of records) rows.append(domainRow(record));
+  card.append(rows);
   return card;
 }
 

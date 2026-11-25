@@ -1,6 +1,6 @@
 {
   "name": "domain-hound",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Find a startup name and domain you can actually buy: availability, prices, app names, trademarks. MCP for Claude Code and Codex.",
   "license": "MIT",
   "type": "module",

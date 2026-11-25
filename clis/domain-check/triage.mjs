@@ -1,4 +1,4 @@
-import { canRecommend, defaultEndings, eligibilityNotes, nameCandidates, normalizeName, searchCandidates, searchKey,
+import { canRecommend, defaultEndings, eligibilityNotes, endingTier, nameCandidates, normalizeName, searchCandidates, searchKey,
   validEligibility, validEndings } from './name-search.mjs';
 import { shopSearchUrl } from './prices.mjs';
 import { checkHandles, compactText, handleSearches, letters, markOrder, searchApps, searchEntities, searchMarks, trademarkSearches }
@@ -279,6 +279,8 @@ export async function triageNames(inputs, options = {}) {
   if (options.endings && !validEndings(options.endings)) return { error: 'Choose supported domain endings.' };
   if (options.eligible !== undefined && !validEligibility(options.eligible)) return { error: 'Eligible endings must list supported restricted endings, such as no.' };
   const endings = options.endings ?? defaultEndings;
+  const preferred = options.preferredEndings ?? [];
+  const requestedEndings = [...preferred, ...(options.eligible ?? [])];
   const websiteEndings = [...new Set([...endings, ...coreWebsiteEndings])];
   // Each name has its DNS label (punycode for æøå) for domains, and a Latin key for the rival, app and mark sources.
   const names = new Map();
@@ -440,7 +442,9 @@ export async function triageNames(inputs, options = {}) {
   const rows = domains.groups.map(({ name, results, sites }, index) => {
       const requested = results.filter(row => endings.includes(row.tld));
       const available = results.filter(row => row.status === 'probably-free' && endings.includes(row.tld));
-      const recommendable = available.filter(row => canRecommend(row.tld, options.eligible));
+      const recommendable = available.filter(row => canRecommend(row.tld, options.eligible)
+        && (!preferred.length || preferred.includes(row.tld)));
+      if (preferred.length) recommendable.sort((a, b) => preferred.indexOf(a.tld) - preferred.indexOf(b.tld));
       const [best] = recommendable;
       const social = socialByName.get(keys.get(name)) ?? null;
       const domainFields = {
@@ -599,13 +603,13 @@ export async function triageNames(inputs, options = {}) {
     row.checks = options.compact ? null
       : nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
   }
-  for (const row of googleCandidates(rows)) row.google.search = true;
+  for (const row of googleCandidates(rows, requestedEndings)) row.google.search = true;
   const sourcesSummary = Object.fromEntries(Object.entries(counts).map(([source, answered]) =>
     [source, Math.round(100 * answered / Math.min(names.size, screenLimit))]));
   const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, meaning, _receiptEndings, _handles, _waiting }) =>
     ({ competition, details, traction, google, reason, meaning, endings: _receiptEndings, handles: _handles,
       ...(_waiting?.().length && { waiting: _waiting() }) }))) : null;
-  const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible);
+  const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible, requestedEndings);
   // The first pass of a follow-up run says more checks are coming.
   if (answerBy && waiting.size) result.followUp = true;
   if (options.receipt) {
@@ -641,8 +645,8 @@ function compactHandles(entries) {
 }
 
 // The first three ranked names, filled from the screened names in input order when fewer than three rank.
-export function googleCandidates(rows) {
-  const picked = rankedRows(rows).slice(0, 3);
+export function googleCandidates(rows, requested) {
+  const picked = rankedRows(rows, requested).slice(0, 3);
   for (const row of rows) if (picked.length < 3 && !picked.includes(row)) picked.push(row);
   return picked;
 }
@@ -670,17 +674,28 @@ export function bestValue(options) {
     || (row.threeYear === best.threeYear && row.firstPayment < best.firstPayment) ? row : best, undefined);
 }
 
-function rankedRows(rows) {
+// Best value within the most attractive tier that has an in-scope row. When that tier's rows lack a usable three-year
+// total, there is no best value yet (it needs a shop quote); a fallback ending never takes over silently.
+export function tierBestValue(options, requested = []) {
+  const tier = Math.min(...options.map(row => endingTier(row.domain, requested)));
+  return bestValue(options.filter(row => endingTier(row.domain, requested) === tier));
+}
+
+// A name's pick is its first recommendable row (ranked by tier, then upfront payment); a name without one sorts last.
+const pickTier = (row, requested) => row._recommendable[0] ? endingTier(row._recommendable[0].domain, requested) : Infinity;
+
+function rankedRows(rows, requested = []) {
   const order = { 'No conflict found': 0, 'Check first': 1 };
   return rows.filter(row => row.verdict !== 'Avoid').sort((a, b) => order[a.verdict] - order[b.verdict]
+    || pickTier(a, requested) - pickTier(b, requested)
     || (a._recommendable[0]?.firstPayment ?? Infinity) - (b._recommendable[0]?.firstPayment ?? Infinity));
 }
 
-function topChoices(rows) {
-  return rankedRows(rows).slice(0, 3)
+function topChoices(rows, requested) {
+  return rankedRows(rows, requested).slice(0, 3)
     .map(({ name, verdict, reason, _recommendable }) => {
       const [best] = _recommendable;
-      const value = bestValue(_recommendable);
+      const value = tierBestValue(_recommendable, requested);
       return {
         name, verdict, reason, domain: best?.domain ?? null, ending: best?.tld ?? null,
         now: best?.firstPayment ?? null, renew: best?.renewalPayment ?? null, term: best?.minimumYears ?? null,
@@ -691,9 +706,9 @@ function topChoices(rows) {
 }
 
 // Share each ending's standard price once and keep only per-name differences.
-function packTriage(rows, sources, compact, endings, eligible) {
+function packTriage(rows, sources, compact, endings, eligible, requested = []) {
   const prices = {};
-  const top = topChoices(rows);
+  const top = topChoices(rows, requested);
   // Handle states for the top names: taken, not_found (no public profile found) or check (check yourself).
   const handles = Object.fromEntries(rows.filter(row => row._social).map(row => [row.name, row._social]));
   const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, _receiptEndings, _handles, _social, _waiting, ...row }) => {
@@ -704,7 +719,7 @@ function packTriage(rows, sources, compact, endings, eligible) {
       if (!prices[option.tld]) prices[option.tld] = entry;
       else if (JSON.stringify(prices[option.tld]) !== JSON.stringify(entry)) own[option.tld] = entry;
     }
-    return { ...row, free: _free.map(option => option.tld), own, bestValue: bestValue(_recommendable)?.tld ?? null };
+    return { ...row, free: _free.map(option => option.tld), own, bestValue: tierBestValue(_recommendable, requested)?.tld ?? null };
   });
   const result = { top, names, prices, sources, eligibility: eligibilityNotes(endings),
     ...(Object.keys(handles).length && { handles }),
