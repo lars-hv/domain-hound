@@ -793,7 +793,8 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
         const key = JSON.parse(init.body).query.bool.must[0].bool.should[0].match_phrase.wordmark.query;
         return Response.json({ hits: { hits: [{ source: {
           alive: true, wordmark: key.slice(0, -1) + 'e', ownerName: ['株式会社'.repeat(18)],
-          internationalClass: Array.from({ length: 10 }, (_, index) => 'IC 0' + (index + 30)),
+          // Ten classes outside the software classes 009, 035 and 042, so the near mark stays a Check first.
+          internationalClass: Array.from({ length: 10 }, (_, index) => 'IC 0' + (index + 10)),
         } }] } });
       }
       if (url.hostname === 'itunes.apple.com') return Response.json({ results: [] });
@@ -808,7 +809,7 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   // Trademarks, apps and rivals screen the first five names; the rest get registry answers and prices only.
   assert.ok(marksAsked >= 5 && marksAsked <= 10, String(marksAsked));
   for (const [index, row] of report.names.entries()) {
-    if (index < 5) assert.match(row.reason, /^Near-identical: ex.*030\/031/);
+    if (index < 5) assert.match(row.reason, /^Near-identical: ex.*010\/011/);
     else assert.match(row.reason, /^Not screened/);
     assert.notEqual(row.verdict, 'No conflict found');
     assert.equal(row.free.length, 14);

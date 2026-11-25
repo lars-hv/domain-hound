@@ -722,8 +722,11 @@ export function triageText(result, prior, { purchase = false, preferred } = {}) 
     row => {
       if (!row.competition) return;
       row.competition.mark = null;
+      delete row.competition.marks;
       if (typeof row.competition.sameName === 'object') row.competition.sameName = row.competition.sameName?.level ?? null;
-      if (typeof row.competition.US === 'string') row.competition.US = row.competition.US.split(':', 1)[0];
+      for (const office of ['US', 'EU', 'NO']) {
+        if (typeof row.competition[office] === 'string') row.competition[office] = row.competition[office].split(':', 1)[0];
+      }
       for (const source of ['AppStore', 'GooglePlay', 'Wikidata']) {
         const match = row.competition[source];
         if (Array.isArray(match) && match.length) row.competition[source] = match[0].name;

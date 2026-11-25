@@ -85,7 +85,7 @@ const triageTool = {
   name: 'triage_names',
   description: 'Use for “find a name and domain” or “can I use this name?”. For a new name, generate five distinct, easy-to-say candidates now. '
     + 'Call triage_names once with those names, an about description under 160 characters, and shortlist: true. No preliminary tool or web search is needed. '
-    + 'Put the person’s own name first if supplied. The tool checks fourteen endings, US marks, apps and rivals. The receipt fills in slow checks and top-three handles. '
+    + 'Put the person’s own name first if supplied. The tool checks fourteen endings, US marks, optional EU and Norway marks, apps, rivals and meanings in 14 languages. The receipt fills in slow checks and top-three handles. '
     + 'Use the returned verdicts. Report checks in progress as pending and give the page link. ' + relay,
   inputSchema: {
     type: 'object',

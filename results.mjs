@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canRecommend, defaultEndings, domainEnding, eligibilityNeed, normalizeName } from './clis/domain-check/name-search.mjs';
 import { handlePriorities, handleStates, handleSummary } from './clis/domain-check/handles.mjs';
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
+import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { safeLink } from './display.mjs';
 import { receiptStyle } from './results-style.mjs';
 import { shareUrl } from './share.mjs';
@@ -25,11 +26,29 @@ const markOf = row => row.competition?.US;
 const waitingOn = (row, source) => Array.isArray(row.waiting) && row.waiting.includes(source);
 const notScreened = row => row.competition?.sameName?.summary === 'Not screened';
 const missing = (row, source) => waitingOn(row, source) ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete';
-const marksText = row => {
-  const mark = markOf(row);
-  return 'US marks: ' + (typeof mark === 'string' ? evidenceText(mark) : mark == null
-    ? (waitingOn(row, 'USPTO') ? 'still checking' : notScreened(row) ? 'not screened' : 'not checked') : 'no match found');
+// EU and Norway marks appear once their key is set: a hit, [] for none, null for check yourself.
+const offices = [['EU', 'EU', 'EUIPO'], ['NO', 'Norway', 'Patentstyret']];
+const officeText = (row, office) => {
+  const mark = row.competition?.[office];
+  return typeof mark === 'string' ? evidenceText(mark) : mark === true ? 'match found' : mark == null ? (waitingOn(row, offices.find(([id]) => id === office)?.[2]) ? 'still checking' : 'check yourself') : 'no match found';
 };
+const marksText = (row, skip = []) => {
+  const mark = markOf(row);
+  return [...(skip.includes('US') ? [] : ['US marks: ' + (typeof mark === 'string' ? evidenceText(mark) : mark == null ? missing(row, 'USPTO') : 'no match found')]),
+    ...offices.filter(([office]) => Object.hasOwn(row.competition ?? {}, office) && !skip.includes(office))
+      .map(([office, label]) => label + ' marks: ' + officeText(row, office))].join('; ');
+};
+// Record links only to the offices' own record pages.
+const recordHosts = new Set(['euipo.europa.eu', 'services.patentstyret.no', 'tsdr.uspto.gov']);
+const recordLink = value => {
+  const url = httpsLink(value);
+  return url && recordHosts.has(new URL(url).hostname) ? url : null;
+};
+const officeMarks = row => (Array.isArray(row.competition?.marks) ? row.competition.marks : [])
+  .filter(entry => entry && typeof entry === 'object' && typeof entry.mark === 'string');
+const markLabel = entry => plain(entry.office) + ' mark: ' + plain(entry.tier) + ' ' + plain(entry.mark) + ', ' + plain(entry.status)
+  + ', classes ' + ((Array.isArray(entry.classes) ? entry.classes : []).map(plain).join('/') || 'unavailable')
+  + (entry.checkedAt ? ', earlier answer from ' + plain(entry.checkedAt) : '');
 const watchLink = domain => 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(domain);
 const verdictOrder = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
 
@@ -185,7 +204,7 @@ function summary(groups, args, triage, selection) {
   const reason = evidenceText(wanted.row.reason).replace('David vs Goliath: ', 'Established rival: ');
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
     + reason.replaceAll(' · ', '. ') + '.'
-    + (typeof markOf(wanted.row) === 'string' && reason.includes(markOf(wanted.row)) ? ' US trademark screen.' : ' ' + marksText(wanted.row) + '.')
+    + markScreen(wanted.row, reason)
     + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best free rename: ' : ' Next name to check: ')
       + plain(best.group.row.name) + '.' : '')
     + (picks.some(item => item.group === wanted) ? '' : ' | ' + signals(wanted, triage)) : null;
@@ -243,6 +262,20 @@ export function savingsLine(record) {
     + plain(value.medianShop) + ', the median of ' + value.shops + ' shops\' list prices from ' + dates + '.';
 }
 
+// The trademark part of the kept name's line: offices whose hit the reason already names are not repeated,
+// and the strongest EU or Norwegian hit links to its record.
+function markScreen(row, reason) {
+  const named = ['US', ...offices.map(([office]) => office)].filter(office =>
+    typeof row.competition?.[office] === 'string' && reason.includes(evidenceText(row.competition[office])));
+  const manual = offices.filter(([office, , name]) => row.competition?.[office] == null && !waitingOn(row, name));
+  const rest = marksText(row, [...named, ...manual.map(([office]) => office)]);
+  const [hit] = officeMarks(row);
+  const link = hit && recordLink(hit.url);
+  return (named.length ? ' ' + named.map(office => office === 'NO' ? 'Norway' : office).join(' and ') + ' trademark screen.' : '')
+    + (rest ? ' ' + rest + '.' : '') + (link ? ' [' + plain(hit.office) + ' record](' + link + ').' : '')
+    + manual.map(([, label, name]) => ' [' + name + '](' + trademarkSearches[label] + '): check yourself.').join('');
+}
+
 function httpsLink(value) {
   if (typeof value !== 'string') return null;
   try {
@@ -262,6 +295,15 @@ function details(group) {
   const android = Array.isArray(comp.GooglePlay) ? comp.GooglePlay : comp.GooglePlay ? [comp.GooglePlay] : [];
   const matches = [
     ['US marks: ' + (typeof markOf(row) === 'string' ? plain(markOf(row)) : markOf(row) == null ? missing(row, 'USPTO') : 'no match found'), httpsLink(comp.mark)],
+    ...officeMarks(row).map(entry => [markLabel(entry), recordLink(entry.url)]),
+    // An office without a key, or one that did not answer in full, reads check yourself with its search.
+    ...offices.filter(([office]) => typeof comp[office] !== 'string').map(([office, label, name]) => [
+      label + ' marks: ' + (!Object.hasOwn(comp, office) ? 'not checked automatically, check yourself'
+        : waitingOn(row, name) ? 'still checking'
+           : comp[office] == null ? 'check yourself, ' + name + ' did not answer in full' : 'no match found'),
+      Array.isArray(comp[office]) ? null : trademarkSearches[label]]),
+    ['WIPO marks: check yourself', trademarkSearches.WIPO],
+    ...(row.meaning ? [['Meaning: ' + plain(row.meaning)]] : []),
     ...(comp.AppStore == null ? [['iOS: ' + missing(row, 'App Store')]] : []),
     ...(comp.GooglePlay == null ? [['Android: ' + missing(row, 'Google Play')]] : []),
     ...ios.map(value => ['iOS: ' + titleAndLink(value)[0], titleAndLink(value)[1]]),
@@ -297,8 +339,17 @@ function handleLines(group) {
   });
 }
 
+function trademarkSnapshot(row) {
+  const comp = row.competition ?? {};
+  const keyed = offices.filter(([office]) => Object.hasOwn(comp, office));
+  const found = value => value === true || (typeof value === 'string' && value.length > 0);
+  if (found(comp.US) || keyed.some(([office]) => found(comp[office]))) return 'match found';
+  if (['USPTO', ...keyed.map(([, , name]) => name)].some(name => waitingOn(row, name))) return 'still checking';
+  if (comp.US == null || keyed.some(([office]) => comp[office] == null)) return notScreened(row) ? 'not screened' : 'check incomplete';
+  return 'no ' + ['US', ...keyed.map(([, label]) => label)].join(' or ') + ' match';
+}
+
 function nameSnapshot({ row, records }) {
-  const mark = row.competition?.US;
   const apps = [row.competition?.AppStore, row.competition?.GooglePlay];
   const open = records.filter(record => record.state === 'free' && record.eligible).length;
   const blocked = records.filter(record => record.state === 'taken').length;
@@ -308,7 +359,8 @@ function nameSnapshot({ row, records }) {
   const checks = handles.filter(handle => handle.state === 'check').length;
   return [
     'Domains ' + open + ' open' + (blocked ? ', ' + blocked + ' taken' : ''),
-    'Trademark ' + (mark == null ? missing(row, 'USPTO') : mark.length ? 'match found' : 'no US match'),
+    'Trademark ' + trademarkSnapshot(row),
+    ...(row.meaning ? ['Meaning: check first'] : []),
     'Apps ' + (apps.some(value => value?.length) ? 'same-name listing' : apps.some(value => value == null)
       ? (waitingOn(row, 'App Store') || waitingOn(row, 'Google Play') ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete') : 'no match'),
     'Handles ' + (handles.length ? [taken ? taken + ' taken' : null,

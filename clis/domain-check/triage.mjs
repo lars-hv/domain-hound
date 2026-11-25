@@ -1,7 +1,10 @@
 import { canRecommend, defaultEndings, eligibilityNotes, nameCandidates, normalizeName, searchCandidates, searchKey,
   validEligibility, validEndings } from './name-search.mjs';
 import { shopSearchUrl } from './prices.mjs';
-import { checkHandles, compactText, handleSearches, letters, searchApps, searchEntities, searchMarks, trademarkSearches } from './triage-sources.mjs';
+import { checkHandles, compactText, handleSearches, letters, markOrder, searchApps, searchEntities, searchMarks, trademarkSearches }
+  from './triage-sources.mjs';
+import { checkOffice, officeAnswered, officeNames } from './trademarks.mjs';
+import { screenMeaning } from './meaning.mjs';
 import { loadEdgarCompanies, matchEdgarCompanies, searchNorwegianCompanies } from './company-search.mjs';
 import { mapLimit } from './cache.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -141,9 +144,20 @@ function appStatus(ios, android) {
     + (android ? android.length ? taken('Android', android) : 'free on Android' : 'Android not checked');
 }
 
+// US marks read as before; EU and Norwegian marks name their office and status first.
 function trademarkReason(mark) {
-  return mark && mark.tier + ': ' + mark.name + ' (' + (mark.owner || 'owner unavailable') + ', '
+  const office = mark?.office && mark.office !== 'US' ? officeNames[mark.office] + ' ' + mark.status + ', ' : '';
+  return mark && mark.tier + ': ' + mark.name + ' (' + office + (mark.owner || 'owner unavailable') + ', '
     + (mark.classes.join('/') || 'class unavailable') + ')';
+}
+
+// The EU and Norwegian hits a person can open: office, mark, status, classes and the office's own record.
+function officeMarkEntries(marks) {
+  const firstByOffice = Object.keys(officeNames).map(office => marks.find(mark => mark.office === office)).filter(Boolean);
+  const selected = [...firstByOffice, ...marks.filter(mark => !firstByOffice.includes(mark))].slice(0, 3).sort((a, b) =>
+    marks.indexOf(a) - marks.indexOf(b));
+  return selected.map(mark => ({ office: officeNames[mark.office], mark: mark.name,
+    tier: mark.tier, status: mark.status, classes: mark.classes, url: mark.url, ...(mark.checkedAt && { checkedAt: mark.checkedAt }) }));
 }
 
 function verdict({ mark, otherMark, silent, waiting = [], ...evidence }) {
@@ -157,9 +171,12 @@ function verdict({ mark, otherMark, silent, waiting = [], ...evidence }) {
   return [decision, [reason, trademark !== reason && trademark, trademarkReason(otherMark), missing].filter(Boolean).join(' · ')];
 }
 
-function silentSources({ marks, apps, android, entities, norway, edgar, github, handles }) {
+function silentSources({ marks, offices, apps, android, entities, norway, edgar, github, handles }) {
   return Object.entries({
-    USPTO: marks, 'App Store': apps, 'Google Play': android, Wikidata: entities, Brønnøysund: norway,
+    USPTO: marks,
+    ...Object.fromEntries(offices.filter(result => result.state !== 'off')
+      .map(result => [officeNames[result.office], officeAnswered(result) ? true : null])),
+    'App Store': apps, 'Google Play': android, Wikidata: entities, Brønnøysund: norway,
     EDGAR: edgar, GitHub: github.status === 'check' ? null : github.status,
     npm: handles.npm === 'check' ? null : handles.npm,
   }).filter(([, value]) => value == null).map(([source]) => source);
@@ -226,7 +243,7 @@ export async function namePresence(input, options = {}) {
 // Same-name rivals with measured traction follow the traction rules first; evidence whose traction could not be
 // measured keeps the earlier same-name checks. Trademark and availability guardrails stay in place.
 function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, mark, site, best, available, marks, apps, android,
-  androidAnswered = android, company, premium = [] }) {
+  androidAnswered = android, company, premium = [], offices = [] }) {
   if (rival?.[0] === 'Avoid') return rival;
   if (overlap) return ['Avoid', overlap.domain + ' is a live business in the same category'];
   if (activeApp) return ['Avoid', activeApp.name + ' is an app in the same category with ' + activeApp.ratings + ' ' + activeApp.store + ' ratings'];
@@ -241,12 +258,17 @@ function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, 
   if (android?.length) return ['Check first', 'An exact-name Android app already exists'];
   if (site) return ['Check first', site.domain + ' has a live site under this name'];
   if (entity) return ['Check first', 'An exact-name Wikidata entity already exists'];
-  if (!marks || !apps || !androidAnswered || sameName.unchecked?.length) return ['Check first', 'A competition source did not answer'];
+  const answeredOffices = offices.filter(result => result.state !== 'off');
+  if (!marks || !apps || !androidAnswered || sameName.unchecked?.length || !answeredOffices.every(officeAnswered)) {
+    return ['Check first', 'A competition source did not answer'];
+  }
   if (!best) {
     return ['Check first', available.length ? 'The free endings require buyer eligibility'
       : premium.length ? 'The free endings may be premium, price at shop' : 'No domain was found free at the registry'];
   }
-  return ['No conflict found', 'No US mark, same-name app or active company found in the sources checked'];
+  const regions = ['US', ...answeredOffices.map(result => ({ EU: 'EU', NO: 'Norwegian' })[result.office])];
+  return ['No conflict found', 'No ' + regions.slice(0, -1).join(', ') + (regions.length > 1 ? ' or ' : '') + regions.at(-1)
+    + ' mark, same-name app or active company found in the sources checked'];
 }
 
 export async function triageNames(inputs, options = {}) {
@@ -361,8 +383,12 @@ export async function triageNames(inputs, options = {}) {
     { ...sources, onResult: (name, apps) => playLive.set(name, apps),
       playBudgetMs: Math.min(answerBy ? 20000 : 12000, options.playBudgetMs ?? Infinity, budgetMs) }));
   const unverifiedHandles = { github: { status: 'check' }, handles: { GitHub: 'check', npm: 'check' } };
-  const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName, socialByName] =
-    await Promise.all([
+  // Share the optional office lookups between passes and keep them off the first answer's critical path.
+  const officeCheck = office => mapLimit(entries, 4, ([name, input, index]) => isScreened(index)
+    ? byAnswer(once(office + ':' + name, () => checkOffice(office, name, input, sources)),
+      index, officeNames[office], { office, state: 'pending' }) : null);
+  const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName, socialByName,
+    euByName, noByName] = await Promise.all([
       // A cold cache still gets the bundled, dated list prices, so free endings never all read "price at shop".
       // The second pass also collects the slow website checks.
       options.memo && !answerBy ? domainsDone.then(async done => { await done.settleSites?.(); return done; }) : domainsDone,
@@ -383,6 +409,7 @@ export async function triageNames(inputs, options = {}) {
         sameBusiness: text => describedBusiness(name, text, options.about, options.category),
       })), index, 'Google', { unchecked: 'still checking' }) : { unchecked: 'not screened' }),
       handleRows,
+      officeCheck('EU'), officeCheck('NO'),
     ]);
   const counts = {};
   function coverage(source, answered) { counts[source] = (counts[source] ?? 0) + Number(answered); }
@@ -461,8 +488,12 @@ export async function triageNames(inputs, options = {}) {
       const storeApps = storeAppsByName[index];
       const activeApp = storeApps.find(row => !explained.has(row.ref) && row.ratings >= 100 && describedBusiness(key,
         [row.name, row.category, row.description].join(' '), options.about, options.category));
-      const mark = marks?.[0];
-      const others = marks?.filter(item => letters(item.name) !== letters(mark?.name)) ?? [];
+      const offices = [euByName[index], noByName[index]].filter(Boolean);
+      const officeMarks = offices.flatMap(result => result.marks ?? []);
+      // US, EU and Norwegian hits share one order; a same-name mark at another office stays a separate hit.
+      const allMarks = [...(marks ?? []), ...officeMarks].sort(markOrder(key));
+      const mark = allMarks[0];
+      const others = allMarks.filter(item => item !== mark && (item.office !== mark?.office || letters(item.name) !== letters(mark?.name)));
       const otherMark = others.find(item => item.relevant) ?? others.find(item => item.tier === 'Fuzzy') ?? others[0];
       const seen = websiteEndings.flatMap(tld => {
         const row = results.find(result => result.tld === tld);
@@ -493,7 +524,7 @@ export async function triageNames(inputs, options = {}) {
       const sitesSilent = sitesWaiting || Object.values(sites).some(site => site?.state === 'unknown');
       if (answerBy && sitesWaiting) wait(index, 'websites');
       const pending = waitingFor(index);
-      const silent = silentSources({ marks, apps, android, entities, norway, edgar, github, handles })
+      const silent = silentSources({ marks, offices, apps, android, entities, norway, edgar, github, handles })
         .filter(source => (!options.deferHandles || !['GitHub', 'npm'].includes(source)) && !pending.includes(source));
       if (sitesSilent && !pending.includes('websites')) silent.push('websites');
       const otherEntity = otherEntities?.find(row => row.brand) ?? otherEntities?.[0];
@@ -501,19 +532,29 @@ export async function triageNames(inputs, options = {}) {
         rival: tractionVerdict(judged), overlap, sameName: legacy, activeApp,
         brand: otherEntity?.brand ? otherEntity : undefined, app: apps?.find(row => !explained.has(row)), entity: otherEntity,
         mark, otherMark, site, silent, waiting: pending, best, available, marks, apps, premium: results.filter(row => row.status === 'premium'),
-        android: android?.filter(row => !explained.has(row)), androidAnswered: android, company,
+        android: android?.filter(row => !explained.has(row)), androidAnswered: android, company, offices,
       });
       const googleExplained = explainedGoogle(key, googleByName[index].raw, judged, entities);
       const summary = tractionSummary(judged);
       const answered = {
         USPTO: marks, 'App Store': apps, 'Google Play': android, Google: google.google, Wikidata: entities,
         Brønnøysund: norway, EDGAR: edgar, ...(options.memo && { Websites: sitesSilent ? null : true }),
+        ...Object.fromEntries(offices.filter(result => result.state !== 'off')
+          .map(result => [officeNames[result.office], officeAnswered(result) ? true : null])),
         ...!options.deferHandles && Object.fromEntries(Object.entries(handles).map(([service, status]) => [service, status === 'check' ? null : status])),
       };
       for (const [source, value] of Object.entries(answered)) coverage(source, value != null);
+      const usMark = marks?.[0];
       const competition = {
-        US: mark ? trademarkReason(mark) : marks ? [] : null,
-        mark: mark?.serial ? 'https://tsdr.uspto.gov/#caseNumber=' + mark.serial + '&caseSearchType=US_APPLICATION&caseType=DEFAULT&searchType=statusSearch' : null,
+        US: usMark ? trademarkReason(usMark) : marks ? [] : null,
+        mark: usMark?.url ?? null,
+        // EU and NO appear once a key is set: the strongest hit, [] when the office answered in full with none,
+        // null when it failed or answered in part (check yourself).
+        ...Object.fromEntries(offices.filter(result => result.state !== 'off').map(result => {
+          const [best] = result.marks;
+          return [result.office, officeAnswered(result) ? (best ? trademarkReason(best) : []) : null];
+        })),
+        ...(officeMarks.length > 0 && { marks: officeMarkEntries(officeMarks.sort(markOrder(key))) }),
         AppStore: app ? { name: app.name, developer: app.seller, ratings: app.ratings, url: app.url } : apps ? [] : null,
         GooglePlay: android?.map(({ name, seller, url, ratings }) => ({ name, developer: seller, url, ratings })).slice(0, 3) ?? null,
         Wikidata: entity ? { name: entity.name, description: entity.description, url: entity.url,
@@ -543,14 +584,23 @@ export async function triageNames(inputs, options = {}) {
   for (const row of rows) {
     // Google evidence that a measured rival explains is judged by its traction, not by the Google floor.
     if (!row._googleExplained) lowerVerdict(row, row.google);
+    // A rude or embarrassing meaning is a note and at most Check first, for every name, screened or not.
+    const meaning = screenMeaning(row.name);
+    if (meaning) {
+      row.meaning = meaning.note;
+      if (row.verdict === 'No conflict found') {
+        row.verdict = 'Check first';
+        row.reason = 'Meaning: ' + meaning.note + ' · ' + row.reason;
+      } else row.reason += ' · Meaning: ' + meaning.note;
+    }
     row.checks = options.compact ? null
       : nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
   }
   for (const row of googleCandidates(rows)) row.google.search = true;
   const sourcesSummary = Object.fromEntries(Object.entries(counts).map(([source, answered]) =>
     [source, Math.round(100 * answered / Math.min(names.size, screenLimit))]));
-  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, _receiptEndings, _handles, _waiting }) =>
-    ({ competition, details, traction, google, reason, endings: _receiptEndings, handles: _handles,
+  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, meaning, _receiptEndings, _handles, _waiting }) =>
+    ({ competition, details, traction, google, reason, meaning, endings: _receiptEndings, handles: _handles,
       ...(_waiting?.().length && { waiting: _waiting() }) }))) : null;
   const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible);
   // The first pass of a follow-up run says more checks are coming.
@@ -671,8 +721,9 @@ function packTriage(rows, sources, compact, endings, eligible) {
     row => { row.details = null; },
     row => { row.buy = null; },
     row => { if (row.traction) delete row.traction.geo; },
+    row => { if (row.competition.marks) row.competition.marks = row.competition.marks.slice(0, 1); },
     row => {
-      const { sameName, mark, ...remaining } = row.competition;
+      const { sameName, mark, marks, ...remaining } = row.competition;
       row.competition = { ...remaining, mark: null, sameName: { level: sameName.level } };
     },
     row => {
@@ -687,7 +738,9 @@ function packTriage(rows, sources, compact, endings, eligible) {
     row => { delete row.google.why; },
     row => { row.name = normalizeName(row.name); },
     row => {
-      if (typeof row.competition.US === 'string') row.competition.US = row.competition.US.split(':', 1)[0];
+      for (const office of ['US', 'EU', 'NO']) {
+        if (typeof row.competition[office] === 'string') row.competition[office] = row.competition[office].split(':', 1)[0];
+      }
       row.reason = row.reason.split(' · ', 1)[0];
     },
     // Last: the results page and say keep the full handle rows.
@@ -700,7 +753,7 @@ function packTriage(rows, sources, compact, endings, eligible) {
     const revised = new Map(rows.map(({ name }, index) => [name, names[index]]));
     for (const [index, row] of names.entries()) {
       row.reason = compactReason(row, rows[index]._mark, 60);
-      if (typeof row.competition.US === 'string') row.competition.US = true;
+      for (const office of ['US', 'EU', 'NO']) if (typeof row.competition[office] === 'string') row.competition[office] = true;
       for (const source of ['AppStore', 'GooglePlay', 'Wikidata']) {
         if (typeof row.competition[source] === 'string') row.competition[source] = true;
       }
@@ -731,6 +784,8 @@ function compactReason(row, mark, budget) {
   const suffix = ', ' + (classes || 'class unavailable') + ')';
   const remaining = budget - Buffer.byteLength(prefix + ' (' + suffix);
   if (remaining < 6) return shortenBytes(row.reason, budget);
+  // A compact EU or Norwegian hit names its office in place of the owner.
+  const owner = mark.office && mark.office !== 'US' ? officeNames[mark.office] : mark.owner || 'owner unavailable';
   return prefix + shortenBytes(mark.name, Math.ceil(remaining / 2)) + ' ('
-    + shortenBytes(mark.owner || 'owner unavailable', Math.floor(remaining / 2)) + suffix;
+    + shortenBytes(owner, Math.floor(remaining / 2)) + suffix;
 }

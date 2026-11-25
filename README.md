@@ -41,13 +41,16 @@ Then ask, for example: “Is lanternbay.com available?”, “Find a name for my
 
 - **Domains:** registry RDAP or WHOIS for fourteen endings by default (.com, .ai, .io, .me, .co, .dev, .app, .si, .so, .no, .net, .org, .xyz, .tech) and, on request, .sh, .gg, .inc, .studio, .se, .dk, .de, .uk, .co.uk and .eu. A domain is never called free without a registry or shop answer.
 - **Prices:** first payment, renewal and three-year cost from first-party registrar price lists, each with its date and label; renewal jumps and premium risk are flagged.
-- **Trademarks:** live US marks (USPTO), with search links for the EU, WIPO and Norway.
+- **Trademarks:** live US marks (USPTO). EU (EUIPO) and Norwegian (Patentstyret) marks too when you set their free keys; otherwise, and for WIPO, search links to check yourself. Exact and near-identical live marks in the relevant classes (9, 35 and 42 for software) count the same at every office.
+- **Meaning:** names that are, contain or sound like a rude word in 14 languages get a note and Check first, never Avoid. Word lists: [LDNOOBW](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words), © Shutterstock, CC BY 4.0, adapted (see `clis/domain-check/meaning-words.LICENSE.txt`).
 - **Apps and rivals:** same-name iOS and Android apps, companies, Wikidata entities and live sites, weighed by their traction.
 - **Handles:** GitHub, npm and Bluesky through their public APIs; YouTube, X, Instagram, TikTok, Facebook, LinkedIn and PyPI as links to check yourself. Each handle reads Taken, No public profile found, or Check yourself.
 
 Registry answers and prices cover every name. Trademark, app and rival checks cover the first five. Slow checks and public handles for the top three fill in the same results page after the first answer. A three-year savings line appears when the pick beats the middle price from at least three dated registrar lists.
 
 The default install checks the registry and shows dated list prices. For a confirmed price, set `DOMAIN_HOUND_SPACESHIP_KEY` and `DOMAIN_HOUND_SPACESHIP_SECRET` (Spaceship permission `domains:read`), or `DOMAIN_HOUND_DYNADOT_KEY` (a production API key). Dynadot gives its production key account-wide access. Domain Hound only uses it to search. It shows premium pricing when it has a quote and points you to the shop when it has a premium signal without a price.
+
+EU and Norwegian trademark checks are optional and free. For the EU, register an EUIPO account, sign in at [dev.euipo.europa.eu](https://dev.euipo.europa.eu/), create an app, and subscribe it to Trademark Search (approval can take a week); then set `DOMAIN_HOUND_EUIPO_CLIENT_ID` and `DOMAIN_HOUND_EUIPO_CLIENT_SECRET` (`DOMAIN_HOUND_EUIPO_SANDBOX=1` uses the sandbox). For Norway, sign up at [developer.patentstyret.no](https://developer.patentstyret.no/), subscribe to the open data product, and set `DOMAIN_HOUND_PATENTSTYRET_KEY`. Keys go only to the offices' own API hosts. An office that does not answer in full reads "check yourself", never clear.
 
 GitHub allows 60 anonymous API requests an hour. To check GitHub handles more often, set `DOMAIN_HOUND_GITHUB_TOKEN` to a token with no scopes; Domain Hound sends it only to `api.github.com`.
 

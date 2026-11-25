@@ -6,10 +6,13 @@ const uspto = 'https://tmsearch.uspto.gov';
 const githubState = 'triage-github-limit.json';
 export const day = 86_400_000;
 const userAgent = 'DomainHound/1.0 (public name lookup)';
+// Relevant Nice classes per category, shared by every trademark office. Software covers 9, 35 and 42.
 const niceClasses = new Map(Object.entries({
-  travel: ['039', '043'], software: ['009', '042'], finance: ['036'], retail: ['035'],
+  travel: ['039', '043'], software: ['009', '035', '042'], finance: ['036'], retail: ['035'],
   health: ['044'], education: ['041'], food: ['043', '030'], media: ['038', '041'],
 }));
+const techClasses = ['009', '042'];
+export const relevantClasses = category => niceClasses.get(String(category ?? '').trim().toLowerCase()) ?? niceClasses.get('software');
 const wikidataHeaders = { 'User-Agent': 'DomainHound/0.1 (https://domainhound.dev)' };
 const brandTypes = new Set([
   'Q783794', 'Q4830453', 'Q891723', 'Q167037', // Companies
@@ -53,7 +56,7 @@ export async function readJson(url, options, init) {
   return null;
 }
 
-function exactPhrases(label, input) {
+export function exactPhrases(label, input) {
   const spaced = input.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ').trim();
   // A glued name can have an unknown word boundary. Try each two-word spelling in one request.
@@ -90,7 +93,7 @@ export function matchTier(a, b) {
 }
 
 export async function searchMarks(name, input, options = {}) {
-  const relevant = niceClasses.get(options.category?.trim().toLowerCase()) ?? niceClasses.get('software');
+  const relevant = relevantClasses(options.category);
   const variants = exactPhrases(letters(name), input);
   const matches = variants.map(query => ({ match_phrase: { wordmark: { query, boost: 3 } } }));
   const key = variants[0];
@@ -121,17 +124,24 @@ export async function searchMarks(name, input, options = {}) {
       .map(value => String(value).match(/\b\d{3}\b/)?.[0]).filter(Boolean);
     const owner = String([].concat(row.ownerName ?? []).at(-1) ?? '')
       .replace(/\s+\([^;]*;\s*[A-Z ,.-]+\)$/, '').replace(/\s+\([^)]*\)$/, '');
-    return [{ name: compactText(row.wordmark, 65), owner: compactText(owner, 70),
+    const serial = /^\d{8}$/.test(row.id) ? row.id : null;
+    return [{ office: 'US', name: compactText(row.wordmark, 65), owner: compactText(owner, 70),
       classes, relevant: classes.some(value => relevant.includes(value)), relevantClasses: classes.filter(value => relevant.includes(value)),
-      tier, registered: row.registered === true,
-      serial: /^\d{8}$/.test(row.id) ? row.id : null }];
-  }).sort((a, b) => markWeight(b, key) - markWeight(a, key) || Number(b.registered) - Number(a.registered));
+      tier, registered: row.registered === true, live: true, status: row.registered === true ? 'registered' : 'applied',
+      serial, url: serial ? usptoRecord(serial) : null }];
+  }).sort(markOrder(key));
 }
+
+export const usptoRecord = serial => 'https://tsdr.uspto.gov/#caseNumber=' + serial
+  + '&caseSearchType=US_APPLICATION&caseType=DEFAULT&searchType=statusSearch';
+
+// Strongest mark first: closer tier, then a relevant class, then a registered mark.
+export const markOrder = key => (a, b) => markWeight(b, key) - markWeight(a, key) || Number(b.registered) - Number(a.registered);
 
 function markWeight(mark, key) {
   const tier = ['Fuzzy', 'Near-identical', 'Exact'].indexOf(mark.tier);
   const firstLetter = Number(letters(mark.name)[0] === key[0]);
-  const tech = Number(mark.classes.some(value => niceClasses.get('software').includes(value)));
+  const tech = Number(mark.classes.some(value => techClasses.includes(value)));
   return 10 * tier + (mark.relevant ? tier ? 25 : 5 : 0) + firstLetter + 0.2 * tech;
 }
 
