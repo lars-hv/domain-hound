@@ -1,23 +1,9 @@
-import { orderBody } from '../clis/spaceship/buy.mjs';
-import { readOffer } from '../clis/spaceship/quote.mjs';
+import { ownerContactId } from './spaceship-mock.mjs';
 
-// Test only: a registrar that has the guarantees the public API lacks. It knows the owner contact, re-reads the exact
-// price right before sending and refuses any difference, and sends domainCreate only to the local mock (the client
-// itself refuses any other host).
-export function testRegistrar(client, ownerContact = 'owner-contact-1') {
-  return {
-    kind: 'test-mock',
-    exactAmount: true,
-    idempotent: true,
-    ownerContact,
-    async placeOrder(order) {
-      const now = readOffer(order.domain, { domain: order.domain, result: 'available' }, await client.pricing(order.domain), order.years);
-      if (now.status !== 'available' || now.amount !== order.amount || now.currency !== order.currency) {
-        throw Object.assign(Error('the price changed right before sending.'), { notSent: true });
-      }
-      return client.createDomain(order.domain, orderBody(order, order.owner));
-    },
-    operation: id => client.operation(id),
-    info: domain => client.info(domain),
-  };
-}
+// Test only: the synthetic server environment a person sets to opt into direct purchase through Spaceship's REST API.
+// It adds no guarantees of its own. Spaceship's domainCreate has no price cap and no idempotency, so every limit the tests
+// check is enforced by Domain Hound's own code, and orders go only to the local mock.
+export const directPurchaseEnv = Object.freeze({
+  DOMAIN_HOUND_DIRECT_PURCHASE: '1',
+  DOMAIN_HOUND_SPACESHIP_CONTACT_ID: ownerContactId,
+});

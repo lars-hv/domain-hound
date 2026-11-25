@@ -72,7 +72,7 @@ Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/resu
 
 ## Buy and set up
 
-Get a Spaceship price and set up DNS in your own account. Pay at Spaceship checkout.
+Get a Spaceship price, buy within your limits, and set up DNS in your own account.
 
 Create a key in Spaceship's API Manager. Use `domains:read` for quotes. Add `dnsrecords:read` and `dnsrecords:write` for DNS. Store the key and secret in the macOS Keychain. Each command prompts for a value.
 
@@ -84,9 +84,22 @@ security add-generic-password -U -s domain-hound -a spaceship-secret -w
 Or set `DOMAIN_HOUND_SPACESHIP_KEY` and `DOMAIN_HOUND_SPACESHIP_SECRET` for the MCP server. Never paste the secret into chat.
 
 - `quote_domain` reads the live price: the exact upfront amount for the shortest term (two years for .ai), the exact renewal amount, premium status and a fresh registry check. The quote expires in 10 minutes.
-- `buy_domain` needs that quote, a max you agreed to, and your yes. It checks the price again and stops on any change. It never goes above `DOMAIN_HOUND_MAX_USD` (default $30). Only you can raise it, in the server settings. Without `confirm` it is a dry run, and one domain gets one order at most.
-- Live orders are blocked for now. Spaceship's API says its price is for reference only and checkout sets the actual charge. The order call has no spending cap and no retry protection, and the API cannot read your owner contact. So `buy_domain` checks everything, then hands you the Spaceship checkout link.
+- `buy_domain` needs that quote and a max you agreed to. It checks the price again and stops on any change. It stops when the quote is above your max or above `DOMAIN_HOUND_MAX_USD` (default $30). Only you can raise that cap, in the server settings. These limits apply to the quote: Spaceship sets the actual charge and does not guarantee the quoted price.
+- `setup_domain` with `verify: true` writes nothing. It counts a purchase once the registry lists the domain and your Spaceship account holds it.
 - `setup_domain` points the domain at your site and mail. Website: GitHub Pages, Vercel, Netlify, Cloudflare Pages (www only), a plain IP or a CNAME. Mail: Google Workspace, Microsoft 365, Fastmail, Proton, iCloud, or forwarding only. It lists every record it will add or remove before it changes anything, removes nothing without `replace: true`, keeps one SPF and one DMARC record, and reads the result back. Account-specific values, like a Vercel IP or a DKIM record, come from your provider, never from a guess. It needs Spaceship's own nameservers and never changes them.
+
+**Default: Spaceship's own MCP.** `buy_domain` orders nothing itself. It tells your agent to preview the order with Spaceship's `domain_register` (WHOIS privacy and auto-renew on), stop if the preview is above the quote, your max or the cap, and show you Spaceship's full confirmation with the price and payment method. Only after your yes does the agent accept that exact preview; a new preview needs a new yes. If the outcome is unclear, it stops and sends you to your Spaceship account. Once Domain Hound verifies the purchase, the agent offers DNS setup. Connect Spaceship's MCP once and sign in when asked ([Spaceship's guide](https://www.spaceship.com/knowledgebase/ai-apps-supported-by-spaceship-and-spacemail-mcp/)):
+
+```sh
+claude mcp add --transport http spaceship https://mcp.spaceship.com/mcp
+codex mcp add spaceship --url https://mcp.spaceship.com/mcp
+```
+
+**Opt-in: direct purchase.** Set `DOMAIN_HOUND_DIRECT_PURCHASE=1` and `DOMAIN_HOUND_SPACESHIP_CONTACT_ID` (your owner contact ID from Spaceship, 27 to 32 letters and digits) in the MCP server settings. No tool can set either. The key then also needs `domains:billing` and `asyncoperations:read`. Direct mode buys standard-price domains only, for the registry minimum term (one year; two for .ai), after your yes (`confirm: true`); without it you get a dry run. Each domain gets one order at most. If the result is unclear, Domain Hound never retries and sends you to your Spaceship account. In direct mode the price is checked seconds before the order, but Spaceship does not guarantee it: the amounts in the answer and the local receipt are quoted estimates, and your Spaceship account shows the actual charge.
+
+To find the contact ID, use Spaceship's `contacts_list` or read `contacts.registrant` for a domain that already uses your owner contact. [MCP tools](https://www.spaceship.com/knowledgebase/spaceship-mcp/) · [Domain info API](https://docs.spaceship.dev/#tag/Domain-Management/operation/getDomainInfo)
+
+**Last resort: checkout.** After a valid quote, the answer ends with a Spaceship checkout link, for when Spaceship's MCP cannot be used and nothing was submitted. Check the same term, price limits, privacy and auto-renew before you pay, then ask Domain Hound to verify and set up the domain. After an unclear order there is no checkout link: check your Spaceship account first.
 
 Quotes, DNS plans, order claims and receipts stay in `~/.domain-hound/purchases/`.
 
@@ -94,7 +107,7 @@ You hold the leash.
 
 ## Privacy
 
-Lookups need no Domain Hound account. They send the relevant name or domain to public sources. Domain searches use IANA and registry RDAP/WHOIS, public DNS, and public registrar pricing. When configured, the client sends selected domains to the Spaceship or Dynadot API for a quote. The Spaceship tools send the domain and, for setup, its DNS records to your own Spaceship account. The optional browser check opens a registrar’s public search page. Name screening may also query the USPTO, Apple App Store, Google Play, Google Search and Trends, Wikidata, public company registries, the GitHub, npm and Bluesky public APIs, Tranco, Common Crawl, and candidate websites. Other social platforms are only linked, never queried. If you configure a search provider via environment variables, queries can also go to Brave Search or Serper. Results may be cached locally.
+Lookups need no Domain Hound account. They send the relevant name or domain to public sources. Domain searches use IANA and registry RDAP/WHOIS, public DNS, and public registrar pricing. When configured, the client sends selected domains to the Spaceship or Dynadot API for a quote. The Spaceship tools send the domain and, for setup, its DNS records to your own Spaceship account. A direct purchase also sends your owner contact ID with the order. The optional browser check opens a registrar’s public search page. Name screening may also query the USPTO, Apple App Store, Google Play, Google Search and Trends, Wikidata, public company registries, the GitHub, npm and Bluesky public APIs, Tranco, Common Crawl, and candidate websites. Other social platforms are only linked, never queried. If you configure a search provider via environment variables, queries can also go to Brave Search or Serper. Results may be cached locally.
 
 Submitting a watch sends the domain, supplied email, optional name and news choice to the Domain Hound watch service. An agent’s yes highlights the news choice. The confirmation click records whether you want it. Result pages omit your supplied email and name.
 

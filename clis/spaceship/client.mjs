@@ -8,9 +8,11 @@ export const keychainService = 'domain-hound';
 export const keychainAccounts = { key: 'spaceship-key', secret: 'spaceship-secret' };
 
 // The smallest Spaceship API scopes each tool needs.
+// Direct purchase (DOMAIN_HOUND_DIRECT_PURCHASE=1) also needs domains:billing for domainCreate and asyncoperations:read.
 export const scopes = {
   quote: ['domains:read'],
   buy: ['domains:read'],
+  direct: ['domains:read', 'domains:billing', 'asyncoperations:read'],
   setup: ['domains:read', 'dnsrecords:read', 'dnsrecords:write'],
 };
 
@@ -52,8 +54,12 @@ export const isLoopback = url => loopback.has(new URL(url).hostname);
 
 const domainPath = domain => encodeURIComponent(domain);
 
-// A thin client for the documented endpoints. baseUrl and fetcher are injectable for the local test mock only.
-export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher = globalThis.fetch, timeout = 8000 }) {
+// The person's explicit opt-in for live registration orders, read from the MCP server's environment only. Exactly "1".
+const directPurchase = env => env?.DOMAIN_HOUND_DIRECT_PURCHASE === '1';
+
+// A thin client for the documented endpoints. baseUrl and fetcher are injectable for the local test mock only. env is the
+// server environment; no tool argument reaches it.
+export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher = globalThis.fetch, timeout = 8000, env = process.env }) {
   if (!key || !secret) throw new SpaceshipError('Spaceship API key and secret are required.');
   const base = baseUrl.replace(/\/+$/, '');
   if (base !== spaceshipBase && !isLoopback(base)) throw new SpaceshipError('Spaceship API base must be ' + spaceshipBase + '.');
@@ -118,9 +124,12 @@ export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher 
     saveRecords: (domain, items) => request('PUT', '/v1/dns/records/' + domainPath(domain), { body: { force: false, items }, accept: [204] }),
     // deleteRecords: removes exact custom records only.
     deleteRecords: (domain, items) => request('DELETE', '/v1/dns/records/' + domainPath(domain), { body: items, accept: [204] }),
-    // domainCreate has no price cap or idempotency field, so it is only ever sent to the local test mock.
+    // domainCreate has no price cap or idempotency field. It is sent only when the person set DOMAIN_HOUND_DIRECT_PURCHASE=1,
+    // whatever the host, and exactly once: request() never retries. A refusal here is proven unsent.
     async createDomain(domain, body) {
-      if (!isLoopback(base)) throw new SpaceshipError('Domain Hound does not send live registration orders.');
+      if (!directPurchase(env)) {
+        throw Object.assign(new SpaceshipError('Direct purchase is off: DOMAIN_HOUND_DIRECT_PURCHASE is not 1.'), { notSent: true });
+      }
       const { headers } = await request('POST', '/v1/domains/' + domainPath(domain), { body, accept: [202] });
       const operationId = headers.get('spaceship-async-operationid');
       if (!operationId) throw new SpaceshipError('Spaceship accepted the order without an operation ID.', { ambiguous: true });

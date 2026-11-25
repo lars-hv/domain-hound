@@ -1,29 +1,40 @@
 import { shopSearchUrl } from '../domain-check/prices.mjs';
-import { boundFields, cents, changes, freshRegistry, liveOffer, offerLine, quoteLifetimeMs, usd } from './quote.mjs';
+import { boundFields, cents, changes, freshRegistry, liveOffer, minimumYears, offerLine, quoteLifetimeMs, usd } from './quote.mjs';
 import { digest } from './store.mjs';
 
 export const defaultCapUsd = 30;
 export const checkoutUrl = domain => shopSearchUrl('spaceship', domain);
 
-// What Spaceship's public REST API offers for registration today (docs.spaceship.dev). Each missing guarantee blocks a
-// live order: Domain Hound would otherwise spend the person's money without a hard limit. There is no switch around it.
-export const liveRegistrar = Object.freeze({
-  kind: 'spaceship-rest',
-  exactAmount: false,
-  idempotent: false,
-  ownerContact: null,
+// Spaceship's own MCP server. Its purchase confirmation shows the term, the prices and the payment source, and a person
+// approves it. Endpoint and client setup: https://www.spaceship.com/knowledgebase/ai-apps-supported-by-spaceship-and-spacemail-mcp/
+export const spaceshipMcp = Object.freeze({
+  url: 'https://mcp.spaceship.com/mcp',
+  docs: 'https://www.spaceship.com/knowledgebase/ai-apps-supported-by-spaceship-and-spacemail-mcp/',
+  tool: 'domain_register',
+  poll: 'async_operation_get',
+  claude: 'claude mcp add --transport http spaceship https://mcp.spaceship.com/mcp',
+  codex: 'codex mcp add spaceship --url https://mcp.spaceship.com/mcp',
 });
 
-export function blockedReasons(registrar) {
-  const reasons = [];
-  if (registrar?.exactAmount !== true) {
-    reasons.push('Spaceship’s API price is for reference only and checkout sets the actual charge, so Domain Hound cannot hold the charge to the quote');
+// Direct purchase through the REST API is the person's explicit opt-in, set only in the MCP server's environment.
+// Exactly "1" turns it on; anything else, including "true", leaves it off. No tool argument reaches this.
+export const directPurchaseEnabled = (env = process.env) => env?.DOMAIN_HOUND_DIRECT_PURCHASE === '1';
+
+// The REST API cannot discover the account owner's contact, so the person sets its ID in the MCP server's environment.
+// Spaceship documents contact IDs as 27 to 32 letters and digits (docs.spaceship.dev: updateDomainContacts and getContact,
+// which domainCreate's contact IDs share).
+export const contactIdPattern = /^[A-Za-z0-9]{27,32}$/;
+export function ownerContact(env = process.env) {
+  const raw = env?.DOMAIN_HOUND_SPACESHIP_CONTACT_ID;
+  if (raw === undefined || raw.trim() === '') {
+    return { id: null, problem: 'Direct purchase needs DOMAIN_HOUND_SPACESHIP_CONTACT_ID, the contact ID of the Spaceship account owner. '
+      + 'Only the person can set it, in the MCP server settings' };
   }
-  if (registrar?.idempotent !== true) reasons.push('the order call has no idempotency key, so a retry could buy twice');
-  if (typeof registrar?.ownerContact !== 'string' || !registrar.ownerContact) {
-    reasons.push('the API cannot look up your account owner contact');
+  if (!contactIdPattern.test(raw.trim())) {
+    return { id: null, problem: 'DOMAIN_HOUND_SPACESHIP_CONTACT_ID is not a valid Spaceship contact ID (27 to 32 letters and digits). '
+      + 'Only the person can fix it, in the MCP server settings' };
   }
-  return reasons;
+  return { id: raw.trim(), problem: null };
 }
 
 // The person's hard limit, set in the MCP server configuration. The agent has no input that raises it.
@@ -57,18 +68,63 @@ export async function issueQuote(domain, { client, store, registry, years, now =
   return { offer, quote };
 }
 
-export const handoff = domain => 'Buy it yourself at Spaceship: [' + domain + ' at Spaceship](' + checkoutUrl(domain) + '). '
-  + 'Then ask Domain Hound to set up the domain.';
+const term = years => years + (years === 1 ? ' year' : ' years');
+const per = years => years === 1 ? 'year' : years + ' years';
+
+// Last resort only, after a valid quote, when Spaceship's MCP cannot be used and nothing was submitted: the Spaceship search
+// page, where the person pays at checkout and checks the same limits themselves.
+export const checkoutHandoff = (quote, { max, cap }) => 'Buy it yourself at Spaceship: [' + quote.domain + ' at Spaceship]('
+  + checkoutUrl(quote.domain) + '). Before paying, check the same limits: ' + term(quote.years) + ', at most ' + usd(quote.amount)
+  + ' upfront (this quote; your max ' + usd(max) + ', cap ' + usd(cap) + '), renewal at most ' + usd(quote.renewal.amount) + ' per '
+  + per(quote.renewal.years) + ', WHOIS privacy on, auto-renew on. Stop if either price is higher or the term or settings differ. '
+  + 'Then ask Domain Hound to verify the domain '
+  + 'before DNS setup.';
+
+// The default purchase path: Spaceship's own MCP previews the order, a person approves that exact confirmation, and only then
+// does the agent accept it with the confirmation token bound to that preview.
+export function mcpHandoff(quote, { max, cap }) {
+  const { domain } = quote;
+  const args = 'domain ' + domain + ', ' + term(quote.years) + ', WHOIS privacy on, auto-renew on';
+  return [
+    'Hand off to Spaceship’s own MCP. Domain Hound ordered nothing.',
+    '1. Preview: call ' + spaceshipMcp.tool + ' with ' + args + ', and no confirmationToken. This registers nothing.',
+    '2. Check the preview: exactly ' + domain + ', ' + term(quote.years) + ', the USD total upfront and the renewal. Stop if the upfront '
+      + 'total is above this quote ' + usd(quote.amount) + ', the person’s max ' + usd(max) + ' or Domain Hound’s cap ' + usd(cap)
+      + ', if the renewal is above ' + usd(quote.renewal.amount) + ' per ' + per(quote.renewal.years)
+      + ', or if the price or the payment method is missing. Require USD, WHOIS privacy and auto-renew in the preview.',
+    '3. Show the person the full confirmation and wait for their yes. Only then call ' + spaceshipMcp.tool + ' again with the exact '
+      + 'same arguments, the confirmationToken from that preview and confirmationResponse: "accept". A fresh preview needs a fresh yes.',
+    '4. Poll ' + spaceshipMcp.poll + ' until the operation finishes. If the outcome is unclear, stop: no retry and no other route, '
+      + 'not here, not through Domain Hound, not at checkout. Tell the person to check orders in their Spaceship account.',
+    '5. After the operation succeeds, call setup_domain with domain ' + domain + ' and verify: true. Offer DNS setup only after it verifies.',
+    'No Spaceship MCP? Connect it, then sign in when asked (' + spaceshipMcp.docs + '):',
+    'Claude Code: `' + spaceshipMcp.claude + '`',
+    'Codex: `' + spaceshipMcp.codex + '`',
+    'Last resort, only if Spaceship’s MCP cannot be used and nothing was submitted there: ' + checkoutHandoff(quote, { max, cap }),
+  ].join('\n');
+}
+
+// Direct mode charges what Spaceship sets at registration. The quote is the best estimate, not the charge.
+const estimateLine = quote => 'Quoted estimate, not the actual charge: ' + usd(quote.amount) + ' upfront for ' + term(quote.years)
+  + ', renewal ' + usd(quote.renewal.amount) + ' per ' + per(quote.renewal.years) + '. Spaceship sets the actual charge; your '
+  + 'Spaceship account shows it.';
 
 const refusal = (text, fields = {}) => ({ ok: false, ordered: false, say: text, ...fields });
+const checkAccount = 'Do not retry here, through Spaceship’s MCP or at checkout. Check orders in your Spaceship account first.';
 const alreadySent = (domain, prior) => refusal('An order for ' + domain + ' was already sent'
-  + (prior?.status ? ' (' + prior.status + ')' : '') + '. Domain Hound never sends a second order. Check your Spaceship account.',
-{ alreadySent: true });
+  + (prior?.status ? ' (' + prior.status + (prior.operationId ? ', operation ' + prior.operationId : '') + ')' : '')
+  + '. Domain Hound never sends a second order. ' + checkAccount,
+{ alreadySent: true, ...(prior?.operationId && { operationId: prior.operationId }) });
 
-// Guardrails in order: valid unexpired quote, explicit max, cap, no earlier order, strict re-quote, then dry run or order.
-export async function buyDomain(input, { client, accountBinding, store, registrar = liveRegistrar, registry, env = process.env,
+// Guardrails in order: no earlier order, valid unexpired quote, explicit max, cap, strict re-quote. Then, without direct
+// mode, the Spaceship MCP handoff. With direct mode: owner contact, non-premium, registry minimum term, registry free, dry run
+// or order. The earlier order comes first: it needs no key and no quote, so a lost key or an expired quote still ends in
+// the account check and never in another route.
+export async function buyDomain(input, { client, accountBinding, store, registry, env = process.env,
   now = () => new Date(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), polls = 5, pollMs = 3000 }) {
   const { domain, quote_id: quoteId, max_usd: maxUsd, confirm = false } = input;
+  const prior = await store.readClaim(claimKey(domain));
+  if (prior) return alreadySent(domain, prior);
   const cap = capCents(env);
   const stored = await store.readBound('quotes', 'dhq-', quoteId);
   if (!stored) return refusal('No valid quote with that ID. Call quote_domain, show the person the exact quote, then use its ID.');
@@ -88,8 +144,6 @@ export async function buyDomain(input, { client, accountBinding, store, registra
       + 'Only the person can raise it in the MCP server settings. Nothing ordered.', { overCap: true });
   }
   if (quotedAccount !== await accountBinding()) return refusal('The Spaceship key changed since the quote. Quote again.');
-  const prior = await store.readClaim(claimKey(domain));
-  if (prior) return alreadySent(domain, prior);
   const fresh = await liveOffer(domain, { client, registry, years: quote.years, now: now() });
   if (now().getTime() >= Date.parse(quote.expiresAt)) {
     return refusal('The quote expired during the price check. Quote again.');
@@ -98,76 +152,141 @@ export async function buyDomain(input, { client, accountBinding, store, registra
   if (changed.length) {
     return refusal('Not ordered: ' + changed.join('; ') + '. Quote again and show the person the new quote.', { changed });
   }
-  const blocked = blockedReasons(registrar);
-  const summary = offerLine(quote) + ' Re-checked ' + fresh.checkedAt.slice(11, 16) + ' UTC, unchanged. Within the max of '
-    + usd(max) + ' and the cap of ' + usd(cap) + '.';
+  const summary = offerLine(quote) + ' Re-checked ' + fresh.checkedAt.slice(11, 16) + ' UTC, unchanged. The quote is within the max '
+    + 'of ' + usd(max) + ' and the cap of ' + usd(cap) + '.';
+  if (!directPurchaseEnabled(env)) {
+    return { ok: true, ordered: false, handoff: 'spaceship-mcp', quote, ceilings: { quote: quote.amount, max, cap },
+      say: [summary, mcpHandoff(quote, { max, cap })].join('\n') };
+  }
+  const direct = directRefusal(quote, fresh, env);
+  if (direct) {
+    return refusal('Not ordered: ' + direct + '. Nothing was sent.\n' + summary + '\n' + mcpHandoff(quote, { max, cap }),
+      { direct: false, handoff: 'spaceship-mcp' });
+  }
   if (confirm !== true) {
-    return { ok: true, ordered: false, dryRun: true, blocked: blocked.length > 0, quote, say: ['Dry run. Nothing ordered.', summary,
-      blocked.length ? 'A live order is blocked: ' + blocked.join('; ') + '. ' + handoff(domain)
-        : 'Show the person this exact quote. Only after their yes, call buy_domain again with confirm true.'].join('\n') };
+    return { ok: true, ordered: false, dryRun: true, quote, say: ['Dry run. Nothing ordered.', summary, estimateLine(quote),
+      'Direct purchase is on. Show the person this exact quote. Only after their yes, call buy_domain again with confirm true.'].join('\n') };
   }
-  if (blocked.length) {
-    return { ok: false, ordered: false, blocked: true, quote, reasons: blocked, say: ['Blocked. Domain Hound did not order ' + domain + '.',
-      'Why: ' + blocked.join('; ') + '.', summary, handoff(domain)].join('\n') };
-  }
-  if (fresh.registry !== 'free') return refusal('The registry did not confirm availability. Quote again.');
-  return placeOrder(quote, { store, registrar, registry, now, sleep, polls, pollMs });
+  return placeOrder(quote, { client, store, registry, owner: ownerContact(env).id, now, sleep, polls, pollMs });
 }
 
-async function placeOrder(quote, { store, registrar, registry, now, sleep, polls, pollMs }) {
+// Direct mode orders only what the brief allows: the owner contact is set, a standard price, the registry minimum term
+// (one year; two for .ai), and a registry that answers free. The minimum is known per ending, never inferred from the terms
+// Spaceship happens to price: a .com priced only for two years is still refused.
+function directRefusal(quote, fresh, env) {
+  const { problem } = ownerContact(env);
+  if (problem) return problem;
+  if (quote.premium || quote.priceClass !== 'standard') return 'direct purchase never buys a premium domain';
+  const minimum = minimumYears(quote.domain);
+  if (quote.years !== minimum || fresh.years !== minimum) {
+    return 'direct purchase buys only the registry minimum term, ' + term(minimum) + ', not ' + term(quote.years);
+  }
+  if (fresh.registry !== 'free') return 'the registry did not confirm availability';
+  return null;
+}
+
+async function placeOrder(quote, { client, store, registry, owner, now, sleep, polls, pollMs }) {
   const { domain } = quote;
-  const owner = registrar.ownerContact;
   const key = claimKey(domain);
-  const claim = await store.claim(key, { domain, quoteId: quote.id, amount: quote.amount, years: quote.years, status: 'sending',
-    at: now().toISOString() });
-  if (!claim) return alreadySent(domain, await store.readClaim(key));
+  let record = await store.claim(key, { domain, quoteId: quote.id, quotedAmount: quote.amount, years: quote.years,
+    status: 'checking', at: now().toISOString() });
+  if (!record) return alreadySent(domain, await store.readClaim(key));
+  record = { ...record, status: 'sending' };
+  try {
+    await store.updateClaim(key, record);
+  } catch (problem) {
+    await store.release(key);
+    return refusal('Not ordered: Domain Hound could not record the order on disk (' + problem.message + '). Nothing was sent.');
+  }
+  // Last check while holding the claim, seconds before the order: the same price, term, availability and a free registry.
+  // These refusals are proven before anything is sent, so they release the claim.
+  let last;
+  try {
+    last = await liveOffer(domain, { client, registry, years: quote.years, now: now() });
+  } catch (problem) {
+    await store.release(key);
+    return refusal('Not ordered: the last price check failed (' + problem.message + '). Nothing was sent. Quote again.');
+  }
+  const changed = changes(quote, last);
+  if (!changed.length && last.registry !== 'free') changed.push('the registry did not confirm availability');
+  if (now().getTime() >= Date.parse(quote.expiresAt)) changed.push('the quote expired');
+  if (changed.length) {
+    await store.release(key);
+    return refusal('Not ordered: ' + changed.join('; ') + '. Nothing was sent. Quote again and show the person the new quote.', { changed });
+  }
+  // From here the order may exist. Local bookkeeping is best effort: a disk error never hides the outcome, and a failed
+  // write leaves the existing claim file in place (writes replace it atomically), so no second order can follow.
+  const mark = async fields => {
+    record = { ...record, ...fields };
+    try { await store.updateClaim(key, record); } catch { /* the claim on disk still blocks a second order */ }
+  };
   let operationId;
   try {
-    ({ operationId } = await registrar.placeOrder({ ...quote, owner }));
+    ({ operationId } = await client.createDomain(domain, orderBody(quote, owner)));
   } catch (problem) {
-    // A refusal before sending (such as a price change at the last check) spent nothing, so a new quote may try again.
-    // Any other failure is unclear and keeps the claim, so Domain Hound never sends a second order.
-    if (problem.notSent) {
+    // Only a refusal before the request left (the client's own gate) is proven unsent. Anything else keeps the claim:
+    // no retry, no other path, the person checks the account.
+    if (problem.notSent === true) {
       await store.release(key);
-      return refusal('Not ordered: ' + problem.message);
+      return refusal('Not ordered: ' + problem.message + ' Nothing was sent.');
     }
-    await store.updateClaim(key, { status: 'ambiguous', reason: String(problem.message).slice(0, 200) });
-    return refusal('The order result is unclear (' + problem.message + '). Domain Hound will not send it again. '
-      + 'Check orders in your Spaceship account before anything else.', { ambiguous: true });
+    await mark({ status: 'ambiguous', reason: String(problem.message).slice(0, 200) });
+    return refusal('The order result for ' + domain + ' is unclear (' + problem.message + '). Domain Hound will not send it again. '
+      + checkAccount, { ambiguous: true });
   }
-  await store.updateClaim(key, { status: 'submitted', operationId });
+  await mark({ status: 'submitted', operationId });
   let operation = null;
   for (let attempt = 0; attempt < polls; attempt++) {
-    operation = await registrar.operation(operationId).catch(() => null);
+    operation = await client.operation(operationId).catch(() => null);
     if (operation?.status === 'success' || operation?.status === 'failed') break;
     if (attempt < polls - 1) await sleep(pollMs);
   }
   if (operation?.status === 'failed') {
-    await store.updateClaim(key, { status: 'failed' });
-    return refusal('Spaceship reports the order for ' + domain + ' failed. Check your Spaceship account before trying again.');
+    await mark({ status: 'failed' });
+    return refusal('Spaceship reports the order for ' + domain + ' failed (operation ' + operationId + '). Domain Hound will not '
+      + 'send it again. ' + checkAccount, { failed: true, operationId });
   }
   if (operation?.status !== 'success') {
-    await store.updateClaim(key, { status: 'ambiguous' });
+    await mark({ status: 'ambiguous' });
     return refusal('Spaceship has not finished the order for ' + domain + ' (operation ' + operationId + '). Domain Hound will not '
-      + 'send it again. Check your Spaceship account.', { ambiguous: true, operationId });
+      + 'send it again. ' + checkAccount, { ambiguous: true, operationId });
   }
-  const [info, registryStatus] = await Promise.all([
-    registrar.info(domain).catch(() => null), freshRegistry(domain, registry),
-  ]);
-  const checks = {
-    registered: info?.name === domain && info.lifecycleStatus === 'registered' && registryStatus === 'taken',
-    privacyHigh: info?.privacyProtection?.level === 'high',
-    autoRenew: info?.autoRenew === true,
-    ownerIsRegistrant: info?.contacts?.registrant === owner,
-  };
+  const verified = await verifyRegistration(domain, { client, registry });
+  const checks = { ...verified.checks, ownerIsRegistrant: verified.info?.contacts?.registrant === owner };
   const at = now().toISOString();
-  const receipt = { domain, at, quoteId: quote.id, operationId, years: quote.years, amount: quote.amount, currency: quote.currency,
-    renewal: quote.renewal, checks };
-  const path = await store.saveReceipt(receipt);
-  await store.updateClaim(key, { status: 'success', receipt: path });
+  const receipt = { domain, at, quoteId: quote.id, operationId, years: quote.years, quotedAmount: quote.amount,
+    quotedRenewal: quote.renewal, currency: quote.currency,
+    note: 'Quoted estimates, not the actual charge. Spaceship sets the actual charge; see the order in your Spaceship account.',
+    checks };
+  let path = null;
+  let receiptProblem = null;
+  try {
+    path = await store.saveReceipt(receipt);
+  } catch (problem) {
+    receiptProblem = problem instanceof Error ? problem.message : String(problem);
+  }
+  await mark({ status: verified.registered ? 'success' : 'success-unverified', ...(path && { receipt: path }) });
   const missing = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
-  return { ok: true, ordered: true, receipt, receiptPath: path, say: ['Ordered ' + domain + ' for ' + usd(quote.amount) + '.',
-    missing.length ? 'Readback needs a look: ' + missing.join(', ') + '.'
-      : 'Readback: registered, high privacy, auto renew on, owner contact set.',
-    'Receipt: ' + path].join('\n') };
+  return { ok: true, ordered: true, verified: verified.registered, operationId, receipt, receiptPath: path, say: [
+    'Ordered ' + domain + ': Spaceship reports the registration succeeded (operation ' + operationId + ').',
+    estimateLine(quote),
+    missing.length ? 'Readback needs a look: ' + missing.join(', ') + '. Check your Spaceship account.'
+      : 'Verified: registered at the registry and in your Spaceship account, high privacy, auto renew on, owner contact set.',
+    path ? 'Receipt: ' + path : 'No local receipt: Domain Hound could not save it (' + receiptProblem + '). The order itself went '
+      + 'through; your Spaceship account has the record.',
+    verified.registered ? setupOffer(domain) : 'Check again with setup_domain and verify: true. Offer DNS setup only after it verifies.'].join('\n') };
+}
+
+export const setupOffer = domain => 'Next: set up ' + domain + ' for your website and mail. Call setup_domain with website or mail to '
+  + 'preview the exact DNS records.';
+
+// Independent proof a domain belongs to this account: the registry lists it as registered, and the authenticated Spaceship
+// account holds it. Either alone could be someone else's registration or a pending order.
+export async function verifyRegistration(domain, { client, registry }) {
+  const [info, registryStatus] = await Promise.all([
+    client.info(domain).catch(problem => problem?.status === 404 ? null : undefined), freshRegistry(domain, registry)]);
+  const inAccount = info?.name === domain && info.lifecycleStatus === 'registered';
+  const checks = { registry: registryStatus === 'taken', account: inAccount, privacyHigh: info?.privacyProtection?.level === 'high',
+    autoRenew: info?.autoRenew === true };
+  return { registered: checks.registry && checks.account, checks, info, registryStatus, accountKnown: info !== undefined };
 }

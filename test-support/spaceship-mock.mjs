@@ -16,9 +16,22 @@ const price = (amount, currency) => ({ finalPrice: { amount, currency }, regular
 const priceList = (terms, currency) => Object.entries(terms).map(([years, amount]) => ({
   period: { value: Number(years), unit: 'y' }, priceInDefaultCurrency: price(amount, currency) }));
 
+// A contact ID in the documented shape: 27 to 32 letters and digits.
+export const ownerContactId = '1ZdMXpapqp9sle5dl8BlppTJXAzf5';
+
+// A fetch that sends requests for the production Spaceship base to the local mock, so tests can drive the production
+// client unchanged. Any other host fails.
+export function productionFetchTo(mockBaseUrl, productionBase = 'https://spaceship.dev/api') {
+  return (url, options) => {
+    const text = String(url);
+    if (!text.startsWith(productionBase + '/')) throw Error('Unexpected host in a Spaceship test: ' + text);
+    return fetch(mockBaseUrl + text.slice(productionBase.length), options);
+  };
+}
+
 export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secret' } = {}) {
   const state = { offers: new Map(), domains: new Map(), records: new Map(), operations: new Map(), requests: [],
-    createMode: 'success', nextOperation: 1, dnsPageSize: 100, dnsSaveFails: false };
+    createMode: 'success', nextOperation: 1, dnsPageSize: 100, dnsSaveFails: false, beforePricing: null };
 
   const server = createServer(async (request, response) => {
     let text = '';
@@ -41,6 +54,7 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
     }
     if ((match = path.match(/^\/v1\/domains\/([^/]+)\/pricing$/)) && request.method === 'GET') {
       const domain = decodeURIComponent(match[1]);
+      state.beforePricing?.(domain, state.requests.filter(row => row.path === path).length);
       const offer = state.offers.get(domain);
       if (!offer) return send(404, { detail: 'Not found' });
       return send(200, { domain, priceClass: offer.priceClass,
@@ -53,7 +67,11 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
         return info ? send(200, info) : send(404, { detail: 'Not found' });
       }
       if (request.method === 'POST') {
+        // Failure modes: drop the connection, a server error, a refusal, or an accepted order without an operation ID.
         if (state.createMode === 'drop') return request.socket.destroy();
+        if (state.createMode === 'error500') return send(500, { detail: 'Internal error' });
+        if (state.createMode === 'reject422') return send(422, { detail: 'Invalid contact' });
+        if (state.createMode === 'noid') return send(202);
         const id = 'op-' + state.nextOperation++;
         state.operations.set(id, { id, status: state.createMode === 'failed' ? 'failed' : state.createMode === 'pending' ? 'pending' : 'success',
           type: 'domains_Create', details: { domain } });
@@ -111,7 +129,7 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
     },
     setDomain(domain, { provider = 'basic', hosts = ['launch1.spaceship.net', 'launch2.spaceship.net'], records = [] } = {}) {
       state.domains.set(domain, { name: domain, lifecycleStatus: 'registered', autoRenew: true, privacyProtection: { level: 'high' },
-        nameservers: { provider, hosts }, contacts: { registrant: 'owner-contact-1' } });
+        nameservers: { provider, hosts }, contacts: { registrant: ownerContactId } });
       state.records.set(domain, records.map(row => ({ ttl: 3600, group: { type: 'custom' }, ...row })));
     },
     sent: (method, pattern) => state.requests.filter(row => row.method === method && (!pattern || pattern.test(row.path))),

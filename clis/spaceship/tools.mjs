@@ -1,5 +1,5 @@
 import { attributed } from '../../display.mjs';
-import { blockedReasons, buyDomain, handoff, issueQuote, liveRegistrar } from './buy.mjs';
+import { buyDomain, directPurchaseEnabled, issueQuote, setupOffer, spaceshipMcp, verifyRegistration } from './buy.mjs';
 import { missingKeyText, SpaceshipError, spaceshipClient, spaceshipCredentials } from './client.mjs';
 import { mailProviders, websiteProviders } from './dns.mjs';
 import { exactDomain, offerLine, quoteTimes } from './quote.mjs';
@@ -23,11 +23,17 @@ export const quoteTool = {
 
 export const buyTool = {
   name: 'buy_domain',
-  description: 'COSTS MONEY: registers a domain in the person’s own Spaceship account and charges it. Needs a quote_id from quote_domain '
-    + 'that has not expired, and max_usd, the most the person agreed to pay. The order also stops above the person’s own cap '
-    + '(DOMAIN_HOUND_MAX_USD, default $30), which you cannot change. It re-checks the price and refuses any change. Without confirm: true '
-    + 'it is a dry run. Set confirm: true only after the person has seen the exact quote and said yes. Live ordering is currently '
-    + 'blocked because Spaceship’s API cannot cap the charge; the answer then links Spaceship checkout. Relay the display as written.',
+  description: 'COSTS MONEY: buys a domain in the person’s own Spaceship account. Needs an unexpired quote_id from quote_domain and '
+    + 'max_usd, the most the person agreed to pay. It refuses a quote above the max or server cap (DOMAIN_HOUND_MAX_USD, default $30), '
+    + 'or any change on a fresh price check. In direct mode Spaceship sets the actual charge. By default it orders nothing and returns '
+    + 'a handoff: preview with Spaceship’s own MCP tool ' + spaceshipMcp.tool + ', check '
+    + 'the preview against the listed price ceilings, and accept only after the person approves that exact confirmation; follow it step '
+    + 'by step, and stop if the price or payment method cannot be seen or the result is unclear. It also gives the command to connect '
+    + 'Spaceship’s MCP. Only when the person set DOMAIN_HOUND_DIRECT_PURCHASE=1 in the server settings does it order directly: a '
+    + 'standard-price domain for the registry minimum term (one year; two for .ai), with confirm: true after the person saw the exact '
+    + 'quote and said yes; without confirm it is a dry run. Never retry an unclear order by any path. Spaceship checkout is the last '
+    + 'resort, only after a valid quote when nothing was submitted. After a purchase, call setup_domain with verify: true, and offer '
+    + 'DNS setup only after it verifies. Relay the display as written.',
   annotations: { title: 'Buy a domain (costs money)', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,
@@ -42,7 +48,10 @@ export const setupTool = {
   name: 'setup_domain',
   description: 'Changes DNS: sets website and mail records for a domain in the person’s own Spaceship account. First call without plan_id '
     + 'to preview every exact change; nothing is written. Then, after the person says yes, call with plan_id and apply: true. '
-    + 'Removing existing records also needs replace: true. Only provider values the person copied from their provider. Relay the display as written.',
+    + 'Removing existing records also needs replace: true. Only provider values the person copied from their provider. '
+    + 'With only verify: true it writes nothing: it looks the domain up at the registry and in the person’s Spaceship account to '
+    + 'confirm a purchase. '
+    + 'Use it after any purchase, through Spaceship’s MCP or checkout, before DNS setup. Relay the display as written.',
   annotations: { title: 'Set up domain DNS (changes DNS)', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,
@@ -66,6 +75,7 @@ export const setupTool = {
     plan_id: { type: 'string', maxLength: 40, description: 'The plan ID from the preview.' },
     apply: { type: 'boolean', description: 'True only with plan_id, after the person approved the previewed changes.' },
     replace: { type: 'boolean', description: 'True only when the person agreed to remove the existing records the plan lists.' },
+    verify: { type: 'boolean', description: 'True, alone with domain, to check a purchase at the registry and in the person’s account. Writes nothing.' },
   }, required: ['domain'], additionalProperties: false },
 };
 
@@ -127,16 +137,16 @@ function checkInput(tool, args) {
   if (extra) throw Error(tool.name + ' does not take ' + JSON.stringify(extra.slice(0, 40)) + '.');
   const domain = exactDomain(args.domain);
   if (!domain) throw Error('Give one exact domain, such as example.com.');
-  for (const flag of ['confirm', 'apply', 'replace']) {
+  for (const flag of ['confirm', 'apply', 'replace', 'verify']) {
     if (Object.hasOwn(args, flag) && typeof args[flag] !== 'boolean') throw Error(flag + ' must be true or false.');
   }
   return domain;
 }
 
-// Production dependencies: credentials from the environment or Keychain, the live REST client, and the live registrar,
-// which always blocks the order. Tests pass their own.
-export function purchaseHandlers({ env = process.env, credentials = () => spaceshipCredentials({ env }), clientFor = spaceshipClient,
-  store = stateStore(), registrar = liveRegistrar, registry, now = () => new Date(), sleep } = {}) {
+// Production dependencies: credentials from the environment or Keychain and the live REST client, which sends a registration
+// only when the server environment sets DOMAIN_HOUND_DIRECT_PURCHASE=1. Tests pass a client factory for the local mock.
+export function purchaseHandlers({ env = process.env, credentials = () => spaceshipCredentials({ env }),
+  clientFor = keys => spaceshipClient({ ...keys, env }), store = stateStore(), registry, now = () => new Date(), sleep } = {}) {
   async function client() {
     const keys = await credentials();
     return keys ? clientFor(keys) : null;
@@ -151,14 +161,13 @@ export function purchaseHandlers({ env = process.env, credentials = () => spaces
     if (!api) return result(missingKeyText('quote'), { domain, quote: null });
     const { offer, quote: issued } = await issueQuote(domain, { client: api, store, registry, years: args.years, now: now() });
     if (!issued) {
-      return result(domain + ': no quote. ' + offer.reason + (offer.status === 'taken' ? '' : ' ' + handoff(domain)),
-        { domain, status: offer.status, quote: null });
+      return result(domain + ': no quote. ' + offer.reason, { domain, status: offer.status, quote: null });
     }
-    const blocked = blockedReasons(registrar);
     return result([offerLine(issued), quoteTimes(issued) + ' Quote ID ' + issued.id + '.',
-      blocked.length ? 'Domain Hound cannot place this order yet: Spaceship’s API cannot cap the charge. buy_domain re-checks the quote '
-        + 'and links Spaceship checkout.' : 'To buy: show the person this exact quote. After their yes, call buy_domain with quote_id, '
-        + 'max_usd and confirm: true.'].join('\n'),
+      directPurchaseEnabled(env) ? 'To buy: show the person this quote and explain that the direct order’s actual charge may differ. '
+        + 'After their yes, call buy_domain with quote_id, max_usd and confirm: true.' : 'To buy: show the person this exact quote, '
+        + 'then call buy_domain with quote_id and max_usd. It re-checks '
+        + 'the price and hands off to Spaceship’s own MCP (' + spaceshipMcp.tool + ') with the price ceilings.'].join('\n'),
     { domain, status: 'available', quote: { ...issued, amountUsd: issued.amount / 100, renewalUsd: issued.renewal.amount / 100 } });
   }
 
@@ -168,23 +177,52 @@ export function purchaseHandlers({ env = process.env, credentials = () => spaces
     if (typeof args.max_usd !== 'number' || !Number.isFinite(args.max_usd) || args.max_usd <= 0 || args.max_usd > 100_000) {
       throw Error('Give max_usd, the most the person agreed to pay in USD.');
     }
-    // Quote, max and cap checks need no network. The re-quote needs the key.
+    // The earlier-order, quote, max and cap checks need no network. The re-quote needs the key. A missing key never offers
+    // checkout: no valid live quote exists to check it against.
     let apiPromise;
     const live = async () => {
       const api = await (apiPromise ??= client());
-      if (!api) throw new SpaceshipError(missingKeyText('buy') + ' ' + handoff(domain));
+      if (!api) throw new SpaceshipError(missingKeyText(directPurchaseEnabled(env) ? 'direct' : 'buy'));
       return api;
     };
-    const lazyClient = { available: async name => (await live()).available(name), pricing: async name => (await live()).pricing(name) };
+    const lazyClient = Object.fromEntries(['available', 'pricing', 'info', 'createDomain', 'operation']
+      .map(method => [method, async (...rest) => (await live())[method](...rest)]));
     const outcome = await buyDomain({ domain, quote_id: args.quote_id, max_usd: args.max_usd, confirm: args.confirm === true },
-      { client: lazyClient, accountBinding: async () => (await live()).accountBinding, store, registrar, registry, env, now,
+      { client: lazyClient, accountBinding: async () => (await live()).accountBinding, store, registry, env, now,
         ...(sleep && { sleep }) });
     const { say, ...data } = outcome;
     return result(say, { domain, ...data });
   }
 
+  // Read-only: the registry lists the domain as registered and the person's own Spaceship account holds it.
+  async function verify(domain) {
+    const api = await client();
+    if (!api) return result(missingKeyText('quote'), { domain, verified: false });
+    const { registered, checks, info, registryStatus, accountKnown } = await verifyRegistration(domain, { client: api, registry });
+    const data = { domain, verified: registered, checks };
+    if (registered) {
+      const settings = [checks.privacyHigh ? 'Privacy high' : 'Privacy not high', checks.autoRenew ? 'auto renew on' : 'auto renew off'];
+      const custom = info?.nameservers?.provider && info.nameservers.provider !== 'basic';
+      return result([domain + ' is yours: registered at the registry and in your Spaceship account. ' + settings.join(', ') + '.',
+        custom ? 'It uses custom nameservers, so set DNS records where your DNS is hosted.' : setupOffer(domain)].join('\n'), data);
+    }
+    const lines = [domain + ' is not verified yet. Do not count it as bought.'];
+    if (!accountKnown) lines.push('Spaceship did not answer for your account. Try again in a minute.');
+    else if (!checks.account) lines.push('It is not in this Spaceship account.');
+    if (registryStatus !== 'taken') lines.push('The registry ' + (registryStatus === 'free' ? 'still lists it as free.' : 'did not answer.'));
+    else if (accountKnown && !checks.account) lines.push('The registry lists it as registered, possibly to someone else.');
+    lines.push('Check orders in your Spaceship account. Do not order it again until you have.');
+    return result(lines.join('\n'), data);
+  }
+
   async function setup(args) {
     const domain = checkInput(setupTool, args);
+    if (Object.hasOwn(args, 'verify')) {
+      if (args.verify !== true || Object.keys(args).some(key => key !== 'domain' && key !== 'verify')) {
+        throw Error('verify takes only domain and verify: true.');
+      }
+      return verify(domain);
+    }
     if (Object.hasOwn(args, 'plan_id')) {
       if (args.website || args.mail) throw Error('With plan_id, pass only domain, apply and replace.');
       if (args.apply !== true) throw Error('Pass apply: true with plan_id, after the person approved the preview.');
