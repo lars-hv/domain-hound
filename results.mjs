@@ -120,16 +120,18 @@ function signals(group, triage = true) {
   return 'iOS: ' + appFinding(comp.AppStore, row, 'App Store') + ' | Android: ' + appFinding(comp.GooglePlay, row, 'Google Play') + ' | web: ' + web;
 }
 
-function summary(groups, args, triage) {
-  const [wanted] = groups;
+// One selection feeds the receipt lines and the share link: preferred endings, budget, eligibility, verdict and
+// confirmed quotes decide the candidates; best value compares payments due in 3 years (y3 quote or term-aware sum).
+// names[i] is the same choice made inside groups[i] alone: its first candidate, its best value and its taken rows,
+// preferred endings first in the user's order (.com first by default).
+function receiptSelection(groups, args, triage) {
   const preferred = args.endings ?? [];
   const budget = args.budget;
-  const isExact = !triage && groups.length === 1 && wanted.row.name.includes('.');
-  const constraints = [...(!isExact && preferred.length ? [preferred.map(ending => '.' + ending).join(', ') + ' first'] : []),
-    ...(budget != null ? ['Up to ' + cash(budget) + ' today'] : [])];
+  const exact = !triage && groups.length === 1 && groups[0].row.name.includes('.');
   const inScope = record => record.eligible && (!preferred.length || preferred.includes(record.ending))
     && (budget == null || (record.now ?? Infinity) <= budget);
-  const candidates = groups.flatMap(group => group.row.verdict === 'Avoid' ? [] : group.records
+  // An exact lookup reports its one domain and never recommends.
+  const candidates = exact ? [] : groups.flatMap(group => group.row.verdict === 'Avoid' ? [] : group.records
     .filter(record => inScope(record) && (record.state === 'free' || record.priceLabel === 'Shop quote'))
     .map(record => ({ group, record })));
   const cost = item => item.record.now ?? Infinity;
@@ -137,11 +139,33 @@ function summary(groups, args, triage) {
   const position = item => preferred.length ? preferred.indexOf(item.record.ending) : 0;
   candidates.sort((a, b) => (verdictOrder[a.group.row.verdict] ?? 0) - (verdictOrder[b.group.row.verdict] ?? 0)
     || position(a) - position(b) || compareCost(a, b) || a.record.domain.localeCompare(b.record.domain));
-  const best = candidates[0];
-  const picks = [...new Map(candidates.toReversed().map(item => [item.group, item])).values()].reverse().slice(0, 3);
-  const cheapest = candidates.filter(item => item.record.now != null).sort(compareCost)[0];
-  const value = candidates.filter(item => item.record.total != null)
+  const bestValue = items => items.filter(item => item.record.total != null)
     .sort((a, b) => a.record.total - b.record.total || compareCost(a, b))[0];
+  const order = preferred.length ? preferred : ['com'];
+  const takenRank = record => {
+    const index = order.indexOf(record.ending);
+    return index < 0 ? order.length : index;
+  };
+  return {
+    exact, preferred, budget,
+    best: candidates[0],
+    picks: [...new Map(candidates.toReversed().map(item => [item.group, item])).values()].reverse().slice(0, 3),
+    cheapest: candidates.filter(item => item.record.now != null).sort(compareCost)[0],
+    value: bestValue(candidates),
+    names: groups.map(group => {
+      const own = candidates.filter(item => item.group === group);
+      return { pick: own[0]?.record ?? null, value: bestValue(own)?.record ?? null,
+        taken: group.records.filter(record => record.state === 'taken' && (!preferred.length || preferred.includes(record.ending)))
+          .sort((a, b) => takenRank(a) - takenRank(b)) };
+    }),
+  };
+}
+
+function summary(groups, args, triage, selection) {
+  const [wanted] = groups;
+  const { exact: isExact, preferred, budget, best, picks, cheapest, value } = selection;
+  const constraints = [...(!isExact && preferred.length ? [preferred.map(ending => '.' + ending).join(', ') + ' first'] : []),
+    ...(budget != null ? ['Up to ' + cash(budget) + ' today'] : [])];
   const target = wanted.records.find(record => record.ending === (preferred[0] ?? 'com')) ?? wanted.records[0];
   const watch = target?.state === 'taken' ? 'Want it anyway? [Watch ' + target.domain + '](' + watchLink(target.domain) + ').' : null;
   if (isExact) {
@@ -329,9 +353,9 @@ export function disclosure(data, triage) {
     + 'Up to three go to public handle APIs. Domain Hound uses your brief locally. ' + shop;
 }
 
-function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false } = {}) {
+function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [] } = {}) {
   const title = watch ? 'Domain watch' : 'Domain results';
-  const shared = shareUrl(groups, checkedAt);
+  const shared = shareUrl(groups, checkedAt, shareFacts);
   const shareLabel = groups.length > 5 ? 'Share first five names' : 'Share';
   const [intro, ...body] = lines;
   const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
@@ -475,11 +499,14 @@ export function resultPages({ env = process.env,
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
       const groups = watch ? [] : resultGroups(data, args.eligible);
+      const selection = receiptSelection(groups, args, triage);
       const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
         ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []),
-      ], savings: [] } : summary(groups, args, triage);
+      ], savings: [] } : summary(groups, args, triage, selection);
+      // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
+      const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);
       const title = watch ? data.domain : groups[0]?.row.name;
       await mkdir(directory, { recursive: true, mode: 0o700 });
       // If a caller points us at a shared directory, don't expose the searched name in its listing.
@@ -489,7 +516,7 @@ export function resultPages({ env = process.env,
       const base = kept ?? new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
       const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType,
-        { savings, note: watch ? '' : disclosure(data, triage), refresh: Boolean(refresh) });
+        { savings, note: watch ? '' : disclosure(data, triage), refresh: Boolean(refresh), shareFacts });
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {

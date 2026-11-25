@@ -2,7 +2,6 @@ import { readShareFragment } from './share-format.mjs';
 
 const receipt = document.getElementById('receipt');
 const groups = document.getElementById('groups');
-const checkedAt = document.getElementById('checked-at');
 const unavailable = document.getElementById('unavailable');
 const copyButton = document.getElementById('copy-link');
 const feedback = document.getElementById('copy-feedback');
@@ -18,45 +17,87 @@ function element(tag, className, text) {
   return node;
 }
 
-function price(label, amount) {
+const registryFree = 'Free at the registry';
+
+function price(label, amount, jump = false) {
   const pair = element('div');
-  pair.append(element('dt', '', label), element('dd', '', amount == null ? 'No quote' : usd.format(amount)));
+  const value = element('dd', '', amount == null ? 'No quote' : usd.format(amount));
+  if (jump) value.append(element('span', 'chip jump', 'Renewal jumps'));
+  pair.append(element('dt', '', label), value);
   return pair;
 }
 
 function domainRow(record) {
   const item = element('li', 'domain-row');
   const identity = element('div');
-  identity.append(element('strong', 'domain', record.domain), element('span', 'status', record.status));
+  const title = element('div', 'domain-title');
+  title.append(element('strong', 'domain', record.domain));
+  if (record.pick) title.append(element('span', 'chip pick', 'Pick'));
+  identity.append(title);
+  if (Number.isFinite(record.bestValue)) {
+    identity.append(element('span', 'chip best-value', 'Best value · ' + usd.format(record.bestValue) + ' over 3 years'));
+  }
+  if (record.status !== registryFree) identity.append(element('span', 'status', record.status));
   const prices = element('dl', 'quotes');
-  prices.append(price('Upfront', record.now), price('Renewal', record.renew));
+  prices.append(price('Upfront', record.now), price('Renewal', record.renew, record.jump));
   item.append(identity, prices);
   if (record.term > 1) item.append(element('p', 'term', record.term + ' years per payment'));
   return item;
 }
 
-function nameGroup({ name, verdict, records }) {
+function takenFooter(name, targets) {
+  const base = name.toLowerCase().split('.')[0].replaceAll(' ', '');
+  const summary = targets.map(domain => {
+    const ending = domain.slice(base.length);
+    const sameName = domain.startsWith(base + '.') && (/^\.[^.]+$/.test(ending) || ending === '.co.uk');
+    return (sameName ? ending : domain) + ' taken';
+  });
+  const foot = element('div', 'group-foot');
+  const watch = element('a', 'watch-link', 'Watch ' + targets[0]);
+  watch.href = '/watch/?domain=' + encodeURIComponent(targets[0]);
+  if (summary.length > 2) {
+    const details = element('details', 'taken-summary');
+    const preview = summary.slice(0, 2).join(' · ') + ' · +' + (summary.length - 2) + ' more';
+    details.append(element('summary', '', preview), element('div', '', summary.slice(2).join(' · ')));
+    foot.append(details);
+  } else {
+    foot.append(element('span', 'taken-summary', summary.join(' · ')));
+  }
+  foot.append(watch);
+  return foot;
+}
+
+function nameGroup({ name, verdict, records, takenDomains: targets }, checkedAt, checkTime) {
   const card = element('article', 'paper');
   const heading = element('header', 'group-heading');
   heading.append(element('h2', '', name));
   if (verdict) heading.append(element('p', 'verdict', verdict));
-  card.append(heading);
-  if (!records.length) {
-    card.append(element('p', 'group-foot', 'No domains checked.'));
-    return card;
+  const meta = element('p', 'group-meta');
+  const free = records.filter(record => record.status === registryFree).length;
+  if (free) {
+    const mixed = free < records.length;
+    meta.append(mixed ? free + (free === 1 ? ' ending' : ' endings') + ' free at the registry · ' : registryFree + ' · ');
   }
+  const time = element('time', '', checkTime);
+  time.dateTime = checkedAt;
+  meta.append('Checked ', time);
+  heading.append(meta);
+  card.append(heading);
+  if (targets.length) card.append(takenFooter(name, targets));
 
   const rows = element('ul', 'domain-list');
   rows.setAttribute('aria-label', 'Domain prices in USD');
-  for (const record of records) rows.append(domainRow(record));
-
-  const target = records.find(record => /^taken\b/i.test(record.status)) ?? records[0];
-  const foot = element('div', 'group-foot');
-  const watch = element('a', 'watch-link', 'Watch this domain');
-  watch.href = '/watch/?domain=' + encodeURIComponent(target.domain);
-  watch.setAttribute('aria-label', 'Watch this domain: ' + target.domain);
-  foot.append(watch, element('span', 'watch-target', target.domain));
-  card.append(foot, rows);
+  const offers = [];
+  const others = [];
+  for (const record of records) {
+    if (record.status === registryFree || record.status === 'Confirmed at shop') offers.push(record);
+    else if (!(record.status === 'Taken' && record.now == null && record.renew == null && targets.includes(record.domain))) {
+      others.push(record);
+    }
+  }
+  offers.sort((a, b) => (a.now ?? Infinity) - (b.now ?? Infinity));
+  for (const record of [...offers, ...others]) rows.append(domainRow(record));
+  if (offers.length || others.length) card.append(rows);
   return card;
 }
 
@@ -74,9 +115,8 @@ async function showReceipt() {
       unavailable.hidden = false;
       return;
     }
-    checkedAt.dateTime = data.checkedAt;
-    checkedAt.textContent = timestamp.format(new Date(data.checkedAt)) + ' UTC';
-    groups.replaceChildren(...data.groups.map(nameGroup));
+    const checkTime = timestamp.format(new Date(data.checkedAt)) + ' UTC';
+    groups.replaceChildren(...data.groups.map(group => nameGroup(group, data.checkedAt, checkTime)));
     receipt.hidden = false;
     copyButton.hidden = false;
   } catch {
