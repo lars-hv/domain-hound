@@ -13,13 +13,14 @@
       "interface": {
         "displayName": "Domain Hound",
         "shortDescription": "Domain prices and name checks",
-        "longDescription": "Domain Hound is a local MCP server that helps you pick a product name and the best domain. It checks real registry availability, finds the cheapest trusted shop including the renewal price, and screens names for trademark conflicts, app store clashes and web traction. It has four tools: check_domains, triage_names, naming_method and watch_domain. It runs on your machine over stdio, needs no account, and is open source under the MIT license.",
+        "longDescription": "Domain Hound checks registry availability, compares upfront and renewal prices, and screens product names for trademarks, app store clashes and web traction. It can watch a domain for release. Connect your own Spaceship account to get a live quote and set up website or mail DNS. Payment happens at Spaceship checkout. Domain Hound runs on your machine and is open source under the MIT license.",
         "developerName": "Lars Hvinden",
         "category": "Developer Tools",
         "capabilities": [
           "Check domain availability",
           "Compare registrar prices",
-          "Screen product names"
+          "Screen product names",
+          "Set up DNS at Spaceship"
         ],
         "websiteURL": "https://domainhound.dev",
         "privacyPolicyURL": "https://domainhound.dev/privacy/",

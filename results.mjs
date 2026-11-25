@@ -147,7 +147,7 @@ function summary(groups, args, triage) {
     const intro = picked.domain + ': ' + picked.status.toLowerCase() + '.' + price + (overBudget ? ' Over budget.' : '');
     const step = overBudget ? 'Next: try a cheaper domain.' : picked.checkout
       ? 'Next: [check at ' + plain(picked.shop) + '](' + picked.checkout + ').' : watch ?? 'Next: check another domain.';
-    return [...constraints, intro, ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []), step];
+    return [...constraints, intro, ...(args.purchase ? ['This check leaves checkout to you.'] : []), step];
   }
   const reason = evidenceText(wanted.row.reason).replace('David vs Goliath: ', 'Established rival: ');
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
@@ -179,7 +179,7 @@ function summary(groups, args, triage) {
     'Cheapest: ' + (cheapest ? label(cheapest) : 'none found in scope.'),
     'Best value: ' + (value ? value.record.domain + ', ' + cash(value.record.total) + ' in payments due in 3 years'
       + ' (' + value.record.priceLabel.toLowerCase() + priceDate(value.record) + ')' + caution(value) : 'needs a shop quote') + '.',
-    (args.purchase ? 'Domain Hound cannot buy or complete checkout. ' : '') + next + eligibility,
+    (args.purchase ? 'This check leaves checkout to you. ' : '') + next + eligibility,
   ];
   return lines.filter(Boolean);
 }
@@ -402,7 +402,7 @@ export function resultPages({ env = process.env,
       const lines = watch ? data.say.split('\n') : data.pending ? [
         'Still checking trademark, app and web sources. Registry answers so far are on the page.',
         'Repeat the same lookup to collect the rest.',
-        ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []),
+        ...(args.purchase ? ['This check leaves checkout to you.'] : []),
       ] : summary(groups, args, triage);
       const title = watch ? data.domain : groups[0]?.row.name;
       await mkdir(directory, { recursive: true, mode: 0o700 });

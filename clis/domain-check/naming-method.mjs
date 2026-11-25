@@ -1,5 +1,5 @@
 export const showAsIs = 'Show `display` exactly as written, then add at most two sentences of advice below it.';
-export const purchaseLine = 'Domain Hound cannot buy or complete checkout; use the link above.';
+export const purchaseLine = 'This check leaves checkout to you; use the link above.';
 
 export const googleSearchInstruction = 'Before answering, use your built-in web search for each name marked google.search (up to 3). '
   + 'Search "<name>" and "<name>" app once each. Review the first 10 returned results of each search, or all results if fewer are returned. '

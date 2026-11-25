@@ -61,6 +61,13 @@
     "clis/domain-check/traction.mjs",
     "clis/domain-check/triage-sources.mjs",
     "clis/domain-check/triage.mjs",
+    "clis/spaceship/buy.mjs",
+    "clis/spaceship/client.mjs",
+    "clis/spaceship/dns.mjs",
+    "clis/spaceship/quote.mjs",
+    "clis/spaceship/setup.mjs",
+    "clis/spaceship/store.mjs",
+    "clis/spaceship/tools.mjs",
     "assets/",
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
@@ -70,7 +77,7 @@
     "server.json"
   ],
   "scripts": {
-    "test": "node --test server.test.mjs results.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs",
+    "test": "node --test server.test.mjs results.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "snapshot-prices": "node scripts/snapshot-prices.mjs",
     "build-mcpb": "node scripts/build-mcpb.mjs"

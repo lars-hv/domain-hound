@@ -4,7 +4,7 @@ import { canRecommend, eligibilityNeed, normalizeName, premiumRisk, unicodeName 
 import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
 export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
-export const neverBuys = 'Domain Hound never buys; open the link to buy.';
+export const neverBuys = 'This check leaves checkout to you; open the link to buy.';
 export const attribution = 'via domainhound.dev';
 
 // Every MCP display carries one attribution line. The blank line keeps it out of a preceding table or list.
@@ -30,7 +30,7 @@ const label = name => normalizeName(String(name ?? '')) ?? String(name ?? '').no
 const fullDomain = (name, d) => d.includes('.') ? d : name + '.' + d;
 const suffix = domain => domain.endsWith('.co.uk') || domain === 'co.uk' ? 'co.uk' : domain.split('.').at(-1);
 const registered = (row, ending) => row.taken?.includes(ending) || row.resale?.includes(ending);
-const checkoutLimitation = 'Domain Hound cannot buy or complete checkout.';
+const checkoutLimitation = 'This check leaves checkout to you.';
 const mayBePremium = 'may be premium, price at shop';
 
 // A name or domain in its own spelling with the ASCII form registrars use beside it: "grønn.no (xn--grnn-zua.no)".
@@ -176,7 +176,7 @@ function exactDisplay(result) {
     const benchmark = showBenchmark
       ? ['Standard .' + ending + ' list price (benchmark' + (date ? ' from ' + date : '') + ', USD ex. VAT): ' + renewal + '.']
       : [];
-    return ['**' + name + ' is taken, and ' + checkoutLimitation + '**' + resale + checked, ...benchmark, ...tail].join('\n');
+    return ['**' + name + ' is taken. ' + checkoutLimitation + '**' + resale + checked, ...benchmark, ...tail].join('\n');
   }
   const free = row.free?.find(option => option.d === ending);
   if (free?.s === 'prem') {
