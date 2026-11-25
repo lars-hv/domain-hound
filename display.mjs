@@ -8,7 +8,7 @@ export const neverBuys = 'Domain Hound never buys; open the link to buy.';
 export const attribution = 'via domainhound.dev';
 
 // Every MCP display carries one attribution line. The blank line keeps it out of a preceding table or list.
-// An exact lookup, or a request that mentions buying, ends with the literal purchase line after it.
+// When the display can show a checkout link, an exact lookup or purchase request can add the purchase line after it.
 export const attributed = (display, purchase = false) => String(display ?? '').trimEnd() + '\n\n' + attribution
   + (purchase ? '\n\n' + purchaseLine : '');
 
@@ -28,6 +28,8 @@ const money = value => '$' + Number(value).toFixed(2);
 const label = name => String(name).normalize('NFKD').toLowerCase().replace(/[^a-z0-9-]/g, '');
 const fullDomain = (name, d) => d.includes('.') ? d : name + '.' + d;
 const suffix = domain => domain.split('.').at(-1);
+const registered = (row, ending) => row.taken?.includes(ending) || row.resale?.includes(ending);
+const checkoutLimitation = 'Domain Hound cannot buy or complete checkout.';
 
 function preferredFirst(values, preferred, endingOf = value => value) {
   if (!preferred?.length) return values;
@@ -90,11 +92,9 @@ function exactDisplay(result) {
   const domain = row.name;
   const ending = domain.split('.').at(-1);
   const checked = result.checkedAt ? ' Checked ' + String(result.checkedAt).slice(0, 16).replace('T', ' ') + ' UTC.' : '';
-  if (row.resale?.includes(ending)) {
-    return '**' + domain + ' is taken.** The owner may list it for resale.' + checked;
-  }
-  if (row.taken?.includes(ending)) {
-    return '**' + domain + ' is taken.** It is already registered.' + checked;
+  if (registered(row, ending)) {
+    const resale = row.resale?.includes(ending) ? ' The owner may list it for resale.' : '';
+    return '**' + domain + ' is taken, and ' + checkoutLimitation + '**' + resale + checked;
   }
   const free = row.free?.find(option => option.d === ending);
   if (free?.s === 'prem') {
@@ -481,11 +481,14 @@ export function checkText(result, shortlist = false, { purchase = false, preferr
   })) };
   const initialLevel = (result.names?.length ?? 0) >= 10 ? 3 : 0;
   const shown = checkDisplay(result, initialLevel, purchase);
-  const exact = (result.names ?? []).length === 1 && String(result.names[0]?.name ?? '').includes('.');
-  // An exact lookup always ends with the purchase line; so does any request that mentions buying.
-  const ending = exact || purchase;
+  const [row] = result.names ?? [];
+  const exact = result.names?.length === 1 && row?.name?.includes('.');
+  // A registered exact domain already shows the limitation with its status and has no checkout link.
+  const taken = exact && registered(row, suffix(row.name));
+  const ending = (exact || purchase) && !taken;
   let display = attributed(shown, ending);
   const data = { ...result };
+  if (taken && data.purchaseAdvice) data.purchaseAdvice = checkoutLimitation;
   if (shortlist) {
     // The preliminary batch keeps statuses and payments. The display has the confirmed link.
     const quote = ({ y3, jump, shop, ...fields }) => fields;

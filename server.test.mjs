@@ -209,15 +209,16 @@ test('passes a normalized query as a separate argument and returns compact JSON'
   assert.equal(result.legend.ok, 'Free, confirmed by a shop');
 });
 
-test('a taken exact domain shows no price or link and still ends with the purchase line', async () => {
-  const responses = await exchange([...handshake(), call(2, { query: 'taken.me' })]);
-  const result = callData(responses, 2);
-  assert.deepEqual(result.names, [{ name: 'taken.me', taken: ['me'] }]);
-  assert.ok(result.purchaseAdvice);
-  const lines = result.display.split('\n');
-  assert.match(lines[0], /^\*\*taken\.me is taken\.\*\* It is already registered\./);
-  assert.equal(callText(responses, 2).split('\n').at(-1), purchaseLine);
-  assert.doesNotMatch(result.display, /\$|https?:/);
+test('a taken exact domain puts the checkout limitation on the status line, even without the purchase flag', async () => {
+  const responses = await exchange([...handshake(), call(2, { query: 'taken.me' }),
+    call(3, { query: 'taken.me', purchase: true })]);
+  for (const id of [2, 3]) {
+    const result = callData(responses, id);
+    assert.deepEqual(result.names, [{ name: 'taken.me', taken: ['me'] }]);
+    assert.match(result.display.split('\n')[0], /^\*\*taken\.me is taken, and Domain Hound cannot buy or complete checkout\.\*\*/);
+    assert.doesNotMatch(callText(responses, id), /\$|https?:|use the link above/);
+    assert.match(result.purchaseAdvice, /cannot buy or complete checkout\.$/);
+  }
 });
 
 test('passes 20 names to one native batch invocation and preserves partial compact results', async () => {
@@ -983,7 +984,7 @@ test('without Playwright an unconfirmed free domain says check at shop with a li
   // A taken domain stays taken; the fallback never adds a link or price.
   const taken = { ...exactLive, names: [{ name: 'quietotter.me', taken: ['me'] }] };
   const shownTaken = body(JSON.parse(checkText(taken)).display);
-  assert.match(shownTaken, /^\*\*quietotter\.me is taken\.\*\* It is already registered\./);
+  assert.match(shownTaken, /^\*\*quietotter\.me is taken, and Domain Hound cannot buy or complete checkout\.\*\*/);
   assert.doesNotMatch(shownTaken, /\$|https?:|Live shop check/);
 
   // A batch keeps the shared list prices and taken rows, and links the candidate to check at the shop.

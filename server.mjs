@@ -422,7 +422,7 @@ export async function serve({
         (progress, timing) => progressText(progress, { ...timing, triage: true, purchase })));
     }
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
-    // An exact lookup always ends with the purchase line, as its finished display does.
+    // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
     return reply(await runLookup(args, cliArguments, checkRows, data => {
       if (args.shortlist) shortlist = { at: Date.now(), data };

@@ -238,3 +238,154 @@ The harness reads only client text blocks and calls `JSON.parse` on their conten
 The Codex repeat gate passed **0/10**, with **0/5** in b and **0/5** in f. All five naming answers reproduced the full display verbatim and four put it first. The five naming displays ranged from 2,453 to 2,531 B. Four purchase answers explained the checkout limitation. The grader still required structured evidence from each purchase result, so all five failed.
 
 The grader and prompts were unchanged. New evidence is in `.verify/gate-0.1.2-b-full.json`, `.verify/gate-0.1.2-b-repeat.json`, and `.verify/lookup-0.1.2-b.log`.
+
+## 0.1.2-c
+
+The full gate passed **13/14**. The original Codex repeats passed **7/10**. Combining the original naming runs with the retained checkout fix’s f-only reruns gives **8/10**. The targets were **14/14** and at least **9/10**.
+
+The harness now runs Domain Hound through a stdio tap and saves each `tools/call` request and its entire JSON-RPC response in a separate JSONL file for each client session. The tap forwards the original bytes. The grader uses the captured request arguments and server result, including `structuredContent`. It reads the final answer, web searches, client-visible tool text sizes and timing from the transcript. `HOUND_E2E_SERVER` still selects the server, and the harness uses the adjacent broker server when that variable is unset.
+
+### Verification
+
+- The tap and the old Claude parser produced byte-identical JSON for **9 successful results across all 7 Claude Code sessions**. For the two validation errors in case e, the original transcript display matched the wire display exactly. The old parser did not extract structured JSON from those error displays.
+- A synthetic stdio test compared incoming and outgoing byte streams, including split UTF-8 and CRLF. The JSONL retained the full structured result and protocol error and paired out-of-order replies with their original IDs.
+- Regrading the saved full gate reproduced the results file byte for byte. Regrading the pre-tap artifact also reproduced its **7/14** result.
+- The retained product change passed **152 of 154 tests**, with **2 optional browser tests skipped**. The checkout regression failed before the change and passed afterwards with and without the purchase flag.
+
+### Full gate, both clients
+
+| Case | Claude Code | Codex | Claude Code seconds | Codex seconds |
+| --- | --- | --- | ---: | ---: |
+| a | Pass | Pass | 4.114 | 12.136 |
+| b | Pass | Pass | 52.334 | 70.038 |
+| c | Pass | Pass | 28.385 | 31.045 |
+| d | Pass | Pass | 20.811 | 33.702 |
+| e | Pass | Pass | 10.917 | 22.552 |
+| f | Pass | Fail | 5.973 | 13.583 |
+| g | Pass | Pass | 22.162 | 29.345 |
+
+Codex’s only full-gate failure was f. The tap confirmed that the domain was registered and that the display included the checkout limitation. Codex summarized the status and omitted the limitation.
+
+### Codex repeats and purchase reruns
+
+| Trial | Initial b | Initial f | Retained fix, f only | Checkout-first trial, f only |
+| ---: | --- | --- | --- | --- |
+| 1 | Pass | Fail | Fail | Pass |
+| 2 | Pass | Pass | Pass | Fail |
+| 3 | Fail | Fail | Pass | Fail |
+| 4 | Pass | Pass | Pass | Fail |
+| 5 | Pass | Pass | Pass | Fail |
+| **Total** | **4/5** | **3/5** | **4/5** | **1/5** |
+
+Naming trial 3 omitted all five verdicts, 38 available endings and four cheapest one-year prices. The server display included them.
+
+The retained change puts the registered status and checkout limitation together in the first line, even when the client leaves out the purchase flag. It removes the instruction to use a checkout link for a taken domain. Claude Code passed **5/5** purchase reruns with the retained change. The alternative put the checkout limitation before the status and moved the purchase instruction to the start of the tool description. Claude Code passed **5/5**, Codex passed **1/5**, and the product test that requires the copy instruction first also failed. The first change had the better client results and passed the product suite. Following the brief, the post-fix live runs covered f only.
+
+Local evidence is in `../../broker-mcp/e2e/verify-0.1.2-c/` in `full.json`, `repeat.json`, `purchase-1.json` through `purchase-5.json`, and `purchase-action-1.json` through `purchase-action-5.json`. Each result points to its session JSONL. `check-evidence.mjs` reproduces the Claude comparison.
+
+### Harness diff
+
+```diff
+--- before/run.mjs
++++ after/run.mjs
+@@ -3 +3 @@
+-import { readFile, writeFile } from 'node:fs/promises';
++import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+@@ -6,0 +7 @@
++import { isDeepStrictEqual } from 'node:util';
+@@ -33 +34,2 @@
+-const houndServer = process.env.HOUND_E2E_SERVER && resolve(process.env.HOUND_E2E_SERVER);
++const houndServer = resolve(process.env.HOUND_E2E_SERVER ?? resolve(cwd, 'server.mjs'));
++const tap = fileURLToPath(new URL('./tap.mjs', import.meta.url));
+@@ -117 +119,32 @@
+-async function run(client, scenario) {
++async function captureEvidence(result, tapPath) {
++  const transcript = result.calls.filter(isHound);
++  for (const call of transcript) call.evidence = null;
++  const requests = [];
++  const responses = new Map();
++  for (const line of (await readFile(tapPath, 'utf8')).trim().split('\n').filter(Boolean)) {
++    const { request, response } = JSON.parse(line);
++    if (request) requests.push(request);
++    else responses.set(response.id, response);
++  }
++  assert.equal(requests.length, transcript.length, 'Tap and transcript report different Domain Hound call counts.');
++  for (const [index, request] of requests.entries()) {
++    const call = transcript[index];
++    const { name, arguments: args = {} } = request.params;
++    assert.equal(name, short(call), 'Tap and transcript report different Domain Hound tools.');
++    assert(isDeepStrictEqual(args, call.args ?? {}), 'Tap and transcript report different tool arguments.');
++    call.name = 'mcp__domain-hound__' + name;
++    call.args = args;
++    const response = responses.get(request.id);
++    if (!response) {
++      assert.equal(call.bytes, undefined, 'A transcript result has no matching server response.');
++      continue;
++    }
++    const output = contentText(response.result?.content);
++    call.evidence = response.result?.structuredContent ?? readJson(output);
++    if (response.error || response.result?.isError) {
++      call.error = response.error?.message || output || call.error || 'Tool returned an error';
++    }
++  }
++}
++
++async function run(client, scenario, tapFile) {
+@@ -127,9 +160,9 @@
+-  if (houndServer) {
+-    if (claude) {
+-      args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({
+-        mcpServers: { [server]: { command: process.execPath, args: [houndServer] } },
+-      }));
+-    } else {
+-      args.push('-c', 'mcp_servers.domain-hound.command=' + JSON.stringify(process.execPath),
+-        '-c', 'mcp_servers.domain-hound.args=' + JSON.stringify([houndServer]));
+-    }
++  const tapPath = fileURLToPath(tapFile);
++  const tapArgs = [tap, houndServer, tapPath];
++  if (claude) {
++    args.push('--strict-mcp-config', '--mcp-config', JSON.stringify({
++      mcpServers: { [server]: { command: process.execPath, args: tapArgs } },
++    }));
++  } else {
++    args.push('-c', 'mcp_servers.domain-hound.command=' + JSON.stringify(process.execPath),
++      '-c', 'mcp_servers.domain-hound.args=' + JSON.stringify(tapArgs));
+@@ -164,0 +198,6 @@
++  result.tapFile = tapFile.pathname.split('/').slice(-2).join('/');
++  try {
++    await captureEvidence(result, tapPath);
++  } catch (error) {
++    result.clientErrors.push('MCP evidence capture failed: ' + error.message);
++  }
+@@ -171 +210,2 @@
+-const data = call => readJson(call?.output ?? '');
++// Regrading older saved runs remains possible. Live calls always use the tap.
++const data = call => call && (Object.hasOwn(call, 'evidence') ? call.evidence : readJson(call.output ?? ''));
+@@ -473,0 +514 @@
++  const tapDir = existing ? null : await mkdtemp(fileURLToPath(new URL('./tap-', evidence)));
+@@ -481 +522,2 @@
+-      : await run(client, scenario);
++      : await run(client, scenario, pathToFileURL(resolve(tapDir, [scenario.id, client === 'Codex' ? 'codex' : 'claude', trial]
++        .filter(Boolean).join('-') + '.jsonl')));
+```
+
+Each row covers the changed lines in the diff. The prompts, scope, answer extraction, and all gate assertions were compared byte for byte.
+
+| Changed lines | Effect on the checks |
+| --- | --- |
+| Old 3 and new 3 | Adds the filesystem import used to isolate run logs. |
+| New 7 | Uses deep equality to require matching transcript and wire arguments. |
+| Old 33 and new 34–35 | Resolves the selected source server and proxy explicitly for both clients. |
+| New 119–121 | Initializes live calls without evidence until the tap supplies it. |
+| New 122–128 | Reads original requests in order and indexes complete responses by JSON-RPC ID. |
+| New 129–134 | Requires the same call count, order, tool names, and arguments in both sources. |
+| New 135–137 | Supplies wire-observed tool names and arguments to the existing checks and finds the corresponding response. |
+| New 138–141 | Rejects a transcript completion without a wire response and leaves unfinished calls subject to the original completion check. |
+| New 142–143 | Supplies structured server fields, with server text as a fallback for legacy JSON-in-text responses. |
+| New 144–148 | Retains client errors and supplies server validation and protocol errors to the same assertions. |
+| Old 117 and new 150 | Threads the per-session log through the existing client runner. |
+| Old 127–136 and new 160–169 | Boots the same server through the proxy for both clients using the existing permissions and time budgets. |
+| New 198–203 | Records the evidence path and fails the existing client-error check if evidence cannot be verified. Client wall time is measured before reading the log. |
+| Old 171 and new 210–211 | Reads wire evidence for live cases and preserves replay of artifacts saved before the tap existed. |
+| New 514 | Creates a fresh tap directory per gate so sessions and retries have separate logs. |
+| Old 481 and new 522–523 | Names each log by client, scenario, and trial while keeping the same scenario queue. |
