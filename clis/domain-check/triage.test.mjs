@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { writeCache } from './cache.mjs';
+import { withSocial } from '../../test-support/social-fixture.mjs';
+import { resetHandleRuns } from './handles.mjs';
 import { classifyComSite } from './com-site.mjs';
 import { loadEdgarCompanies, matchEdgarCompanies, searchNorwegianCompanies } from './company-search.mjs';
 import { readPlayCards, readPlayDetails, searchAndroidApps } from './google-play.mjs';
@@ -149,45 +151,40 @@ test('applet presence returns all three checks and direct searches with no Googl
   for (const row of result.checks) assert.match(row.link, /^https:/);
 });
 
-test('caches handles for 24 hours, marks only 404 as free and backs off after one GitHub 403', async t => {
+test('GitHub and npm same-name evidence comes from their public APIs; the repo search still adds repositories', async t => {
   const directory = await directoryFor(t);
+  resetHandleRuns();
   const calls = [];
   let limited = false;
-  const fetcher = async url => {
+  const fetcher = withSocial(async url => {
     const { hostname: host, pathname, searchParams } = new URL(url);
     calls.push(host);
-    if (host === 'api.github.com') {
-      assert.equal(pathname, '/search/repositories');
-      assert.match(searchParams.get('q'), /^"[a-z]+" in:name$/);
-      return Response.json(limited ? fixture.github.limited : fixture.github.taken, {
-        status: limited ? 403 : 200, headers: { 'x-ratelimit-reset': String((+now + 180_000) / 1000) },
-      });
-    }
-    if (host === 'github.com') return new Response(null, { status: pathname === '/cloudotter' ? 200 : 404 });
-    if (host === 'registry.npmjs.org') return Response.json(fixture.npm.missing, { status: 404 });
-    return new Response(null, { status: host === 'x.com' ? 302 : host === 'pypi.org' ? 200 : 404 });
-  };
+    assert.equal(host, 'api.github.com');
+    assert.equal(pathname, '/search/repositories');
+    assert.match(searchParams.get('q'), /^"[a-z]+" in:name$/);
+    return Response.json(limited ? fixture.github.limited : fixture.github.taken, {
+      status: limited ? 403 : 200, headers: { 'x-ratelimit-reset': String((+now + 180_000) / 1000) },
+    });
+  }, { taken: ['cloudotter'] });
   const options = { directory, now, fetcher };
   const { github, handles } = await checkHandles('cloudotter', options);
-  assert.deepEqual(handles, { GitHub: 'taken', npm: 'free', PyPI: 'taken', X: 'unknown', YouTube: 'free' });
+  assert.deepEqual(handles, { GitHub: 'taken', npm: 'taken' });
   assert.deepEqual(github, {
     status: 'taken', ownerType: 'Organization', count: 2,
     examples: ['cloudotter/CloudOtter', 'devstudio/cloudotter'], partial: false,
   });
+  // The repository search is reused for a day.
   calls.length = 0;
   await checkHandles('cloudotter', { ...options, now: new Date(+now + 86_399_999) });
-  assert.deepEqual(calls, ['x.com']);
-  calls.length = 0;
+  assert.deepEqual(calls, []);
   await checkHandles('cloudotter', { ...options, now: new Date(+now + 86_400_000) });
   assert.equal(calls.filter(host => host === 'api.github.com').length, 1);
+  // A rate-limited repository search keeps the account answer from the users API.
   calls.length = 0;
   limited = true;
-  const [a, b] = await Promise.all([
-    checkHandles('newotter', options), checkHandles('spareotter', options),
-  ]);
-  assert.equal(a.handles.GitHub, 'free');
-  assert.equal(b.handles.GitHub, 'free');
-  assert.equal(calls.filter(host => host === 'github.com').length, 2);
+  const [a, b] = await Promise.all([checkHandles('newotter', options), checkHandles('spareotter', options)]);
+  assert.equal(a.handles.GitHub, 'not-found');
+  assert.equal(b.handles.GitHub, 'not-found');
   assert.equal(calls.filter(host => host === 'api.github.com').length, 1);
 });
 
@@ -215,7 +212,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
       ? { state: 'live', title: 'Domain Sparrow: Domain Name Checker' }
       : domain === 'cloudotter.app' ? { state: 'live', title: 'Cloud Otter' }
         : domain.endsWith('.io') ? { state: 'parked' } : { state: 'no-site' },
-    fetcher: async (value, init) => {
+    fetcher: withSocial(async (value, init) => {
       const url = new URL(value);
       if (url.hostname === 'data.iana.org') return Response.json({
         services: [[['com', 'ai', 'io', 'dev', 'app', 'co', 'si'], ['https://rdap.example.test/']]],
@@ -234,7 +231,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
       if (url.hostname === 'www.google.com') return Response.json([url.searchParams.get('q'), []]);
       if (url.hostname === 'trends.google.com') return Response.json({ default: { topics: [] } });
       return new Response(null, { status: 404 });
-    },
+    }),
   };
   const report = await triageNames(['Domain Sparrow', 'Cloud Otter', 'DappleBear'], options);
   const [rival, brand, clear] = report.names;
@@ -360,7 +357,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
     ...options, fetcher: async (value, init) => {
       const { hostname, searchParams } = new URL(value);
       if (hostname === 'www.wikidata.org' && searchParams.get('action') === 'wbgetentities') return Response.json({});
-      if (hostname === 'api.github.com') return Response.json(fixture.github.taken);
+      if (hostname === 'api.github.com' && !value.includes('/users/')) return Response.json(fixture.github.taken);
       return withoutMarksOrApps(value, init);
     },
   });
@@ -397,7 +394,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.match(invalid.error, /1 to 20/);
 
   const compact = await triageNames(['Domain Sparrow', 'Cloud Otter', 'DappleBear'], { ...options, compact: true });
-  assert.deepEqual(Object.keys(compact), ['top', 'names', 'prices', 'sources', 'eligibility']);
+  assert.deepEqual(Object.keys(compact), ['top', 'names', 'prices', 'sources', 'eligibility', 'handles']);
   assert.deepEqual(compact.prices.co, { now: 4, renew: 30, jump: true, shop: 'Dynadot' });
   assert.deepEqual(compact.prices.ai, { now: 160, renew: 170, term: 2, shop: 'Dynadot' });
   const [compactRival, compactBrand, compactClear] = compact.names;
@@ -434,6 +431,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
 });
 
 test('retries an unavailable triage source once and names it in the reason when it stays silent', async t => {
+  const social = withSocial();
   const make = async (failures, calls) => ({
     directory: await directoryFor(t), now, cachedOnly: true, launch: playBrowser([]),
     resolveNs: async domain => domain.endsWith('.com') ? ['ns.example.test'] : [],
@@ -450,9 +448,14 @@ test('retries an unavailable triage source once and names it in the reason when 
         return calls[url.hostname] <= (failures.wikidata ?? 0)
           ? new Response(null, { status: 503 }) : Response.json({ search: [] });
       }
-      if (url.hostname === 'github.com') return new Response(null, {
-        status: calls[url.hostname] <= failures.github ? 500 : 404,
-      });
+      // The GitHub users API fails the given number of times for this name, then answers.
+      if (url.pathname === '/users/quietwren') {
+        calls.users = (calls.users ?? 0) + 1;
+        return calls.users <= failures.github ? new Response(null, { status: 500 })
+          : Response.json({ message: 'Not Found' }, { status: 404 });
+      }
+      if (url.hostname === 'api.github.com' && url.pathname.startsWith('/users/')) return social(value, init);
+      if (url.hostname === 'registry.npmjs.org') return social(value, init);
       if (url.hostname === 'api.github.com') return Response.json(fixture.github.missing);
       if (url.hostname === 'data.brreg.no') return Response.json(noCompanies);
       if (url.hostname === 'www.sec.gov') return Response.json(companies.edgar);
@@ -462,13 +465,13 @@ test('retries an unavailable triage source once and names it in the reason when 
   const recoveredCalls = {};
   const recovered = await triageNames(['Quiet Wren'], await make({ uspto: 1, github: 1, wikidata: 1 }, recoveredCalls));
   assert.equal(recoveredCalls['tmsearch.uspto.gov'], 2);
-  assert.equal(recoveredCalls['github.com'], 2);
+  assert.equal(recoveredCalls.users, 2);
   assert.equal(recoveredCalls['www.wikidata.org'], 2);
   assert.equal(recovered.sources.Wikidata, 100);
   assert.equal(recovered.names[0].verdict, 'No conflict found');
   const silentCalls = {};
   const silent = await triageNames(['Quiet Wren'], { ...await make({ uspto: 0, github: Infinity }, silentCalls), compact: true });
-  assert.equal(silentCalls['github.com'], 2);
+  assert.equal(silentCalls.users, 2);
   assert.equal(silent.sources.GitHub, 0);
   assert.equal(silent.names[0].verdict, 'Check first');
   assert.equal(silent.names[0].reason, 'GitHub did not answer');
@@ -599,4 +602,59 @@ test('reuses only recent conclusive registration evidence for the rate-limited e
   assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 3_000_000) }))[0].status, 'free');
   assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 3_601_000) }))[0].status, 'taken');
   assert.equal(calls, 3);
+});
+
+test('slow sources screen the first five names; handle rows go to the top three, the own name first', async t => {
+  const directory = await directoryFor(t);
+  resetHandleRuns();
+  const inputs = ['Alpha Wren', 'Bravo Wren', 'Charlie Wren', 'Delta Wren', 'Echo Wren', 'Foxtrot Wren', 'Golf Wren'];
+  const marks = [];
+  const apps = [];
+  const social = [];
+  const report = await triageNames(inputs, {
+    directory, now, cachedOnly: true, receipt: true, launch: playBrowser([]),
+    // Bravo and Charlie have no free ending, so Delta and Echo join Alpha for the handle rows.
+    resolveNs: async domain => /^(?:bravo|charlie)wren\./.test(domain) ? ['ns.example.test'] : [],
+    comSite: async () => ({ state: 'no-site' }),
+    fetcher: withSocial(async (value, init) => {
+      const url = new URL(value);
+      if (url.hostname === 'data.iana.org') return Response.json({ services: [[['com', 'ai', 'io', 'dev', 'app', 'co', 'si', 'net', 'org', 'xyz', 'tech'], ['https://rdap.example.test/']]] });
+      if (url.hostname === 'tmsearch.uspto.gov') {
+        marks.push(JSON.parse(init.body).query.bool.must[0].bool.should[0].match_phrase.wordmark.query);
+        return Response.json({ hits: { hits: [] } });
+      }
+      if (url.hostname === 'itunes.apple.com') {
+        apps.push(url.searchParams.get('term'));
+        return Response.json({ results: [] });
+      }
+      if (url.hostname === 'api.github.com') return Response.json(fixture.github.missing);
+      if (url.hostname === 'www.wikidata.org') return Response.json({ search: [] });
+      if (url.hostname === 'data.brreg.no') return Response.json(noCompanies);
+      if (url.hostname === 'www.sec.gov') return Response.json(companies.edgar);
+      return new Response(null, { status: 404 });
+    }, { calls: social }),
+  });
+  const screened = ['alphawren', 'bravowren', 'charliewren', 'deltawren', 'echowren'];
+  assert.ok(marks.every(name => screened.includes(name.replace(/\s/g, '').toLowerCase())), marks.join());
+  assert.ok(!apps.some(term => /Foxtrot|Golf/.test(term)), apps.join());
+  for (const row of report.names.slice(5)) {
+    assert.equal(row.verdict, 'Check first');
+    assert.match(row.reason, /^Not screened/);
+    assert.equal(row.competition.US, null);
+    // Registry answers and prices still cover every name.
+    assert.ok(row.free.length > 0);
+  }
+  // GitHub and npm accounts are evidence for the five screened names only.
+  const asked = platform => [...new Set(social.filter(([name]) => name === platform).map(([, handle]) => handle)
+    .filter(handle => !/^zq|^(?:github|npm|bsky\.app)$/.test(handle)))].sort();
+  assert.deepEqual(asked('npm').filter(handle => screened.includes(handle)), screened);
+  assert.ok(!asked('npm').some(handle => /foxtrot|golf/.test(handle)));
+  // Bluesky is part of the handle row only: the own name, then the cheapest free names.
+  assert.deepEqual(asked('Bluesky'), ['alphawren.bsky.social', 'deltawren.bsky.social', 'echowren.bsky.social']);
+  assert.deepEqual(Object.keys(report.handles), ['Alpha Wren', 'Delta Wren', 'Echo Wren']);
+  assert.deepEqual(report.handles['Alpha Wren'].not_found, ['GitHub', 'npm', 'Bluesky']);
+  const rows = report.receiptDetails[0].handles;
+  assert.deepEqual(rows.map(row => row.platform), ['YouTube', 'X', 'Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'GitHub', 'npm', 'PyPI', 'Bluesky']);
+  assert.equal(report.receiptDetails[1].handles, null);
+  assert.doesNotMatch(JSON.stringify(report.handles), /free/);
 });

@@ -4,7 +4,7 @@ import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
-import { bootstrapUrl, rdapBase, rdapDomainUrl } from './registry.mjs';
+import { bootstrapUrl, rdapBase, rdapDomainUrl, registryCooldown } from './registry.mjs';
 import { compactText, day, letters, readJson, request } from './triage-sources.mjs';
 
 // Every traction threshold lives in this table. Tuned with the strong, no-traction and some-traction
@@ -234,7 +234,7 @@ async function rdapServices(options) {
 // The RDAP registration date, null when the registry gives none, or undefined when it did not answer.
 export async function registeredOn(domain, options) {
   const base = rdapBase(domain.split('.').at(-1), await rdapServices(options));
-  if (!base || options.timeLeft() < 300) return undefined;
+  if (!base || options.timeLeft() < 300 || await registryCooldown(base, options.directory) > Date.now()) return undefined;
   try {
     const response = await request(rdapDomainUrl(base, domain), options, {
       timeout: Math.min(2500, options.timeLeft()), headers: { Accept: 'application/rdap+json, application/json' },

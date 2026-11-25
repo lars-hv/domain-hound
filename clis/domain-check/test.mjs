@@ -56,6 +56,7 @@ function mock({
 test('normalizes a pasted URL and validates the label and TLD', () => {
   assert.equal(normalize('  https://www.OakenRoom.me/path?q=x#here  '), 'oakenroom.me');
   assert.equal(normalize('a-b.io'), 'a-b.io');
+  assert.equal(normalize('https://www.example.co.uk/path'), 'example.co.uk');
   assert.equal(normalize('example.xn--p1ai'), 'example.xn--p1ai');
   assert.equal(normalize('a'.repeat(63) + '.me'), 'a'.repeat(63) + '.me');
   for (const invalid of ['bad_name', 'a..me', 'blog.example.me', '-a.me', 'a-.me', 'a.m', 'a.123', 'a.m-e',
@@ -161,7 +162,8 @@ test('queries IANA WHOIS then the registry when the bootstrap has no RDAP', asyn
     const result = await checkDomain('example.test', mock({ services: [], queryWhois }));
     assert.equal(result.registry.status, status);
     assert.equal(result.registry.source, 'whois');
-    if (status === 'unknown') assert.match(result.registry.reason, /no definitive answer/);
+    // A rate-limit notice is reported as such, and the host is then left alone (see registry.test.mjs).
+    if (status === 'unknown') assert.match(result.registry.reason, /Registry WHOIS rate limit/);
   }
 });
 

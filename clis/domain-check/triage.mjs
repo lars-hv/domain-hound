@@ -4,6 +4,7 @@ import { shopSearchUrl } from './prices.mjs';
 import { checkHandles, compactText, handleSearches, letters, searchApps, searchEntities, searchMarks, trademarkSearches } from './triage-sources.mjs';
 import { loadEdgarCompanies, matchEdgarCompanies, searchNorwegianCompanies } from './company-search.mjs';
 import { mapLimit } from './cache.mjs';
+import { checkSocialHandles } from './handles.mjs';
 import { checkDomainSite } from './com-site.mjs';
 import { playSearchLink, searchAndroidApps } from './google-play.mjs';
 import { googleSearchLink, lowerVerdict, nameCheckLines, searchGoogle } from './google-search.mjs';
@@ -11,6 +12,11 @@ import { autocompleteWords, collectRivals, createTraction, evidenceLifetime, jud
   tractionNotes, tractionSummary, tractionVerdict } from './traction.mjs';
 
 const coreWebsiteEndings = ['com', 'ai', 'io', 'app', 'co'];
+// The slow, rate-limited sources (trademarks, app stores, rivals, web traction, GitHub and npm) screen only the first
+// five names; registry answers and prices cover every name. Social handle rows go to the top three.
+export const screenLimit = 5;
+export const handleLimit = 3;
+export const notScreened = 'Not screened (marks, apps, rivals: first ' + screenLimit + ' names only)';
 const typicalProducts = [
   [/(?:domain|whois)/, /\b(?:domains?|whois|registrar)\b/i],
   [/(?:accounting|bookkeep|invoice|ledger)/, /\b(?:accounting|bookkeeping|invoic(?:e|ing)|ledger)\b/i],
@@ -90,7 +96,7 @@ function counted(count, singular, plural = singular + 's') {
   return count + ' ' + (count === 1 ? singular : plural);
 }
 
-function sameNameEvidence({ name, live, norway, us, entities, entity, github, handles }) {
+function sameNameEvidence({ name, live, norway, us, entities, entity, github, handles, deferHandles }) {
   const sameBusiness = live.filter(site => site.sameBusiness).length;
   const businesses = new Map();
   for (const { business } of live) if (business !== 'unknown') businesses.set(business, (businesses.get(business) ?? 0) + 1);
@@ -106,14 +112,13 @@ function sameNameEvidence({ name, live, norway, us, entities, entity, github, ha
     github.ownerType === 'Organization' && 'GitHub org taken',
     repos && counted(repos, 'GitHub repo'),
     handles.npm === 'taken' && 'npm package',
-    handles.PyPI === 'taken' && 'PyPI package',
   ].filter(Boolean);
   const count = live.length + (norway?.matches.length ?? 0) + (us?.matches.length ?? 0) + (entities?.length ?? 0)
     + Math.min(repos * 0.25, 1) + Number(github.ownerType === 'Organization')
-    + Number(handles.npm === 'taken') + Number(handles.PyPI === 'taken');
+    + Number(handles.npm === 'taken');
   const unchecked = [
-    !norway && 'Brønnøysund', !us && 'EDGAR', !entities && 'Wikidata', github.status === 'unknown' && 'GitHub',
-    handles.npm === 'unknown' && 'npm', handles.PyPI === 'unknown' && 'PyPI',
+    !norway && 'Brønnøysund', !us && 'EDGAR', !entities && 'Wikidata', !deferHandles && github.status === 'check' && 'GitHub',
+    !deferHandles && handles.npm === 'check' && 'npm',
   ].filter(Boolean);
   return {
     summary: 'Same name used by: ' + (summary.join(', ') || 'none found'),
@@ -151,8 +156,8 @@ function verdict({ mark, otherMark, silent, ...evidence }) {
 function silentSources({ marks, apps, android, entities, norway, edgar, github, handles }) {
   return Object.entries({
     USPTO: marks, 'App Store': apps, 'Google Play': android, Wikidata: entities, Brønnøysund: norway,
-    EDGAR: edgar, GitHub: github.status === 'unknown' ? null : github.status,
-    npm: handles.npm === 'unknown' ? null : handles.npm, PyPI: handles.PyPI === 'unknown' ? null : handles.PyPI,
+    EDGAR: edgar, GitHub: github.status === 'check' ? null : github.status,
+    npm: handles.npm === 'check' ? null : handles.npm,
   }).filter(([, value]) => value == null).map(([source]) => source);
 }
 
@@ -262,7 +267,7 @@ export async function triageNames(inputs, options = {}) {
   const started = performance.now();
   const timeLeft = () => budgetMs - (performance.now() - started);
   const signal = AbortSignal.timeout(budgetMs);
-  const sources = { ...options, signal, timeLeft, cacheLifetime: evidenceLifetime, retryUnavailable: true, githubSearch: names.size <= 5 };
+  const sources = { ...options, signal, timeLeft, cacheLifetime: evidenceLifetime, retryUnavailable: true, githubSearch: true };
   // Ask an unavailable source once more while the triage budget lasts.
   const retry = async (lookup, answered) => {
     const first = await lookup();
@@ -277,7 +282,7 @@ export async function triageNames(inputs, options = {}) {
   };
   const onSite = (domain, site) => {
     const name = domain.slice(0, domain.indexOf('.'));
-    if (!nameOf.has(name)) return;
+    if (!nameOf.has(name) || nameOf.get(name) >= screenLimit) return;
     if (site?.state === 'live') startHomes(name, [domain]);
     else if (site?.state === 'parked' || site?.state === 'for-sale') startHomes(name, [domain], false);
   };
@@ -285,8 +290,12 @@ export async function triageNames(inputs, options = {}) {
     name, candidates: nameCandidates(name, { variants: false, endings: websiteEndings }),
   }));
   const entries = [...names].map(([name, input], index) => [keys.get(name), input, index]);
+  // The names put first are screened in full: the person's own name and the strongest candidates.
+  const screened = entries.slice(0, screenLimit);
+  const isScreened = index => index < screenLimit;
+  const screenedDomains = new Set([...names.keys()].slice(0, screenLimit));
   const check = (concurrency, lookup, after = () => {}) => mapLimit(entries, concurrency, async ([name, input, index]) => {
-    const result = signal.aborted ? null : await retry(() => lookup(name, input, sources), found);
+    const result = signal.aborted || !isScreened(index) ? null : await retry(() => lookup(name, input, sources), found);
     after(result, index);
     return result;
   });
@@ -302,24 +311,37 @@ export async function triageNames(inputs, options = {}) {
     startHomes(name, (result ?? []).filter(row => row.brand).flatMap(row => (row.website ?? []).map(siteDomain))
       .filter(domain => domain?.split('.')[0].includes(name)));
   });
-  const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName] =
+  const domainsDone = searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
+    siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite,
+    siteFilter: domain => screenedDomains.has(domain.slice(0, domain.indexOf('.'))) });
+  // GitHub and npm accounts are same-name evidence for every screened name; they share one run of controls.
+  const evidenceHandles = options.deferHandles ? Promise.resolve(new Map()) : checkSocialHandles(screened.map(([name]) => ({ name, platforms: ['GitHub', 'npm'], links: false })),
+    { ...options, signal });
+  // Once the registry answers are in, the top three names get the full handle row, with Bluesky and variants.
+  const handleRows = options.deferHandles || options.handleRows === false ? Promise.resolve(new Map()) : domainsDone.then(domains => {
+    const order = handleOrder(domains.groups, keys, options.eligible).slice(0, handleLimit);
+    options.onProgress?.({ stage: 'handles' });
+    return evidenceHandles.then(() => checkSocialHandles(order.map(key => ({ name: key, variants: true })), { ...options, signal }));
+  }).catch(() => new Map());
+  const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName, socialByName] =
     await Promise.all([
       // A cold cache still gets the bundled, dated list prices, so free endings never all read "price at shop".
-      searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
-        siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite }),
+      domainsDone,
       check(6, searchMarks), check(8, searchApps, (result, index) => startHomes(entries[index][0],
         (result ?? []).map(row => siteDomain(row.sellerUrl)).filter(domain => domain?.split('.')[0].includes(entries[index][0])))),
       entityChecks,
-      Promise.all(entries.map(([name]) => checkHandles(name, sources))),
+      Promise.all(entries.map(([name], index) => isScreened(index)
+        ? checkHandles(name, { ...sources, social: evidenceHandles.then(rows => rows.get(name)).catch(() => null) }) : null)),
       check(8, searchNorwegianCompanies),
-      searchAndroidApps(new Map(entries.map(([key, input]) => [key, input])),
+      searchAndroidApps(new Map(screened.map(([key, input]) => [key, input])),
         { ...sources, playBudgetMs: Math.min(12000, options.playBudgetMs ?? Infinity, budgetMs) }),
       retry(() => loadEdgarCompanies(sources), found),
-      mapLimit(entries, 5, ([name, input, index]) => searchGoogle(name, input, {
+      mapLimit(entries, 5, ([name, input, index]) => isScreened(index) ? searchGoogle(name, input, {
         ...sources, timeoutMs: timeLeft(),
         entities: entities[index].promise,
         sameBusiness: text => describedBusiness(name, text, options.about, options.category),
-      })),
+      }) : { unchecked: 'not screened' }),
+      handleRows,
     ]);
   const counts = {};
   function coverage(source, answered) { counts[source] = (counts[source] ?? 0) + Number(answered); }
@@ -329,6 +351,7 @@ export async function triageNames(inputs, options = {}) {
     ...(androidApps.get(keys.get(name)) ?? []).map(row => ({ ...row, store: 'Android', ref: row })),
   ]);
   const rivalsByName = domains.groups.map(({ name, sites }, index) => {
+    if (!isScreened(index)) return [];
     const raw = googleByName[index].raw ?? {};
     const key = keys.get(name);
     const rivals = collectRivals({
@@ -342,6 +365,40 @@ export async function triageNames(inputs, options = {}) {
   options.onProgress?.({ stage: 'rivals' });
   const evidence = await traction.settle();
   const rows = domains.groups.map(({ name, results, sites }, index) => {
+      const requested = results.filter(row => endings.includes(row.tld));
+      const available = results.filter(row => row.status === 'probably-free' && endings.includes(row.tld));
+      const recommendable = available.filter(row => canRecommend(row.tld, options.eligible));
+      const [best] = recommendable;
+      const social = socialByName.get(keys.get(name)) ?? null;
+      const domainFields = {
+        taken: requested.filter(row => row.status === 'taken').map(row => row.tld),
+        shop_check: requested.filter(row => ['check-at-shop', 'reserved'].includes(row.status)).map(row => row.tld),
+        ...(requested.some(row => row.status === 'reserved') && {
+          reserved: requested.filter(row => row.status === 'reserved').map(row => row.tld) }),
+        // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
+        ...likelyEndings(requested),
+        // Premium endings never carry a list price; the shop shows their price. A short name may be premium.
+        ...(requested.some(row => row.status === 'premium') && {
+          premium: requested.filter(row => row.status === 'premium').map(row => row.tld) }),
+      };
+      const receipt = options.receipt && { _receiptEndings: requested.map(row => ({ domain: row.domain, source: row.source,
+        checkedAt: row.checkedAt, priceAt: row.priceCheckedAt, shop: row.shop, checkout: row.buyUrl,
+        site: sites[row.tld], risk: row.premium === 'risk' || row.premiumRisk })), _handles: social };
+      if (!isScreened(index)) {
+        // Registry answers and prices only. The verdict never reads "No conflict found" without the checks.
+        return {
+          name: names.get(name), verdict: 'Check first', reason: notScreened,
+          _free: available, _recommendable: recommendable, _googleExplained: true,
+          google: { result: 'not checked', why: 'not screened', link: googleSearchLink(names.get(name)) },
+          ...domainFields,
+          competition: { US: null, mark: null, AppStore: null, GooglePlay: null, Wikidata: null,
+            sameName: { summary: 'Not screened', level: 'unknown' } },
+          buy: best ? best.buyUrl ?? shopSearchUrl(best.confirmShop, best.domain) : null,
+          ...receipt,
+          details: { memorable: memorability(keys.get(name), names.get(name)), presence: null, sites: {},
+            appName: 'App name: not checked', AndroidSearch: playSearchLink(names.get(name)) },
+        };
+      }
       const marks = marksByName[index];
       const apps = appsByName[index];
       const entities = entitiesByName[index];
@@ -363,9 +420,6 @@ export async function triageNames(inputs, options = {}) {
       const mark = marks?.[0];
       const others = marks?.filter(item => letters(item.name) !== letters(mark?.name)) ?? [];
       const otherMark = others.find(item => item.relevant) ?? others.find(item => item.tier === 'Fuzzy') ?? others[0];
-      const available = results.filter(row => row.status === 'probably-free' && endings.includes(row.tld));
-      const recommendable = available.filter(row => canRecommend(row.tld, options.eligible));
-      const [best] = recommendable;
       const seen = websiteEndings.flatMap(tld => {
         const row = results.find(result => result.tld === tld);
         return tld === 'com' || row?.status === 'taken' ? [[tld, siteEvidence(row, sites[tld])]] : [];
@@ -386,10 +440,11 @@ export async function triageNames(inputs, options = {}) {
       const us = matchEdgarCompanies(key, edgar);
       const company = norway?.matches.find(row => row.employees > 0 && row.match === 'exact')
         ?? us?.matches.find(row => row.match === 'exact');
-      const sameName = sameNameEvidence({ name: key, live, norway, us, entities, entity, github, handles });
+      const sameName = sameNameEvidence({ name: key, live, norway, us, entities, entity, github, handles, deferHandles: options.deferHandles });
       const otherEntities = entities?.filter(row => !explained.has(row));
-      const legacy = sameNameEvidence({ name: key, live: unmeasured, norway, us, entities: otherEntities, entity, github, handles });
-      const silent = silentSources({ marks, apps, android, entities, norway, edgar, github, handles });
+      const legacy = sameNameEvidence({ name: key, live: unmeasured, norway, us, entities: otherEntities, entity, github, handles, deferHandles: options.deferHandles });
+      const silent = silentSources({ marks, apps, android, entities, norway, edgar, github, handles })
+        .filter(source => !options.deferHandles || !['GitHub', 'npm'].includes(source));
       const otherEntity = otherEntities?.find(row => row.brand) ?? otherEntities?.[0];
       const [decision, reason] = verdict({
         rival: tractionVerdict(judged), overlap, sameName: legacy, activeApp,
@@ -402,7 +457,7 @@ export async function triageNames(inputs, options = {}) {
       const answered = {
         USPTO: marks, 'App Store': apps, 'Google Play': android, Google: google.google, Wikidata: entities,
         Brønnøysund: norway, EDGAR: edgar,
-        ...Object.fromEntries(Object.entries(handles).map(([service, status]) => [service, status === 'unknown' ? null : status])),
+        ...!options.deferHandles && Object.fromEntries(Object.entries(handles).map(([service, status]) => [service, status === 'check' ? null : status])),
       };
       for (const [source, value] of Object.entries(answered)) coverage(source, value != null);
       const competition = {
@@ -414,31 +469,21 @@ export async function triageNames(inputs, options = {}) {
           ...(entity.brand && { brand: true }) } : entities ? [] : null,
         sameName,
       };
-      const requested = results.filter(row => endings.includes(row.tld));
       return {
         // Small and dormant same-name uses are notes after the reason; they never change the verdict.
         name: names.get(name), verdict: decision, reason: [reason, ...tractionNotes(judged)].join(' · '),
         _free: available, _recommendable: recommendable, _mark: mark, _googleExplained: googleExplained,
         ...(summary && { traction: summary }),
         google: { ...(google.google ?? { result: 'not checked', why: google.unchecked }), link: googleSearchLink(names.get(name)) },
-        taken: requested.filter(row => row.status === 'taken').map(row => row.tld),
-        shop_check: requested.filter(row => ['check-at-shop', 'reserved'].includes(row.status)).map(row => row.tld),
-        ...(requested.some(row => row.status === 'reserved') && {
-          reserved: requested.filter(row => row.status === 'reserved').map(row => row.tld) }),
-        // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
-        ...likelyEndings(requested),
-        // Premium endings never carry a list price; the shop shows their price. A short name may be premium.
-        ...(requested.some(row => row.status === 'premium') && {
-          premium: requested.filter(row => row.status === 'premium').map(row => row.tld) }),
+        ...domainFields,
+        _social: compactHandles(social),
         // The checkout is the listed shop's search, or the confirming shop's search when no list price is known.
         competition, buy: best ? best.buyUrl ?? shopSearchUrl(best.confirmShop, best.domain) : null,
-        ...(options.receipt && { _receiptEndings: requested.map(row => ({ domain: row.domain, source: row.source,
-          checkedAt: row.checkedAt, priceAt: row.priceCheckedAt, shop: row.shop, checkout: row.buyUrl,
-          site: sites[row.tld], risk: row.premium === 'risk' || row.premiumRisk })) }),
+        ...receipt,
         details: {
           memorable: memorability(key, names.get(name)),
           presence: Object.fromEntries(Object.entries(handles).map(([service, status]) =>
-            [service, status === 'unknown' ? null : status])),
+            [service, status === 'check' ? null : status])),
           sites: Object.fromEntries(seen), appName: appStatus(apps, android),
           AndroidSearch: android ? null : playSearchLink(names.get(name)),
         },
@@ -452,16 +497,40 @@ export async function triageNames(inputs, options = {}) {
   }
   for (const row of googleCandidates(rows)) row.google.search = true;
   const sourcesSummary = Object.fromEntries(Object.entries(counts).map(([source, answered]) =>
-    [source, Math.round(100 * answered / names.size)]));
-  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, _receiptEndings }) =>
-    ({ competition, details, traction, google, reason, endings: _receiptEndings }))) : null;
+    [source, Math.round(100 * answered / Math.min(names.size, screenLimit))]));
+  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, _receiptEndings, _handles }) =>
+    ({ competition, details, traction, google, reason, endings: _receiptEndings, handles: _handles }))) : null;
   const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible);
   if (options.receipt) {
     result.checkedAt = (options.now ?? new Date()).toISOString();
     result.priceListDate = domains.priceDate?.slice(0, 10);
     result.receiptDetails = receiptDetails;
+    if (options.deferHandles) {
+      const targets = handleOrder(domains.groups, keys, options.eligible).slice(0, handleLimit);
+      result.handleTargets = targets.map(name => ({ name, index: [...keys.values()].indexOf(name) }));
+    }
   }
   return result;
+}
+
+// The order the handle rows go in: the person's own name first, then names with a free recommendable ending,
+// cheapest first, then the other screened names in input order.
+export function handleOrder(groups, keys, eligible) {
+  const screened = groups.slice(0, screenLimit).map((group, index) => {
+    const free = group.results.filter(row => row.status === 'probably-free' && canRecommend(row.tld, eligible))
+      .map(row => row.firstPayment ?? Infinity);
+    return { key: keys.get(group.name), index, free: free.length > 0, cost: Math.min(...free, Infinity) };
+  });
+  const [first, ...rest] = screened;
+  rest.sort((a, b) => Number(b.free) - Number(a.free) || a.cost - b.cost || a.index - b.index);
+  return [first, ...rest].filter(Boolean).map(row => row.key);
+}
+
+function compactHandles(entries) {
+  if (!Array.isArray(entries)) return null;
+  const by = state => entries.filter(entry => entry.state === state).map(entry => entry.platform);
+  const [taken, notFound, check] = [by('taken'), by('not-found'), by('check')];
+  return { ...(taken.length && { taken }), ...(notFound.length && { not_found: notFound }), ...(check.length && { check }) };
 }
 
 // The first three ranked names, filled from the screened names in input order when fewer than three rank.
@@ -518,7 +587,9 @@ function topChoices(rows) {
 function packTriage(rows, sources, compact, endings, eligible) {
   const prices = {};
   const top = topChoices(rows);
-  const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, _receiptEndings, ...row }) => {
+  // Handle states for the top names: taken, not_found (no public profile found) or check (check yourself).
+  const handles = Object.fromEntries(rows.filter(row => row._social).map(row => [row.name, row._social]));
+  const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, _receiptEndings, _handles, _social, ...row }) => {
     const own = {};
     for (const option of _free) {
       const entry = priceEntry(option);
@@ -529,6 +600,7 @@ function packTriage(rows, sources, compact, endings, eligible) {
     return { ...row, free: _free.map(option => option.tld), own, bestValue: bestValue(_recommendable)?.tld ?? null };
   });
   const result = { top, names, prices, sources, eligibility: eligibilityNotes(endings),
+    ...(Object.keys(handles).length && { handles }),
     ...(eligible?.length && { eligible }),
     ...(!compact && names.length <= 5 && { trademarkSearches, handleSearches }) };
   const limit = names.length <= 5 ? (compact ? 5600 : 5999) : compact ? 9150 : 9850;
@@ -538,6 +610,10 @@ function packTriage(rows, sources, compact, endings, eligible) {
     if (size() > limit) for (const row of names) row.buy = null;
   }
   for (const trim of [
+    // Platforms not listed under taken or not_found are "check yourself"; the results page lists them all.
+    () => { for (const value of Object.values(result.handles ?? {})) delete value.check; },
+    // GitHub and npm stand in the handle states and the same-name summary too.
+    row => { if (row.details) delete row.details.presence; },
     row => { row.details = null; },
     row => { row.buy = null; },
     row => { if (row.traction) delete row.traction.geo; },
@@ -560,6 +636,8 @@ function packTriage(rows, sources, compact, endings, eligible) {
       if (typeof row.competition.US === 'string') row.competition.US = row.competition.US.split(':', 1)[0];
       row.reason = row.reason.split(' · ', 1)[0];
     },
+    // Last: the results page and say keep the full handle rows.
+    () => { delete result.handles; },
   ]) {
     if (size() <= limit) break;
     names.forEach(trim);

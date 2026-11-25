@@ -1,5 +1,8 @@
-# Publishes domain-hound to npm with Trusted Publishing (OIDC): no npm token or other secret is stored.
+# Publishes domain-hound to npm with Trusted Publishing (OIDC): no npm token is stored.
 # Active once the package exists on npm and this repository and workflow are registered as its trusted publisher.
+# After npm: wait until the npm CDN serves the new tarball, start that exact version through npx as a smoke test,
+# then publish server.json to the MCP Registry. Nobody should request the plain tarball URL before the
+# "Wait for the npm CDN" step reports it live: a 404 gets cached by the CDN.
 name: Publish to npm
 
 on:
@@ -9,13 +12,19 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
@@ -29,7 +38,8 @@ jobs:
             || npm install -g npm@^11.5.1
           npm --version
 
-      - name: Check that the tag matches the package version
+      - name: Check that the tag matches the package and server.json versions
+        id: version
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -38,9 +48,92 @@ jobs:
             echo "Tag $TAG does not match package version v$VERSION." >&2
             exit 1
           fi
+          node -e "const s = require('./server.json'); const v = process.argv[1]; if (s.version !== v || s.packages.some(p => p.version !== v)) { console.error('server.json does not carry version ' + v); process.exit(1); }" "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - run: npm ci
 
       - run: npm test
 
       - run: npm publish --provenance
+
+  smoke:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      # Poll with a cache-busting query, so this step never asks for (and the CDN never caches) the plain URL early.
+      - name: Wait for the npm CDN to serve the new tarball
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          url="https://registry.npmjs.org/domain-hound/-/domain-hound-${VERSION}.tgz"
+          deadline=$(( $(date +%s) + 900 ))
+          status=000
+          ready=false
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            remaining=$(( deadline - $(date +%s) ))
+            if [ "$remaining" -le 0 ]; then break; fi
+            if [ "$status" != "200" ]; then
+              status=$(curl -sS --max-time "$(( remaining < 10 ? remaining : 10 ))" \
+                -o /dev/null -w '%{http_code}' "${url}?cachebust=$(date +%s%N)") || status=000
+            fi
+            remaining=$(( deadline - $(date +%s) ))
+            if [ "$remaining" -le 0 ]; then break; fi
+            if [ "$status" = "200" ] && curl -fsS --compressed --max-time "$(( remaining < 10 ? remaining : 10 ))" \
+              -H 'Accept: application/vnd.npm.install-v1+json' https://registry.npmjs.org/domain-hound \
+              | node -e 'try { const doc = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit(Object.hasOwn(doc.versions ?? {}, process.argv[1]) ? 0 : 1); } catch { process.exit(1); }' "$VERSION"; then
+              ready=true
+              echo "domain-hound ${VERSION} is live on the npm CDN and listed in package metadata."
+              break
+            fi
+            remaining=$(( deadline - $(date +%s) ))
+            if [ "$remaining" -le 0 ]; then break; fi
+            sleep "$(( remaining < 20 ? remaining : 20 ))"
+          done
+          if [ "$ready" != "true" ]; then
+            echo "domain-hound ${VERSION} tarball or version metadata was not ready after 15 minutes (last tarball HTTP ${status})." >&2
+            exit 1
+          fi
+
+      - name: Start the published version through npx and list its tools
+        env:
+          VERSION: ${{ needs.publish.outputs.version }}
+        run: node scripts/package-smoke.mjs --published "$VERSION"
+
+  mcp-registry:
+    needs: [publish, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # The owner adds the secret MCP_REGISTRY_PRIVATE_KEY: the hex Ed25519 private key whose public key is served at
+      # https://domainhound.dev/.well-known/mcp-registry-auth. Without it this job ends with a notice.
+      - name: Publish server.json to the MCP Registry
+        env:
+          MCP_REGISTRY_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+        run: |
+          if [ -z "$MCP_REGISTRY_PRIVATE_KEY" ]; then
+            echo "::notice title=MCP Registry not updated::Add the MCP_REGISTRY_PRIVATE_KEY repository secret to publish server.json automatically, or run mcp-publisher by hand."
+            exit 0
+          fi
+          archive=$(mktemp)
+          trap 'rm -f "$archive"' EXIT
+          curl -fsSL --max-time 60 -o "$archive" \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.16/mcp-publisher_linux_amd64.tar.gz
+          printf '%s  %s\n' 6e2f799550cf843c6fd3350498d56cc49be3dc0af1e6237eb0e6435c7a9d5c05 "$archive" | sha256sum -c -
+          tar -xzf "$archive" mcp-publisher
+          MCP_PRIVATE_KEY="$MCP_REGISTRY_PRIVATE_KEY" ./mcp-publisher login http --domain domainhound.dev
+          ./mcp-publisher publish

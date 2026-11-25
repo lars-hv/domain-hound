@@ -7,9 +7,15 @@ import { cacheDir, readCache, writeCache } from './cache.mjs';
 import { withShopPages } from './confirm.mjs';
 import { catalogPrice, dynadotOffer, offer, shops } from './prices.mjs';
 
-export const targetEndings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no'];
+// The endings every bare name is checked on. The first ten are the 0.1.4 set; .net, .org, .xyz and .tech joined in 0.1.5.
+export const targetEndings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no', 'net', 'org', 'xyz', 'tech'];
+// Checked only when the person asks for them (or names them in endings).
+export const requestEndings = ['sh', 'gg', 'inc', 'studio', 'se', 'dk', 'de', 'uk', 'co.uk', 'eu'];
+export const supportedEndings = [...targetEndings, ...requestEndings];
+// A saved or bundled catalog must cover these; newer endings are priced once a refresh has them.
+const coreEndings = targetEndings.slice(0, 10);
 const otherEndings = ['so', 'no'];
-const spaceshipEndings = targetEndings.filter(tld => !otherEndings.includes(tld));
+const spaceshipEndings = coreEndings.filter(tld => !otherEndings.includes(tld));
 const filename = 'prices.json';
 const day = 86_400_000;
 const primaryShops = ['spaceship', 'porkbun', 'dynadot'];
@@ -26,7 +32,7 @@ function validSource(id, prices) {
   const entries = Object.entries(prices ?? {});
   const required = id === 'spaceship' ? spaceshipEndings : id === 'gandi' ? [] : ['com', 'io', 'me'];
   return entries.length > 0 && required.every(tld => Object.hasOwn(prices, tld)) &&
-    entries.every(([tld, row]) => targetEndings.includes(tld) && validPrice(row, shops[id].name));
+    entries.every(([tld, row]) => supportedEndings.includes(tld) && validPrice(row, shops[id].name));
 }
 
 function validDate(value) {
@@ -36,7 +42,7 @@ function validDate(value) {
 export function validCatalog(value) {
   if (!validDate(value?.checkedAt)) return false;
   if (!value.catalogs) {
-    return targetEndings.every(tld => validPrice(value.prices?.[tld], otherEndings.includes(tld) ? 'Gandi' : 'Spaceship'));
+    return coreEndings.every(tld => validPrice(value.prices?.[tld], otherEndings.includes(tld) ? 'Gandi' : 'Spaceship'));
   }
   return Object.keys(value.catalogs).length > 0 && Object.entries(value.catalogs).every(([id, source]) =>
     [...primaryShops, 'gandi'].includes(id) && validDate(source.checkedAt) && validSource(id, source.prices));
@@ -233,17 +239,19 @@ export async function loadPorkbunPrices(fetcher = globalThis.fetch) {
     const response = await fetcher(porkbunPricing, { ...options, signal });
     const catalog = response.ok ? await response.json() : null;
     if (catalog?.status !== 'SUCCESS' || !catalog.pricing) throw new Error('Porkbun catalog unavailable');
-    return Object.fromEntries(targetEndings.flatMap(tld => {
+    return Object.fromEntries(supportedEndings.flatMap(tld => {
       const row = catalog.pricing[tld];
-      if (!row) return [];
-      return [[tld, { shop: 'Porkbun', firstYear: catalogPrice(row.registration),
-        renewal: catalogPrice(row.renewal), transfer: catalogPrice(row.transfer) }]];
+      const price = { shop: 'Porkbun', firstYear: catalogPrice(row?.registration),
+        renewal: catalogPrice(row?.renewal), transfer: catalogPrice(row?.transfer) };
+      return validPrice(price, 'Porkbun') ? [[tld, price]] : [];
     }));
   }
   try {
     return await Promise.any([
-      load({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }),
-      delay(350, undefined, { signal }).then(() => load()),
+      load({ headers: { Accept: 'application/json' } }),
+      delay(350, undefined, { signal }).then(() => load({
+        method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: '{}',
+      })),
     ]);
   } finally {
     controller.abort();
@@ -263,7 +271,7 @@ export function dynadotPrices(html) {
     for (const row of values) {
       if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
       const tld = values[row.name];
-      if (!targetEndings.includes(tld)) continue;
+      if (!supportedEndings.includes(tld)) continue;
       const firstYear = usd(values[row.reg_price]);
       const renewal = usd(values[row.renew_price]);
       if (firstYear && renewal) prices[tld] = {
@@ -271,7 +279,7 @@ export function dynadotPrices(html) {
       };
     }
   }
-  for (const tld of targetEndings.filter(tld => !prices[tld])) {
+  for (const tld of supportedEndings.filter(tld => !prices[tld])) {
     const row = dynadotOffer(html, tld, 'example.' + tld, new Date());
     if (row) prices[tld] = { shop: 'Dynadot', firstYear: row.regularFirstYear,
       renewal: row.renewal, transfer: row.regularTransferPrice };

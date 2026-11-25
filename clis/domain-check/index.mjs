@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
 import { checkDomainSite } from './com-site.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { applyLiveSite, asciiDomain, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
+import { applyLiveSite, asciiDomain, domainEnding, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
   premiumRisk, rankName, registrationStatus, searchCandidates, searchName, termCosts, unicodeName, validEligibility, validEndings,
   withPremiumRisk, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
@@ -76,7 +76,8 @@ export function normalize(input) {
   const labels = domain.split('.');
   const label = /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/;
   const tld = /^(?:[a-z]{2,63}|xn--[a-z\d](?:[a-z\d-]{0,57}[a-z\d])?)$/;
-  return labels.length === 2 && labels.every(part => label.test(part))
+  return (labels.length === 2 || labels.length === 3 && labels.slice(1).join('.') === 'co.uk')
+    && labels.every(part => label.test(part))
     && tld.test(labels.at(-1)) ? domain : null;
 }
 
@@ -176,7 +177,7 @@ export async function checkDomain(input, {
 } = {}) {
   const domain = normalize(input);
   if (!domain) return { error: 'Enter a domain such as example.com.' };
-  const tld = domain.split('.').at(-1);
+  const tld = domainEnding(domain);
   const deadline = performance.now() + totalTimeout;
   const timeout = () => Math.max(0, Math.min(maxTimeout, Math.floor(deadline - performance.now())));
   const [registrations, catalog, pricing, dynadot, confirmed, nok, signals] = await Promise.all([
@@ -430,6 +431,11 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
         s === 'nc' ? { d, s } : { d, s, ...price });
     }
   }
+  // Fourteen endings for twenty long names: an unconfirmed list-price row drops its s, as the display layer does.
+  if (batch && Buffer.byteLength(JSON.stringify(result)) >= 7900) {
+    for (const row of byName.values()) if (row.free) row.free = row.free.map(({ s, ...option }) => s === 'nc' ? option : { ...option, s });
+    result.legend = { ...result.legend, d: agentLegend.d + '; a free entry without s is nc' };
+  }
   return result;
 }
 
@@ -459,7 +465,7 @@ export async function agentResult(input, options = {}) {
   if (names.includes(null)) return { error: 'Enter a valid name or exact domain.' };
   const exact = new Set(domain ? [domain] : names.filter((name, index) => batch && exactDomain(input[index])));
   const groups = [...new Set(names)].map(name => ({ name, candidates: exact.has(name)
-    ? [{ domain: name, tld: name.split('.').at(-1), exact: true }] : nameCandidates(name, { ...options, variants: !batch }) }));
+    ? [{ domain: name, tld: domainEnding(name), exact: true }] : nameCandidates(name, { ...options, variants: !batch }) }));
   const keyed = apiShops(options.env ?? process.env).length > 0;
   const reserve = keyed ? 1800 : 0;
   const searchOptions = { ...options, budgetMs: Math.max(0, Math.min(remaining() - reserve, batch ? 10_700 : 2700)),
@@ -479,7 +485,7 @@ export async function agentResult(input, options = {}) {
   if (targets.length) {
     options.onProgress?.({ stage: 'quotes' });
     const catalog = await loadCachedCatalog(options.directory);
-    const listFor = (target, shop) => datedListPrices(catalog, target.split('.').at(-1), options.now ?? new Date(),
+    const listFor = (target, shop) => datedListPrices(catalog, domainEnding(target), options.now ?? new Date(),
       options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog).find(row => row.id === shop) ?? null;
     const light = options.lightConfirm ?? lightConfirm;
     const found = await light(targets.map(row => row.domain), { env: options.env, fetcher: options.fetcher,
@@ -691,7 +697,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         ? await refreshTranco({ directory: process.env.DOMAIN_HOUND_TRANCO_CACHE ? pathToFileURL(process.env.DOMAIN_HOUND_TRANCO_CACHE.replace(/\/?$/, '/')) : undefined })
       : args[0] === '--presence' && args.length === 2 ? await namePresence(args[1], { refreshTranco: true })
       : args[0] === '--triage' ? await triageNames(positional.length === 1 ? positional[0].split(',') : null,
-        { ...options, refreshTranco: true })
+        { ...options, refreshTranco: true, deferHandles: process.env.DOMAIN_HOUND_DEFER_HANDLES === '1' })
       : await checkDomain(args.length === 1 ? args[0] : undefined);
     if (result.error) process.exitCode = 1;
     if (args[0] === '--triage' && options.compact) {

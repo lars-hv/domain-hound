@@ -1,26 +1,28 @@
 #!/usr/bin/env node
 // Daily self-check: runs Domain Hound's own functions against the live sources with a fresh, empty cache and
 // synthetic names (google.com is taken; random 18-letter names are free). Prints one JSON summary and exits 1 when
-// any source is broken, naming each one. Polite by design: strictly under 60 requests, Google hosts paced.
+// any source is broken, naming each one. Polite by design: strictly under 70 requests (59 before 0.1.5 added four
+// registries, each one DNS and one RDAP request), Google hosts paced.
 import { randomInt } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { readCache } from '../clis/domain-check/cache.mjs';
+import { cacheDir, readCache, writeCache } from '../clis/domain-check/cache.mjs';
 import { agentResult } from '../clis/domain-check/index.mjs';
 import { refreshPrices } from '../clis/domain-check/price-catalog.mjs';
 import { systemQueryWhois, systemResolveNs } from '../clis/domain-check/registry.mjs';
 import { triageNames } from '../clis/domain-check/triage.mjs';
 
-export const requestLimit = 59;
+export const requestLimit = 69;
 export const freshDays = 3;
 export const famousName = 'Spotify';
-export const registryEndings = ['com', 'ai', 'app', 'dev', 'io', 'co', 'me', 'si'];
+export const registryEndings = ['com', 'ai', 'app', 'dev', 'io', 'co', 'me', 'si', 'net', 'org', 'xyz', 'tech'];
 const registries = {
   com: 'Verisign', ai: 'Identity Digital', app: 'Google Registry', dev: 'Google Registry', io: 'Identity Digital',
-  co: '.CO Internet', me: 'Identity Digital', si: 'Register.si',
+  co: '.CO Internet', me: 'Identity Digital', si: 'Register.si', net: 'Verisign', org: 'Public Interest Registry',
+  xyz: 'XYZ.COM via CentralNic', tech: 'Radix',
 };
 const googleHosts = /(?:^|\.)(?:google\.com|registry\.google)$/;
 const googleSpacing = 600;
@@ -29,7 +31,7 @@ export function randomLabel(length = 18, pick = randomInt) {
   return Array.from({ length }, () => String.fromCharCode(97 + pick(26))).join('');
 }
 
-// Counts every application request, refuses the 60th, and spaces requests to Google hosts.
+// Counts every application request, refuses the one past the limit, and spaces requests to Google hosts.
 export function countingFetch(base, { limit = requestLimit, spacing = googleSpacing, wait = delay } = {}) {
   let googleTurn = Promise.resolve();
   let lastGoogle = -Infinity;
@@ -166,13 +168,17 @@ export async function runCanary({ now = new Date(), label = randomLabel() } = {}
     },
   };
   try {
+    const cooldownFile = 'rdap-cooldown-rdap.identitydigital.services.json';
+    const cooldown = await readCache(cacheDir, cooldownFile);
+    if (cooldown?.until > now.getTime()) await writeCache(directory, cooldownFile, cooldown);
     const checks = [];
     const refresh = await refreshPrices(options).catch(() => null);
     checks.push(...priceChecks(refresh, now));
     const result = await agentResult([label, 'google.com'], { ...options, endings: registryEndings })
       .catch(error => ({ error: error.message }));
     checks.push(...registryChecks(result, label, { now }));
-    const triage = await triageNames([famousName], { ...options, endings: ['com'], playBudgetMs: 0, budgetMs: 6500 })
+    // Handle rows stay out: every real run checks each handle platform against its own two controls.
+    const triage = await triageNames([famousName], { ...options, endings: ['com'], playBudgetMs: 0, budgetMs: 6500, deferHandles: true })
       .catch(() => null);
     const autocomplete = await readCache(directory, 'google-autocomplete-' + famousName.toLowerCase() + '.json');
     checks.push(...nameChecks({ triage, suggestions: autocomplete?.value }));

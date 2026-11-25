@@ -154,9 +154,10 @@ test('the shipped snapshot is a valid dated first-party list price for every end
   }
 });
 
-test('a fresh install with an empty cache shows a dated list price for all ten endings and still refreshes', async t => {
+test('a fresh install with an empty cache shows a dated list price for all fourteen endings and still refreshes', async t => {
   const directory = await testCache(t);
-  const date = bundledCatalog.checkedAt.slice(0, 10);
+  // The shown date is the oldest shop list in the snapshot.
+  const date = Object.values(bundledCatalog.catalogs).map(source => source.checkedAt).sort()[0].slice(0, 10);
   // Weeks after the snapshot, past the eight-day window for cached prices.
   const later = new Date(Date.parse(bundledCatalog.checkedAt) + 40 * 86_400_000);
   let scheduled = 0;
@@ -185,7 +186,9 @@ test('a fresh install with an empty cache shows a dated list price for all ten e
   });
   assert.deepEqual(unsettled.names[0].shop_check, ['dev']);
   assert.ok(unsettled.listPrices.dev.now > 0);
-  assert.match(checkDisplay(unsettled), new RegExp('list price from ' + date));
+  // Each shown price carries its own shop list date.
+  const dates = Object.values(bundledCatalog.catalogs).map(source => source.checkedAt.slice(0, 10));
+  assert.match(checkDisplay(unsettled), new RegExp('list price from (?:' + dates.join('|') + ')'));
   // The snapshot is read from the package and never copied into the user's cache.
   assert.equal((await readdir(directory)).includes('prices.json'), false);
   assert.equal(await loadCachedCatalog(directory), null);

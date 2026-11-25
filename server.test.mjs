@@ -2,10 +2,12 @@ import './test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { PassThrough } from 'node:stream';
+import { serve } from './server.mjs';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCache } from './clis/domain-check/cache.mjs';
@@ -144,13 +146,13 @@ test('advertises the lookup, naming and watch tools and the legacy alias', async
   assert.equal(triage.inputSchema.properties.names.maxItems, 20);
   assert.deepEqual(triage.inputSchema.required, ['names']);
   assert.deepEqual(alias.inputSchema, inputSchema);
-  assert.match(inputSchema.properties.endings.description, /preference order.*all ten endings/);
+  assert.match(inputSchema.properties.endings.description, /preference order.*all fourteen default endings/);
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
+  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
   for (const flag of ['shortlist', 'purchase', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
   assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
-  assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no']);
+  assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no', 'eu']);
   assert.deepEqual(triage.inputSchema.properties.eligible, inputSchema.properties.eligible);
   assert.equal(inputSchema.type, 'object');
   assert.equal(inputSchema.additionalProperties, false);
@@ -195,7 +197,7 @@ test('forwards purchase and the explicit browser confirm flag, and rejects non-b
 test('passes a normalized query as a separate argument and returns compact JSON', async () => {
   const responses = await exchange([...handshake(), call(2, { query: 'Example.COM' })]);
   const result = callData(responses, 2);
-  assert.match(result.say, /^example\.com: confirmed at shop\. \$9\.48, then \$10\.68 shop quote\./);
+  assert.match(result.say, /^example\.com: confirmed at shop\. \$9\.48, then \$10\.68 shop quote checked 2026-11-24\./);
   assert.match(result.say, /https:\/\/www\.spaceship\.com\/domain-search\/\?query=example\.com/);
   assert.equal(result.complete, true);
   assert.equal(result.checkedAt, '2026-11-24T12:00:00.000Z');
@@ -279,6 +281,19 @@ test('checks every default ending and shows preferences first for both tools', a
     assert.ok(choices.every(ending => receipt.includes('endingsample.' + ending)), receipt);
   }
   assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), ['com']);
+});
+
+test('an ending on request joins the default endings at the wire and on the page; defaults alone forward nothing', async () => {
+  const responses = await exchange([...handshake(), call(2, { query: 'endingsample', endings: ['de', 'com'] }),
+    call(3, { names: ['Ending Sample'], endings: ['uk'] }, 'triage_names'), call(4, { query: 'endingsample', endings: ['net'] }),
+    call(5, { query: 'endingsample', endings: ['zz'] })]);
+  const checked = callData(responses, 2);
+  assert.deepEqual(checked.names[0].free.map(option => option.d), [...defaultEndings, 'de']);
+  assert.deepEqual(callData(responses, 3).names[0].free, [...defaultEndings, 'uk']);
+  assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), defaultEndings);
+  assert.match(errorText(responses, 5), /supported domain endings/);
+  const receipt = await readFile(new URL(checked.resultPage), 'utf8');
+  assert.ok(receipt.includes('endingsample.de'));
 });
 
 test('naming_method returns the compact recipe as display with an optional description', async () => {
@@ -409,7 +424,7 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
       checking: unanswered }]);
     const lines = progress.display.split('\n');
     assert.match(lines[0], /^\*\*Still checking\*\* after 1\.\d s \(answer budget 1\.0 s\)\. The lookup keeps running\.$/);
-    assert.equal(lines[1], 'Registry answers so far: 3 of 10 domains.');
+    assert.equal(lines[1], 'Registry answers so far: 3 of 14 domains.');
     assert.equal(lines[2], '- slowroom: free .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
     assert.match(progress.display, /Call the same tool again with the same input/);
 
@@ -444,7 +459,7 @@ test('lists all seven requested names in order on a timeout and collects the cac
       assert.equal(progress.complete, false);
       assert.deepEqual(progress.names.map(row => row.name), names);
       const lines = progress.display.split('\n');
-      assert.equal(lines[1], 'Registry answers so far: 3 of 61 domains.');
+      assert.equal(lines[1], 'Registry answers so far: 3 of 85 domains.');
       // A row without any answer yet shows every default ending; the exact domain stays exact.
       assert.deepEqual(progress.names[0], { name: 'quietbook', checking: defaultEndings });
       assert.deepEqual(progress.names[2], { name: 'oakenroom.me', checking: ['oakenroom.me'] });
@@ -476,6 +491,7 @@ test('a slow triage answers with every requested name and its verdict once finis
   assert.deepEqual(progress.names, [{ name: 'Slow Room', taken: ['com'], free: ['dev', 'app'],
     checking: unanswered }]);
   assert.equal(progress.stage, 'rivals');
+  assert.match(await readFile(new URL(progress.resultPage), 'utf8'), /Still checking trademark, app and web sources/);
   assert.match(progress.display, /^- Slow Room: free \.dev \.app · taken \.com · still checking .*, ask again$/m);
   assert.match(progress.display, /trademark, app and rival checks are still running/);
   const result = structured(await mcp.ask(call(3, { names: ['Slow Room'] }, 'triage_names')));
@@ -722,7 +738,7 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   const directory = pathToFileURL(folder + '/');
   const now = new Date('2026-11-24T12:00:00Z');
   const checkedAt = now.toISOString();
-  const prices = Object.fromEntries(['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no'].map((tld, index) => [tld, {
+  const prices = Object.fromEntries(defaultEndings.map((tld, index) => [tld, {
     shop: 'Dynadot', firstYear: tld === 'co' ? 3.11 : 6 + index, renewal: tld === 'co' ? 31.05 : 10 + index,
   }]));
   await writeCache(directory, 'prices.json', { checkedAt, catalogs: { dynadot: { checkedAt, prices } } });
@@ -733,6 +749,7 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
       const url = new URL(value);
       if (url.hostname === 'data.iana.org') return Response.json({ services: [[Object.keys(prices), ['https://rdap.example.test/']]] });
       if (url.hostname === 'tmsearch.uspto.gov') {
+        marksAsked++;
         const key = JSON.parse(init.body).query.bool.must[0].bool.should[0].match_phrase.wordmark.query;
         return Response.json({ hits: { hits: [{ source: {
           alive: true, wordmark: key.slice(0, -1) + 'e', ownerName: ['株式会社'.repeat(18)],
@@ -745,22 +762,30 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
       return new Response(null, { status: 404 });
     },
   };
+  let marksAsked = 0;
   const report = await triageNames(labels, options);
   assert.deepEqual(report.names.map(row => row.name), labels);
-  for (const row of report.names) {
-    assert.match(row.reason, /^Near-identical: ex.*030\/031/);
-    assert.equal(row.free.length, 10);
+  // Trademarks, apps and rivals screen the first five names; the rest get registry answers and prices only.
+  assert.ok(marksAsked >= 5 && marksAsked <= 10, String(marksAsked));
+  for (const [index, row] of report.names.entries()) {
+    if (index < 5) assert.match(row.reason, /^Near-identical: ex.*030\/031/);
+    else assert.match(row.reason, /^Not screened/);
+    assert.notEqual(row.verdict, 'No conflict found');
+    assert.equal(row.free.length, 14);
     assert.equal(row.free[0], 'co');
     assert.equal(row.bestValue, 'com');
   }
-  assert.ok(size(JSON.stringify(report)) < 13_000, String(size(JSON.stringify(report))));
+  // Fourteen endings (0.1.5): four more ending codes per name than the 13 000-byte bound of 0.1.4 allowed for.
+  assert.ok(size(JSON.stringify(report)) < 14_000, String(size(JSON.stringify(report))));
   const text = triageText(report);
-  assert.ok(size(text) < 8000, String(size(text)));
+  // display.mjs triageText is not on the MCP path (the server answers with the results-page say). With fourteen
+  // priced endings for twenty 63-character labels it needs a little more than the 8 KB it had for ten.
+  assert.ok(size(text) < 9500, String(size(text)));
   const parsed = JSON.parse(text);
   assert.deepEqual(Object.keys(parsed)[0], 'display');
   assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
-  assert.ok(parsed.names.every(row => row.free.length === 10));
+  assert.ok(parsed.names.every(row => row.free.length === 14));
   for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
     assert.ok(parsed.display.includes(source), source);
   }
@@ -1045,4 +1070,51 @@ test('the package, lockfile, server and every manifest carry one version, and th
   const responses = await exchange(handshake());
   assert.equal(resultOf(responses, 1).serverInfo.version, pkg.version);
   assert.ok(pkg.files.includes('clis/domain-check/price-snapshot.json'));
+});
+
+test('replies before checking handles and collects the completed handle rows with the same call', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'hound-deferred-handles-'));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  const name = 'Paper Heron';
+  await writeFile(join(cwd, 'index.mjs'), 'console.log(JSON.stringify(' + JSON.stringify({
+    names: [{ name, verdict: 'Check first' }], receiptDetails: [{}], handleTargets: [{ name: 'paperheron', index: 0 }],
+  }) + '));');
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const lines = createInterface({ input: output })[Symbol.asyncIterator]();
+  let sentFirst = false;
+  let calls = 0;
+  let finish;
+  const lookup = new Promise(resolve => { finish = resolve; });
+  output.on('data', chunk => {
+    if (JSON.parse(chunk).id === 2) sentFirst = true;
+  });
+  const completed = serve({ input, output, cwd,
+    pages: async data => ({ display: 'Name screen', ...data }),
+    socialLookup: async (rows, options) => {
+      assert.ok(sentFirst);
+      assert.deepEqual(rows, [{ name: 'paperheron', variants: true }]);
+      assert.deepEqual(options, { extraPlatforms: ['Discord'], freshRun: true });
+      calls++;
+      await lookup;
+      return new Map([['paperheron', [{ platform: 'GitHub', state: 'taken' }]]]);
+    },
+  });
+  for (const message of handshake()) input.write(JSON.stringify(message) + '\n');
+  await lines.next();
+  const args = { names: [name], additionalHandles: ['Discord'] };
+  input.write(JSON.stringify(call(2, args, 'triage_names')) + '\n');
+  const first = JSON.parse((await lines.next()).value).result.structuredContent;
+  assert.equal(first.handlesPending, true);
+  assert.equal(first.receiptDetails[0].handles.find(row => row.platform === 'GitHub').why, 'still checking');
+  finish();
+  input.write(JSON.stringify(call(3, args, 'triage_names')) + '\n');
+  const second = JSON.parse((await lines.next()).value).result.structuredContent;
+  assert.equal(second.handlesPending, undefined);
+  assert.deepEqual(second.handles[name].taken, ['GitHub']);
+  assert.equal(calls, 1);
+  input.end();
+  await completed;
+  output.end();
+  await lines.return();
 });

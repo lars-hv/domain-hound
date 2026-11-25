@@ -9,10 +9,10 @@ const now = new Date('2026-11-24T06:17:00Z');
 const checkedAt = now.toISOString();
 const label = 'qwertyuiopasdfghjk';
 
-test('the canary uses an 18-letter random name and refuses its 60th request while spacing Google hosts', async () => {
+test('the canary uses an 18-letter random name and refuses its 70th request while spacing Google hosts', async () => {
   assert.match(randomLabel(), /^[a-z]{18}$/);
   assert.equal(randomLabel(4, () => 0), 'aaaa');
-  assert.equal(requestLimit, 59);
+  assert.equal(requestLimit, 69);
   const waits = [];
   const fetcher = countingFetch(async () => new Response('ok'), { limit: 3, spacing: 600, wait: async ms => { waits.push(ms); } });
   await fetcher('https://pubapi.registry.google/rdap/domain/example.app');
