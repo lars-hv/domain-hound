@@ -4,8 +4,8 @@
 // bought, no shop credentials are used, and no background refresh starts. Every part shares one total deadline.
 import { classifyComSite } from './com-site.mjs';
 import { anySignal, cacheDir, readCache } from './cache.mjs';
-import { asciiDomain, canRecommend, defaultEndings, domainEnding, listQuote, nameCandidates, premiumRisk, searchCandidates,
-  supportedEndings, unicodeName } from './name-search.mjs';
+import { asciiDomain, canRecommend, defaultEndings, domainEnding, fallbackEndings, listQuote, mainstreamEndings, nameCandidates,
+  premiumRisk, searchCandidates, supportedEndings, unicodeName } from './name-search.mjs';
 import { bundledCatalog, loadCachedCatalog } from './price-catalog.mjs';
 import { bestValue, triageNames } from './triage.mjs';
 import { bootstrap, bootstrapUrl, documentedWhois, lookupRegistrations, rdapBase, rdapDomainUrl, systemResolveNs } from './registry.mjs';
@@ -304,10 +304,10 @@ export function chooseTrack(registry, listing, outlook) {
   return 'not-listed';
 }
 
-// Broker ending order: the anchors, then established mainstream endings. .xyz and .tech are a fallback tier, ranked
-// after every mainstream ending however cheap their first year is. Other supported endings follow in catalog order.
-const brokerEndings = ['com', 'ai', 'si', 'io', 'app', 'dev', 'me', 'co', 'net', 'org'];
-const brokerEndingOrder = [...new Set([...brokerEndings, 'xyz', 'tech', ...supportedEndings])];
+// Broker ending order: the anchors, then established mainstream endings (the shared attractiveness tiers). .xyz and
+// .tech are a fallback tier, ranked after every mainstream ending however cheap their first year is. Other supported
+// endings follow in catalog order.
+const brokerEndingOrder = [...new Set([...mainstreamEndings, ...fallbackEndings, ...supportedEndings])];
 const labelOf = domain => domain.slice(0, domain.indexOf('.'));
 const threeYearOf = row => Number.isFinite(row?.threeYear) ? row.threeYear : Infinity;
 
@@ -354,7 +354,7 @@ export function pickAlternatives(rows, domain) {
   const picks = [];
   const open = list => list.filter(row => !picks.some(pick => pick.row === row));
   const take = (row, role) => { if (row && open([row]).length) picks.push({ row, role }); };
-  const attractive = exact.filter(row => brokerEndings.includes(row.tld));
+  const attractive = exact.filter(row => mainstreamEndings.includes(row.tld));
   take(bestValue(attractive) ?? bestValue(exact), 'best-value');
   take(variants[0], 'variant');
   for (const row of [...open(exact), ...open(variants)]) {

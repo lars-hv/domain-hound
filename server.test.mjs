@@ -582,7 +582,8 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
     call(6, { names: ['Example One'], about: ' '.repeat(160) }, 'triage_names')]);
   const two = callData(responses, 2);
   assert.deepEqual(two.names.map(row => row.name), ['Example One', 'Example Two']);
-  assert.deepEqual(two.flags, ['--compact', '--eligible', 'no', '--category', 'Calendar app']);
+  // Requested endings reach the screen so its own picks never demote them to the fallback tier.
+  assert.deepEqual(two.flags, ['--compact', '--eligible', 'no', '--prefer-endings', 'app,ai', '--category', 'Calendar app']);
   for (const id of [3, 4]) assert.match(errorText(responses, id), /1 to 20/);
   assert.match(errorText(responses, 3), /^names must list 1 to 20 names; it has 21\.$/);
   assert.match(errorText(responses, 4), /^names\[0\] is not valid/);

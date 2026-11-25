@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
 import { checkDomainSite } from './com-site.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { applyLiveSite, asciiDomain, domainEnding, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
+import { applyLiveSite, asciiDomain, domainEnding, canRecommend, defaultEndings, eligibilityNotes, endingTier, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
   premiumRisk, rankName, registrationStatus, searchCandidates, searchName, termCosts, unicodeName, validEligibility, validEndings,
   withPremiumRisk, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
@@ -328,7 +328,7 @@ function agentPrice({ firstPayment: now, renewalPayment: renew, threeYear: y3, m
 const quoteClock = value => typeof value === 'string' ? value.match(/T(\d{2}:\d{2})/)?.[1] ?? null : null;
 
 function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimited = false, liveCheck = null,
-  { eligible, otherEndings } = {}) {
+  { eligible, otherEndings, requested = [] } = {}) {
   const buyUrlTemplate = {};
   const shopCheckWhy = {};
   const listPrices = {};
@@ -336,6 +336,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   const byName = new Map();
   let priceListDate;
   let best;
+  let bestTier;
   for (const { name, results } of groups) {
     const taken = [], resale = [], free = [], shop_check = [], reserved = [], likelyFree = [], likelyTaken = [];
     for (const row of results) {
@@ -391,8 +392,11 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       if (confirmed && !premium && canRecommend(row.tld, eligible) && !premiumRisk(row.domain)) {
         const { now, renew, y3, term, jump } = price;
         const buyUrl = row.buyUrl ?? shopSearchUrl(shopId, row.domain);
-        // The cheapest confirmed quote is the pick; rows are already sorted by first payment within a name.
-        if (best && (best.priceNow ?? Infinity) <= (now ?? Infinity)) continue;
+        // The cheapest confirmed quote in the most attractive tier is the pick; rows are already sorted by tier, then
+        // first payment within a name.
+        const tier = endingTier(row.domain, requested, eligible);
+        if (best && (bestTier < tier || bestTier === tier && (best.priceNow ?? Infinity) <= (now ?? Infinity))) continue;
+        bestTier = tier;
         best = { domain: row.domain, status: 'free-confirmed', ...(now != null && { priceNow: now }), ...(at && { at }),
           ...(renew != null && { renewal: renew }), ...(y3 != null && { threeYear: y3 }),
           ...(term && { term }),
@@ -444,13 +448,16 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
 // the pick is sent to a shop, so no shop sees the other names. DOMAIN_HOUND_SHOP_QUOTES=top4 adds up to three runners-up.
 export const shopQuoteCount = (env = process.env) => env?.DOMAIN_HOUND_SHOP_QUOTES === 'top4' ? 4 : 1;
 
-export function lightTargets(rows, eligible, count = 1, preferred = [], cap) {
+// The shop quote goes to the pick: the first preferred ending in order, else the cheapest upfront payment in the most
+// attractive tier. explicit lists exact domains the person typed; like preferred endings, they are never demoted.
+export function lightTargets(rows, eligible, count = 1, preferred = [], cap, explicit = []) {
+  const requested = [...preferred, ...explicit];
   const inScope = rows.filter(row => (!preferred.length || preferred.includes(row.tld))
     && (cap == null || (row.firstPayment ?? Infinity) <= cap));
   const top = preferred.length ? preferred.map(tld => pickName(inScope.filter(row => row.tld === tld), eligible)).find(Boolean)
-    : pickName(inScope, eligible);
+    : pickName(inScope, eligible, requested);
   const others = rankName(inScope.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
-    && canRecommend(row.tld, eligible)));
+    && canRecommend(row.tld, eligible)), requested, eligible);
   return [top, ...others].filter(Boolean).slice(0, count);
 }
 
@@ -484,7 +491,8 @@ export async function agentResult(input, options = {}) {
   const rows = fast.groups.flatMap(group => group.results);
   const targets = domain ? rows.filter(row => canRecommend(row.tld, options.eligible)
     && ['probably-free', 'check-at-shop', 'premium'].includes(row.status))
-    : lightTargets(rows, options.eligible, shopQuoteCount(options.env ?? process.env), options.preferredEndings, options.upfrontCap);
+    : lightTargets(rows, options.eligible, shopQuoteCount(options.env ?? process.env), options.preferredEndings, options.upfrontCap,
+      [...exact]);
   const [candidate] = targets;
   // A Google retry can settle every row that the first pass left waiting.
   let complete = fast.complete || !rows.some(row => row.registryReason === 'Registry lookup timed out');
@@ -530,13 +538,14 @@ export async function agentResult(input, options = {}) {
     complete = false;
   }
   const apply = row => quotes.has(row.domain) ? mergeQuote(row, quotes.get(row.domain)) : row;
-  const rankedGroups = fast.groups.map(group => ({ ...group, results: rankName(group.results.map(apply)) }));
+  const requested = [...(options.preferredEndings ?? []), ...exact];
+  const rankedGroups = fast.groups.map(group => ({ ...group, results: rankName(group.results.map(apply), requested, options.eligible) }));
   const checkedAt = options.now?.toISOString() ?? new Date().toISOString();
   // An exact .com gets the standard list prices of the other endings as one benchmark line, with no extra lookups.
   const exactCom = names.length === 1 && names[0].endsWith('.com') ? names[0] : null;
   const otherEndings = exactCom ? await endingBenchmarks(exactCom, options) : null;
   const result = compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
-    options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings });
+    options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings, requested });
   if (asked.size) result.shopAsked = [...asked];
   if (options.receipt) result.receiptDetails = rankedGroups.map(({ results, sites }) => ({ endings: results.map(row => ({
     domain: row.domain, source: row.source, checkedAt: row.checkedAt, priceAt: row.priceCheckedAt,
@@ -624,7 +633,7 @@ async function retryGoogle(fast, remaining, options) {
       for (const key of ['price', 'renewal', 'shop', 'priceSource', 'priceCheckedAt', 'buyUrl']) delete settled[key];
       return price == null ? settled : { ...settled, listPrice: { shop, checkedAt: priceCheckedAt,
         ...termCosts(row.tld, price, renewal), renewalJump: renewal > 2 * price } };
-    }));
+    }), options.preferredEndings, options.eligible);
   }
   return limited;
 }

@@ -265,7 +265,8 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   withNorway.catalogs.dynadot.prices.no = { shop: 'Dynadot', firstYear: 2, renewal: 2 };
   await writeCache(directory, 'prices.json', withNorway);
   const defaultBuyer = await triageNames(['DappleBear'], options);
-  assert.equal(defaultBuyer.names[0].free[0], 'no');
+  assert.equal(defaultBuyer.names[0].free[0], 'co');
+  assert.ok(defaultBuyer.names[0].free.includes('no'));
   assert.equal(defaultBuyer.top[0].domain, 'dapplebear.co');
   assert.equal(defaultBuyer.names[0].bestValue, 'me');
   const eligible = await triageNames(['DappleBear'], { ...options, eligible: ['no'] });

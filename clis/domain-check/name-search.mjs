@@ -46,6 +46,16 @@ export { requestEndings, supportedEndings };
 export const restrictedEndings = Object.keys(facts).filter(tld => facts[tld].eligibility);
 const firstCost = row => row.firstPayment ?? Infinity;
 
+// The broker dossier orders mainstream endings first, then .xyz and .tech, then other supported endings.
+export const mainstreamEndings = ['com', 'ai', 'si', 'io', 'app', 'dev', 'me', 'co', 'net', 'org'];
+export const fallbackEndings = ['xyz', 'tech'];
+// Requested endings, exact domains and eligibility opt-ins can compete with the mainstream tier.
+export function endingTier(domain, requested = [], eligible = []) {
+  const tld = domainEnding(domain);
+  if (mainstreamEndings.includes(tld) || requested.includes(tld) || requested.includes(domain) || eligible.includes(tld)) return 0;
+  return fallbackEndings.includes(tld) ? 1 : 2;
+}
+
 export function validEligibility(eligible) {
   return Array.isArray(eligible) && new Set(eligible).size === eligible.length
     && eligible.every(tld => restrictedEndings.includes(tld));
@@ -149,7 +159,8 @@ export function termCosts(tld, price, renewal) {
   };
 }
 
-export function rankName(rows) {
+// Exact names first, then by attractiveness tier, then by upfront payment (including any minimum term).
+export function rankName(rows, requested = [], eligible = []) {
   return rows.map(row => {
     const { tld, exact, status, price = null, renewal = null } = row;
     const reason = status === 'premium' ? row.premium === 'risk' ? 'May be premium' : 'Premium price' : status === 'reserved' ? 'Not offered for registration'
@@ -158,13 +169,17 @@ export function rankName(rows) {
       : exact ? 'Exact name' : 'Name variation';
     return { ...row, ...termCosts(tld, price, renewal), reason, terms: facts[tld] ?? null,
       renewalJump: price != null && renewal > 2 * price };
-  }).sort((a, b) => Number(b.exact) - Number(a.exact) || firstCost(a) - firstCost(b)
+  }).sort((a, b) => Number(b.exact) - Number(a.exact)
+    || endingTier(a.domain, requested, eligible) - endingTier(b.domain, requested, eligible) || firstCost(a) - firstCost(b)
     || supportedEndings.indexOf(a.tld) - supportedEndings.indexOf(b.tld) || a.domain.localeCompare(b.domain));
 }
 
-export function pickName(rows, eligible) {
+// The cheapest upfront payment within the most attractive tier that has a recommendable free row.
+export function pickName(rows, eligible, requested = []) {
+  const tier = row => endingTier(row.domain, requested, eligible);
   return rows.reduce((best, row) => {
     if (!canRecommend(row.tld, eligible) || premiumRisk(row.domain) || !['probably-free', 'confirmed'].includes(row.status)) return best;
+    if (best && tier(row) !== tier(best)) return tier(row) < tier(best) ? row : best;
     return !best || firstCost(row) < firstCost(best) ||
       (firstCost(row) === firstCost(best) && row.exact && !best.exact) ? row : best;
   }, undefined);
@@ -356,7 +371,7 @@ export async function searchCandidates(groups, options = {}) {
       if (status === 'reserved') return withoutListPrice(settled, 'reserved', lookup.reason);
       const signal = status === 'taken' ? null : signals.get(row.domain);
       return signal ? mergeQuote(settled, signal) : settled;
-    }));
+    }), options.preferredEndings, options.eligible);
     const checkedSites = {};
     for (const row of rows) {
       const site = sites.get(row.domain)?.result;
@@ -391,7 +406,7 @@ export async function searchName(input, options = {}) {
   if (options.eligible !== undefined && !validEligibility(options.eligible)) return { error: 'Eligible endings must list supported restricted endings, such as no.' };
   const { groups: [{ results, comSite }], priceDate, ms } = await searchCandidates(
     [{ name, candidates: nameCandidates(name, options) }], options);
-  return { name, hero: pickName(results, options.eligible)?.domain ?? null,
+  return { name, hero: pickName(results, options.eligible, options.preferredEndings)?.domain ?? null,
     ...(options.eligible?.length && { eligible: options.eligible }), results, priceDate, comSite,
     checkedAt: options.now?.toISOString() ?? new Date().toISOString(), ms };
 }

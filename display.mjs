@@ -1,6 +1,6 @@
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { isSearchLink, nameCheckLines } from './clis/domain-check/google-search.mjs';
-import { canRecommend, eligibilityNeed, normalizeName, premiumRisk, unicodeName } from './clis/domain-check/name-search.mjs';
+import { canRecommend, eligibilityNeed, endingTier, normalizeName, premiumRisk, unicodeName } from './clis/domain-check/name-search.mjs';
 import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
 export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
@@ -276,14 +276,19 @@ function groupRows(rows, linesFor) {
   return [...groups.values()];
 }
 
-// For one bare name: the cheapest first payment and the best three-year value among the endings this buyer can register.
-function choiceLines(row, listPrices, eligible) {
-  const options = (row.free ?? []).flatMap(option => {
+// For one bare name: the cheapest first payment and the best three-year value among the endings this buyer can register,
+// both within the most attractive tier that has a free ending (fallback endings only when nothing else is free).
+function choiceLines(row, listPrices, eligible, preferred = []) {
+  const free = (row.free ?? []).flatMap(option => {
     const domain = option.d.includes('.') ? option.d : row.name + '.' + option.d;
-    if (option.s === 'prem' || option.prem || premiumRisk(domain) || ineligible(suffix(domain), eligible)) return [];
+    const ending = suffix(domain);
+    if (option.s === 'prem' || option.prem || premiumRisk(domain) || ineligible(ending, eligible)
+      || (preferred.length && !preferred.includes(ending))) return [];
     const price = option.now != null ? option : listPrices[option.d];
-    return price?.now != null ? [{ domain, price, value: threeYears(price)?.total ?? Infinity }] : [];
+    return [{ domain, price, value: threeYears(price)?.total ?? Infinity, tier: endingTier(domain, preferred, eligible) }];
   });
+  const tier = Math.min(...free.map(option => option.tier));
+  const options = free.filter(option => option.tier === tier && option.price?.now != null);
   if (!options.length) return [];
   const cheapest = options.reduce((best, row) => row.price.now < best.price.now ? row : best);
   const value = options.reduce((best, row) => row.value < best.value
@@ -291,7 +296,7 @@ function choiceLines(row, listPrices, eligible) {
   return ['Cheapest now: ' + shown(cheapest.domain), ...(value.value < Infinity ? [bestValueLine(value.domain, value.price)] : [])];
 }
 
-export function checkDisplay(result, level = 0, purchase = false) {
+export function checkDisplay(result, level = 0, purchase = false, preferred = []) {
   const rows = (result.names ?? []).filter(Boolean);
   if (rows.length === 1 && rows[0].name?.includes('.')) return exactDisplay(result);
   const listPrices = result.listPrices ?? {};
@@ -342,7 +347,7 @@ export function checkDisplay(result, level = 0, purchase = false) {
   }
   for (const [reason, endings] of reasons) lines.push(endings.join(', ') + ' — ' + md(reason) + '.');
   if (result.complete === false) lines.push('Some checks did not finish in time; check those at a shop.');
-  if (rows.length === 1) lines.push(...choiceLines(rows[0], listPrices, eligible));
+  if (rows.length === 1) lines.push(...choiceLines(rows[0], listPrices, eligible, preferred));
   const best = result.best;
   const link = best && safeLink(best.buyUrl, best.domain);
   if (link) {
@@ -355,12 +360,15 @@ export function checkDisplay(result, level = 0, purchase = false) {
   } else if (rows.length === 1 || purchase) {
     const available = rows.flatMap(row => (row.free ?? []).flatMap(option => {
       const domain = option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
-      if (!canRecommend(suffix(domain), eligible)) return [];
+      const ending = suffix(domain);
+      if (!canRecommend(ending, eligible) || (preferred.length && !preferred.includes(ending))) return [];
       const price = option.prem || option.s === 'prem' ? option : { ...listPrices[option.d], ...option };
       const link = templateLink(result.buyUrlTemplate, price.shop, domain);
-      return link ? [{ link, price: price.now ?? Infinity }] : [];
+      // An exact domain the person typed is requested, so it is never demoted to the fallback tier.
+      const tier = endingTier(domain, row.name.includes('.') ? [...preferred, domain] : preferred, eligible);
+      return link ? [{ link, price: price.now ?? Infinity, tier }] : [];
     }));
-    const cheapest = available.sort((a, b) => a.price - b.price)[0];
+    const cheapest = available.sort((a, b) => a.tier - b.tier || a.price - b.price)[0];
     if (cheapest) lines.push('Check at shop: ' + cheapest.link);
   }
   return lines.join('\n').trim();
@@ -385,35 +393,48 @@ export function checkLines(row, short = false) {
 
 const verdictRank = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
 
-// The cheapest free ending this buyer can register, at the name's own price or the standard list price.
-function cheapestEligible(row, prices, eligible) {
+// The cheapest free ending this buyer can register, at the name's own price or the standard list price, within the
+// most attractive tier that has a free eligible ending. tier is not part of the pick it returns.
+function cheapestEligible(row, prices, eligible, preferred = []) {
+  const free = (Array.isArray(row?.free) ? row.free : []).filter(ending => canRecommend(ending, eligible)
+    && (!preferred.length || preferred.includes(ending)));
+  const tier = ending => endingTier('.' + ending, preferred, eligible);
+  const top = Math.min(...free.map(tier));
   let best = null;
-  for (const ending of Array.isArray(row?.free) ? row.free : []) {
+  for (const ending of free) {
     const quote = row.own?.[ending] ?? prices?.[ending];
-    if (!canRecommend(ending, eligible) || quote?.now == null) continue;
+    if (tier(ending) !== top || quote?.now == null) continue;
     if (!best || quote.now < best.now) best = { ending, now: quote.now, renew: quote.renew ?? null, term: quote.term ?? null };
   }
-  return best;
+  return best && { ...best, tier: top };
 }
 
 // Three ranked picks once three or more names are screened: the screen's own ranking first, then the other
 // names by verdict and cheapest eligible price. Each pick carries its cheapest eligible domain and price.
-export function topPicks(result) {
+export function topPicks(result, preferred = []) {
   const rows = (result.names ?? []).filter(Boolean);
   const prices = result.prices ?? {};
+  const eligibleCheapest = row => {
+    const found = cheapestEligible(row, prices, result.eligible, preferred);
+    if (!found) return null;
+    const { tier, ...pick } = found;
+    return pick;
+  };
   const picks = (Array.isArray(result.top) ? result.top : []).filter(Boolean).slice(0, 3).map(pick => {
     if (pick.ending || pick.domain) return pick;
-    const cheapest = cheapestEligible(rows.find(row => row.name === pick.name), prices, result.eligible);
+    const cheapest = eligibleCheapest(rows.find(row => row.name === pick.name));
     return cheapest ? { ...pick, ...cheapest } : pick;
   });
   if (rows.length < 3) return picks;
-  const rest = rows.map((row, index) => ({ row, index, cheapest: cheapestEligible(row, prices, result.eligible) }))
+  const rest = rows.map((row, index) => ({ row, index, cheapest: cheapestEligible(row, prices, result.eligible, preferred) }))
     .filter(({ row }) => !picks.some(pick => pick.name === row.name))
     .sort((a, b) => (verdictRank[a.row.verdict] ?? 3) - (verdictRank[b.row.verdict] ?? 3)
+      || (a.cheapest?.tier ?? Infinity) - (b.cheapest?.tier ?? Infinity)
       || (a.cheapest?.now ?? Infinity) - (b.cheapest?.now ?? Infinity) || a.index - b.index);
   for (const { row, cheapest } of rest.slice(0, 3 - picks.length)) {
+    const { tier, ...pick } = cheapest ?? {};
     picks.push({ name: row.name, verdict: row.verdict, reason: row.reason,
-      ...(cheapest && { ...cheapest, domain: fullDomain(label(row.name), cheapest.ending) }) });
+      ...(cheapest && { ...pick, domain: fullDomain(label(row.name), cheapest.ending) }) });
   }
   return picks;
 }
@@ -424,8 +445,8 @@ function nameLabel(name) {
   return md(name) + (dns.startsWith('xn--') ? ' (' + md(dns) + ')' : '');
 }
 
-function topLines(result, showReason, showValue = true) {
-  return ['**Top picks**', ...topPicks(result).map(row => {
+function topLines(result, showReason, showValue = true, preferred = []) {
+  return ['**Top picks**', ...topPicks(result, preferred).map(row => {
     const ending = row.domain ? shown(row.domain) : row.ending && '.' + row.ending;
     const domain = ending ? ', cheapest now ' + priced(ending, row) : ', no eligible free ending';
     const value = !showValue ? '' : typeof row.bestValue === 'string'
@@ -458,7 +479,9 @@ export function triageDisplay(result, prior, { short = false, compact = false, p
   const rows = (result.names ?? []).filter(Boolean);
   const earlierRows = new Map((prior?.names ?? []).map(row => [row.name, row.free ?? []]));
   const lines = [];
-  if (topPicks(result).length) lines.push(...topLines(result, !prior && rows.length !== 5, !prior && rows.length !== 5), '');
+  if (topPicks(result, preferred).length) {
+    lines.push(...topLines(result, !prior && rows.length !== 5, !prior && rows.length !== 5, preferred), '');
+  }
   lines.push(prior ? '**Name screen** (USD ex. VAT, estimates)' :
     '**Name screen** (USD ex. VAT; list prices, the shop shows the final price; 2y = each payment covers two years)');
   if (result.eligibility) lines.push(eligibilityLine(result));
@@ -612,7 +635,7 @@ export function checkText(result, shortlist = false, { purchase = false, preferr
     ...(row.shop_check && { shop_check: preferredFirst(row.shop_check, preferred) }),
   })) };
   const initialLevel = (result.names?.length ?? 0) >= 10 ? 3 : 0;
-  const shown = checkDisplay(result, initialLevel, purchase);
+  const shown = checkDisplay(result, initialLevel, purchase, preferred);
   const [row] = result.names ?? [];
   const exact = result.names?.length === 1 && row?.name?.includes('.');
   // A registered exact domain already shows the limitation with its status and has no checkout link.
@@ -660,7 +683,7 @@ export function checkText(result, shortlist = false, { purchase = false, preferr
   const compactDisplay = next => () => {
     if (next <= level) return;
     level = next;
-    display = attributed(checkDisplay(result, level, purchase), ending);
+    display = attributed(checkDisplay(result, level, purchase, preferred), ending);
   };
   const steps = [
     // Drop inline prices from unconfirmed rows; the display and the shared list price keep them.

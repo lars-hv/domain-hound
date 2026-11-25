@@ -4,7 +4,7 @@ import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promise
 import { homedir, userInfo } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { canRecommend, defaultEndings, domainEnding, eligibilityNeed, normalizeName } from './clis/domain-check/name-search.mjs';
+import { canRecommend, defaultEndings, domainEnding, eligibilityNeed, endingTier, normalizeName } from './clis/domain-check/name-search.mjs';
 import { handlePriorities, handleStates, handleSummary } from './clis/domain-check/handles.mjs';
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
@@ -55,11 +55,13 @@ const markLabel = entry => plain(entry.office) + ' mark: ' + plain(entry.tier) +
 const watchLink = domain => 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(domain);
 const verdictOrder = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
 
-function resultGroups(data, eligibleEndings) {
+function resultGroups(data, eligibleEndings, preferred = []) {
   return data.names.map((row, index) => {
     const detail = data.receiptDetails?.[index] ?? {};
     const exact = row.name.includes('.');
     const label = exact ? row.name : normalizeName(row.name);
+    const requested = exact ? [...preferred, row.name] : preferred;
+    const eligibleList = eligibleEndings ?? data.eligible;
     const listed = [...(row.free ?? []), ...(row.taken ?? []), ...(row.shop_check ?? []), ...(row.resale ?? []),
       ...(row.premium ?? []), ...(row.reserved ?? [])].map(value => value.d ?? value).filter(value => typeof value === 'string');
     const variants = listed.filter(value => value.includes('.') && value !== 'co.uk');
@@ -94,16 +96,19 @@ function resultGroups(data, eligibleEndings) {
       const source = ({ web: 'Live site', dns: 'DNS', rdap: 'Registry RDAP', whois: 'Registry WHOIS',
         shop: 'Shop', list: 'Price list' })[raw?.source] ?? (confirmed ? 'Shop' : likely ? 'DNS' : 'Registry');
       const shop = usd.shop ?? raw?.shop ?? shops[fallbackShop(ending)]?.name;
-      const eligible = canRecommend(ending, eligibleEndings ?? data.eligible);
+      const eligible = canRecommend(ending, eligibleList);
       const shopUrl = shopSearchUrl(shopIds.get(shop) ?? fallbackShop(ending), domain);
       const checkout = taken || reserved || !eligible ? null : [raw?.checkout, shopUrl].find(url => safeLink(url, domain)) ?? null;
-      return { domain, ending, state, status, ...usd, total, shop, checkout, eligible, source, ...(raw?.savings && { savings: raw.savings }),
+      return { domain, ending, tier: endingTier(domain, requested, eligibleList), state, status, ...usd, total,
+        shop, checkout, eligible, source, ...(raw?.savings && { savings: raw.savings }),
         priceLabel: usd.now != null || usd.renew != null ? (confirmed ? 'Shop quote' : taken ? 'Standard list price benchmark' : 'List price') : '',
         checkedAt: raw?.checkedAt ?? data.checkedAt, priceAt: confirmed ? raw?.checkedAt ?? data.checkedAt : raw?.priceAt ?? data.priceListDate,
         site: raw?.site ?? detail.details?.sites?.[ending] ?? row.details?.sites?.[ending] };
     });
+    // Free rows first, then by attractiveness tier (a typed exact domain is requested), then by upfront payment.
     records.sort((a, b) => Number(b.state === 'free' || b.priceLabel === 'Shop quote')
-      - Number(a.state === 'free' || a.priceLabel === 'Shop quote') || (a.now ?? Infinity) - (b.now ?? Infinity));
+      - Number(a.state === 'free' || a.priceLabel === 'Shop quote')
+      || a.tier - b.tier || (a.now ?? Infinity) - (b.now ?? Infinity));
     return { row: { ...row, ...detail, name: row.name }, records };
   });
 }
@@ -142,8 +147,13 @@ function signals(group, triage = true) {
   return 'iOS: ' + appFinding(comp.AppStore, row, 'App Store') + ' | Android: ' + appFinding(comp.GooglePlay, row, 'Google Play') + ' | web: ' + web;
 }
 
+const cents = value => Math.round(value * 100);
+// A fallback ending is worth its own line only when it saves more than $10 over 3 years against the best value.
+const fallbackSavingsCents = 1000;
+
 // One selection feeds the receipt lines and the share link: preferred endings, budget, eligibility, verdict and
 // confirmed quotes decide the candidates; best value compares payments due in 3 years (y3 quote or term-aware sum).
+// Pick, cheapest and best value stay within the most attractive tier that has an in-scope candidate.
 // names[i] is the same choice made inside groups[i] alone: its first candidate, its best value and its taken rows,
 // preferred endings first in the user's order (.com first by default).
 function receiptSelection(groups, args, triage) {
@@ -159,10 +169,26 @@ function receiptSelection(groups, args, triage) {
   const cost = item => item.record.now ?? Infinity;
   const compareCost = (a, b) => cost(a) - cost(b);
   const position = item => preferred.length ? preferred.indexOf(item.record.ending) : 0;
+  const tier = item => item.record.tier;
+  const topTier = items => {
+    const first = Math.min(...items.map(tier));
+    return items.filter(item => tier(item) === first);
+  };
   candidates.sort((a, b) => (verdictOrder[a.group.row.verdict] ?? 0) - (verdictOrder[b.group.row.verdict] ?? 0)
-    || position(a) - position(b) || compareCost(a, b) || a.record.domain.localeCompare(b.record.domain));
-  const bestValue = items => items.filter(item => item.record.total != null)
+    || position(a) - position(b) || tier(a) - tier(b) || compareCost(a, b) || a.record.domain.localeCompare(b.record.domain));
+  const lowestTotal = items => items.filter(item => item.record.total != null)
     .sort((a, b) => a.record.total - b.record.total || compareCost(a, b))[0];
+  // Within the top tier only: when its rows lack a three-year total, best value needs a shop quote.
+  const bestValue = items => lowestTotal(topTier(items));
+  const top = topTier(candidates);
+  const value = lowestTotal(top);
+  const picks = [];
+  for (const item of top) {
+    if (picks.some(pick => pick.group === item.group)) continue;
+    picks.push(item);
+    if (picks.length === 3) break;
+  }
+  const fallback = value && tier(value) === 0 ? lowestTotal(candidates.filter(item => tier(item) === 1)) : undefined;
   const order = preferred.length ? preferred : ['com'];
   const takenRank = record => {
     const index = order.indexOf(record.ending);
@@ -170,10 +196,12 @@ function receiptSelection(groups, args, triage) {
   };
   return {
     exact, preferred, budget,
-    best: candidates[0],
-    picks: [...new Map(candidates.toReversed().map(item => [item.group, item])).values()].reverse().slice(0, 3),
-    cheapest: candidates.filter(item => item.record.now != null).sort(compareCost)[0],
-    value: bestValue(candidates),
+    best: picks[0],
+    picks,
+    cheapest: top.filter(item => item.record.now != null).sort(compareCost)[0],
+    value,
+    // The cheapest fallback over 3 years, only when it saves more than $10 against the top-tier best value.
+    saving: fallback && cents(value.record.total) - cents(fallback.record.total) > fallbackSavingsCents ? fallback : null,
     names: groups.map(group => {
       const own = candidates.filter(item => item.group === group);
       return { pick: own[0]?.record ?? null, value: bestValue(own)?.record ?? null,
@@ -185,7 +213,7 @@ function receiptSelection(groups, args, triage) {
 
 function summary(groups, args, triage, selection) {
   const [wanted] = groups;
-  const { exact: isExact, preferred, budget, best, picks, cheapest, value } = selection;
+  const { exact: isExact, preferred, budget, best, picks, cheapest, value, saving } = selection;
   const constraints = [...(!isExact && preferred.length ? [preferred.map(ending => '.' + ending).join(', ') + ' first'] : []),
     ...(budget != null ? ['Up to ' + cash(budget) + ' today'] : [])];
   const target = wanted.records.find(record => record.ending === (preferred[0] ?? 'com')) ?? wanted.records[0];
@@ -233,9 +261,11 @@ function summary(groups, args, triage, selection) {
     handles && 'Handles for ' + evidenceText(wanted.row.name) + ': ' + plain(handles) + '.',
     running.length ? 'Still checking ' + running.join(', ') + '. The results page updates by itself.' : null,
     ...offerLines,
-    'Cheapest: ' + (cheapest ? label(cheapest) : 'none found in scope.'),
+    'Cheapest: ' + (cheapest ? label(cheapest) : best ? 'needs a shop quote.' : 'none found in scope.'),
     'Best value: ' + (value ? value.record.domain + ', ' + cash(value.record.total) + ' in payments due in 3 years'
       + ' (' + value.record.priceLabel.toLowerCase() + priceDate(value.record) + ')' + caution(value) : 'needs a shop quote') + '.',
+    saving && 'Fallback: ' + saving.record.domain + ', ' + cash(saving.record.total) + ' in 3 years, saves '
+      + cash((cents(value.record.total) - cents(saving.record.total)) / 100) + caution(saving) + '.',
     (args.purchase ? 'This check leaves checkout to you. ' : '') + next + eligibility,
   ];
   // Savings are page-only proof for each pick: dated list prices from at least three shops, never a pitch.
@@ -413,7 +443,7 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { saving
   const shared = shareUrl(groups, checkedAt, shareFacts);
   const shareLabel = groups.length > 5 ? 'Share first five names' : 'Share';
   const [intro, ...body] = lines;
-  const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
+  const comparison = body.filter(line => /^(?:Cheapest|Best value|Fallback):/.test(line));
   const before = body.filter(line => !comparison.includes(line)).slice(0, comparison.length ? -1 : undefined);
   const after = comparison.length ? body.slice(-1) : [];
   const sources = watch?.source ? 'Registry: ' + String(watch.source).toUpperCase() :
@@ -553,7 +583,7 @@ export function resultPages({ env = process.env,
   return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
-      const groups = watch ? [] : resultGroups(data, args.eligible);
+      const groups = watch ? [] : resultGroups(data, args.eligible, args.endings);
       const selection = receiptSelection(groups, args, triage);
       const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']

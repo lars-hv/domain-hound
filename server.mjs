@@ -257,6 +257,8 @@ function triageArguments(args) {
     throw new Error('names[' + bad + '] is not valid. Supply 1 to 20 bare names of up to 100 characters, without commas or domain endings.');
   }
   const flags = lookupFlags(args);
+  // Requested endings are never demoted to the fallback tier in the screen's own picks.
+  if (args.endings) flags.push('--prefer-endings', args.endings.join(','));
   if (Object.hasOwn(args, 'shortlist') && typeof args.shortlist !== 'boolean') throw new Error('shortlist must be a boolean.');
   const { companyType, additionalHandles } = args;
   if (companyType !== undefined && !Object.hasOwn(handlePriorities, companyType)) throw new Error('Choose a supported company type.');
