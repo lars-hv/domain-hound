@@ -5,6 +5,8 @@ import { progressReporter } from '../clis/domain-check/progress.mjs';
 import { defaultEndings } from '../clis/domain-check/name-search.mjs';
 
 const [mode, query, ...rest] = process.argv.slice(2);
+const receipt = rest.indexOf('--receipt');
+if (receipt >= 0) rest.splice(receipt, 1);
 if (!['--agent', '--triage'].includes(mode) || dirname(fileURLToPath(import.meta.url)) !== process.cwd()) {
   throw new Error('Wrong command or working directory');
 }

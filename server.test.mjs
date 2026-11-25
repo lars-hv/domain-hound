@@ -88,7 +88,11 @@ function body(display) {
 function callData(responses, id) {
   const data = JSON.parse(callJson(responses, id));
   assert.equal(Object.keys(data)[0], 'display');
-  return { ...data, display: body(data.display) };
+  if (!data.say) return { ...data, display: body(data.display) };
+  assert.equal(data.display, data.say);
+  assert.ok(data.say.split('\n').length <= 8);
+  assert.ok(data.say.endsWith('All endings: [Results page](' + data.resultPage + ')'));
+  return data;
 }
 
 // Errors carry only the display.
@@ -112,16 +116,16 @@ test('offers its latest protocol for an unsupported version', async () => {
   assert.equal(resultOf(responses, 1).protocolVersion, '2025-11-25');
 });
 
-test('advertises the three Domain Hound tools and the legacy alias', async () => {
+test('advertises the lookup, naming and watch tools and the legacy alias', async () => {
   const responses = await exchange([...handshake(), request(2, 'tools/list')]);
   const { tools } = resultOf(responses, 2);
-  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find']);
-  const [{ description, inputSchema }, triage, naming, alias] = tools;
+  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain']);
+  const [{ description, inputSchema }, triage, naming, alias, watch] = tools;
   // Short descriptions that put the verbatim display first.
-  const copy = 'Show `display` exactly as written, then add at most two sentences of advice below it.';
+  const copy = 'Relay `say` as written.';
   for (const tool of [tools[0], triage, alias]) assert.ok(tool.description.startsWith(copy), tool.name);
-  assert.ok(description.length < 1100, String(description.length));
-  assert.ok(alias.description.length < 200, String(alias.description.length));
+  assert.ok(description.length < 1500, String(description.length));
+  assert.ok(alias.description.length < 320, String(alias.description.length));
   assert.ok(naming.description.length < 300, String(naming.description.length));
   for (const phrase of ['{"query":"lanternbay.me"}', '{"names":["lanternbay","lanternbay.me"]}', 'including .ai',
     'For any request to buy or register, pass purchase: true', 'cannot buy or complete checkout', 'even when the domain is taken',
@@ -129,10 +133,10 @@ test('advertises the three Domain Hound tools and the legacy alias', async () =>
     '"premium, price at shop"', 'naming_method first', 'triage_names', 'Quiet Otter becomes quietotter']) {
     assert.ok(description.includes(phrase), phrase);
   }
-  for (const instruction of ['google.search', '"<name>" and "<name>" app', 'first 10', 'Google: open',
-    'Google: crowded', 'Google: owned by <brand>', 'verdict, reason, traction and search links']) {
-    assert.ok(triage.description.includes(instruction), instruction);
-  }
+  assert.match(triage.description, /checks Google itself/);
+  assert.equal(watch.annotations.readOnlyHint, false);
+  assert.deepEqual(watch.inputSchema.required, ['domain']);
+  assert.equal(inputSchema.properties.budget.type, 'number');
   for (const phrase of ['existing name is safe', 'screen 1 to 20 product names']) {
     assert.ok(triage.description.includes(phrase), phrase);
   }
@@ -140,10 +144,10 @@ test('advertises the three Domain Hound tools and the legacy alias', async () =>
   assert.equal(triage.inputSchema.properties.names.maxItems, 20);
   assert.deepEqual(triage.inputSchema.required, ['names']);
   assert.deepEqual(alias.inputSchema, inputSchema);
-  assert.match(inputSchema.properties.endings.description, /preferences in display order.*all ten default endings/);
+  assert.match(inputSchema.properties.endings.description, /preference order.*all ten endings/);
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['ai', 'endings', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
+  assert.deepEqual(Object.keys(inputSchema.properties), ['ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
   for (const flag of ['shortlist', 'purchase', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
   assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
   assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no']);
@@ -180,29 +184,19 @@ test('forwards purchase and the explicit browser confirm flag, and rejects non-b
     call(5, { names: ['oakenroom'], purchase: 1 }), call(6, { names: ['oakenroom'] })]);
   assert.deepEqual(callData(responses, 2).flags, ['--confirm']);
   const bought = callText(responses, 3);
-  assert.ok(bought.endsWith('\n\n' + attribution + '\n\n' + purchaseLine), bought.slice(-120));
+  assert.match(bought, /Domain Hound cannot buy or complete checkout/);
   assert.equal(callData(responses, 3).flags, undefined);
   assert.match(errorText(responses, 4), /^confirm must be a boolean\.$/);
   assert.match(errorText(responses, 5), /^purchase must be a boolean\.$/);
   // Without a purchase request, a batch keeps the ordinary never-buys wording and no purchase line.
-  assert.ok(!callText(responses, 6).includes(purchaseLine));
+  assert.doesNotMatch(callText(responses, 6), /cannot buy or complete checkout/);
 });
 
 test('passes a normalized query as a separate argument and returns compact JSON', async () => {
   const responses = await exchange([...handshake(), call(2, { query: 'Example.COM' })]);
   const result = callData(responses, 2);
-  assert.deepEqual(Object.keys(result), ['display', 'complete', 'checkedAt', 'best', 'names', 'legend', 'buyUrlTemplate']);
-  assert.equal(result.display, [
-    '**example.com is free.** Price confirmed at Spaceship. Checked 2026-11-24 12:00 UTC.',
-    '',
-    '| Domain | Today | Renewal | 3 years | Checkout |',
-    '|---|---|---|---|---|',
-    '| example.com | $9.48 | $10.68/yr | $30.84 | [example.com](https://www.spaceship.com/domain-search/?query=example.com) at Spaceship |',
-    '',
-    'USD ex. VAT.',
-  ].join('\n'));
-  // The exact lookup always ends with the literal purchase line.
-  assert.ok(callText(responses, 2).endsWith('\n\n' + purchaseLine));
+  assert.match(result.say, /^example\.com: confirmed at shop\. \$9\.48, then \$10\.68 shop quote\./);
+  assert.match(result.say, /https:\/\/www\.spaceship\.com\/domain-search\/\?query=example\.com/);
   assert.equal(result.complete, true);
   assert.equal(result.checkedAt, '2026-11-24T12:00:00.000Z');
   assert.deepEqual(result.names, [{ name: 'example.com',
@@ -212,35 +206,27 @@ test('passes a normalized query as a separate argument and returns compact JSON'
   assert.equal(result.legend.ok, 'Free, confirmed by a shop');
 });
 
-test('a taken exact domain puts the checkout limitation on the status line, even without the purchase flag', async () => {
+test('a taken exact domain links to a watch and retains the purchase limitation when requested', async () => {
   const responses = await exchange([...handshake(), call(2, { query: 'taken.me' }),
     call(3, { query: 'taken.me', purchase: true })]);
   for (const id of [2, 3]) {
     const result = callData(responses, id);
     assert.deepEqual(result.names, [{ name: 'taken.me', taken: ['me'] }]);
-    assert.match(result.display.split('\n')[0], /^\*\*taken\.me is taken, and Domain Hound cannot buy or complete checkout\.\*\*/);
-    assert.doesNotMatch(callText(responses, id), /\$|https?:|use the link above/);
-    assert.match(result.purchaseAdvice, /cannot buy or complete checkout\.$/);
+    assert.match(result.say, /^taken\.me: taken\./);
+    assert.match(result.say, /https:\/\/domainhound\.dev\/watch\/\?domain=taken\.me/);
+    assert.doesNotMatch(result.say, /domain-search|\$/);
   }
+  assert.match(callText(responses, 3), /Domain Hound cannot buy or complete checkout/);
 });
 
 test('passes 20 names to one native batch invocation and preserves partial compact results', async () => {
   const names = Array.from({ length: 20 }, (_, i) => `Example-${i}`);
   const responses = await exchange([...handshake(), call(2, { names })]);
   const result = callData(responses, 2);
-  // An identical result shares one price row, with every name listed.
-  const group = names.map(name => name.toLowerCase()).join(', ');
-  assert.equal(result.display, [
-    '**Domain check, 20 names** (USD ex. VAT, today/renewal; list prices from 2026-11-24 unless ✓ confirmed at a shop; 2y = two-year payments)',
-    '',
-    '**Free domains, one ending per line**',
-    group + ':',
-    '- .com $9.48/$10.68',
-    '',
-    'Check at shop: ' + group + ' .so',
-    'Some checks did not finish in time; check those at a shop.',
-  ].join('\n'));
-  assert.ok(Buffer.byteLength(callText(responses, 2)) < 8000);
+  assert.ok(result.say.split('\n').length <= 8);
+  const html = await readFile(new URL(result.resultPage), 'utf8');
+  assert.ok(names.every(name => html.includes(name.toLowerCase() + '.com')));
+  assert.match(html, /\$9\.48<\/td><td>\$10\.68/);
   assert.equal(result.complete, false);
   assert.equal(result.best, undefined);
   assert.equal(result.priceListDate, '2026-11-24');
@@ -255,10 +241,11 @@ test('passes bare names and exact domains together in one native batch invocatio
   const responses = await exchange([...handshake(), call(2, { names: ['Oakenroom', 'oakenroom.me', 'QuietBook.AI'] })]);
   const result = callData(responses, 2);
   assert.deepEqual(result.names.map(row => row.name), ['oakenroom', 'oakenroom.me', 'quietbook.ai']);
-  assert.match(result.display, /^- oakenroom\.com \$9\.48\/\$10\.68 list price$/m);
+  const receipt = await readFile(new URL(result.resultPage), 'utf8');
+  assert.match(receipt, /oakenroom\.com[\s\S]*?\$9\.48<\/td><td>\$10\.68/);
   // An exact domain in a batch is listed as itself.
-  assert.match(result.display, /^- oakenroom\.me \$9\.48\/\$10\.68 list price$/m);
-  assert.match(result.display, /^- quietbook\.ai \$9\.48\/\$10\.68 list price$/m);
+  assert.match(receipt, /oakenroom\.me[\s\S]*?\$9\.48<\/td><td>\$10\.68/);
+  assert.match(receipt, /quietbook\.ai[\s\S]*?\$9\.48<\/td><td>\$10\.68/);
 });
 
 test('accepts broker_find and forwards an explicit .ai request', async () => {
@@ -283,13 +270,13 @@ test('checks every default ending and shows preferences first for both tools', a
     call(4, { query: 'example.com', endings })]);
   const checked = callData(responses, 2);
   const triaged = callData(responses, 3);
-  assert.deepEqual(checked.names[0].free.map(option => option.d), choices);
-  assert.deepEqual(triaged.names[0].free, choices);
-  for (const [display, marker] of [[checked.display, 'endingsample.'], [triaged.display, '.']]) {
-    // .no is listed in its place without a price: the buyer has not said they qualify.
-    const positions = choices.map(ending => display.indexOf(marker + ending
-      + (ending === 'no' ? ' not eligible: needs Norwegian org/ID' : ' $8.00/$12.50')));
-    assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])), display);
+  assert.deepEqual(checked.names[0].free.map(option => option.d), defaultEndings);
+  assert.deepEqual(triaged.names[0].free, defaultEndings);
+  for (const result of [checked, triaged]) {
+    assert.match(result.say, /^\.ai, \.app first/);
+    assert.match(result.say, /endingsample\.ai \$8\.00, then \$12\.50/);
+    const receipt = await readFile(new URL(result.resultPage), 'utf8');
+    assert.ok(choices.every(ending => receipt.includes('endingsample.' + ending)), receipt);
   }
   assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), ['com']);
 });
@@ -308,14 +295,13 @@ test('naming_method returns the compact recipe as display with an optional descr
   const recipe = data.display;
   assert.ok(Buffer.byteLength(text) < 800, String(Buffer.byteLength(text)));
   for (const phrase of ['intermediate', 'final triage display', 'about 30', 'familiar animal', 'category-generic',
-    'shortlist: true', 'Quiet Otter → quietotter', 'No spaces or dots', 'Follow its Google search instructions',
-    'Show `display` exactly as written, then add at most two sentences of advice below it.',
-    'Keep all five candidates and let the person choose.']) {
+    'shortlist: true', 'Quiet Otter → quietotter', 'No spaces or dots', 'Default to English', 'Pass the same endings and budget',
+    'Relay say as written', 'complete local results page']) {
     assert.ok(recipe.includes(phrase), phrase);
   }
   // Brief, generate, one bare-name batch, triage of the best five only, then the answer.
   const order = ['1. Brief', '2. Generate', '3. Check', 'check_domains ONCE', 'bare names', '4. Triage',
-    'triage_names ONCE on only the best FIVE', '5. Answer'].map(phrase => recipe.indexOf(phrase));
+    'triage_names ONCE on the best FIVE', '5. Answer'].map(phrase => recipe.indexOf(phrase));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
 });
@@ -353,7 +339,7 @@ test('rejects invalid inputs before executing the capability', async () => {
   }
   const message = args => errorText(responses, bad.findIndex(value => JSON.stringify(value) === JSON.stringify(args)) + 2);
   assert.match(message({ query: '' }), /^query is empty\. Enter one name or exact domain in query/);
-  assert.match(message({ query: 'a'.repeat(64) }), /^query "a+" is not valid/);
+  assert.match(message({ query: 'a'.repeat(64) }), /too long.*63 characters/);
   assert.match(message({ names: Array(21).fill('a') }), /^names must list 1 to 20 names or domains; it has 21\./);
   assert.match(message({ names: [] }), /1 to 20/);
   assert.match(message({ names: ['a b'] }), /^names\[0\] "a b" is not valid/);
@@ -432,12 +418,12 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
     const result = structured(finished);
     assert.ok(finished.seconds < 1, String(finished.seconds));
     assert.equal(result.complete, true);
-    assert.match(result.display, /^- slowroom\.dev \$8\.00\/\$12\.50 list price$/m);
+    assert.match(result.display, /slowroom\.(?:dev|app) \$8\.00, then \$12\.50 list price/);
     assert.equal(await runsIn(runs), 1);
-    // Once collected, the next call is a fresh lookup.
-    const fresh = await mcp.ask(call(4, { query: 'slowroom' }));
-    assert.equal(structured(fresh).pending, true);
-    assert.equal(await runsIn(runs), 2);
+    // The same lookup stays stable for the session window.
+    const repeated = await mcp.ask(call(4, { query: 'slowroom' }));
+    assert.deepEqual(structured(repeated).names, result.names);
+    assert.equal(await runsIn(runs), 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -476,7 +462,7 @@ test('lists all seven requested names in order on a timeout and collects the cac
     assert.ok(repeat.seconds < 0.3, String(repeat.seconds));
     assert.equal(result.complete, true);
     assert.deepEqual(result.names.map(row => row.name), names);
-    assert.match(result.display, /^- oakenroom\.me \$8\.00\/\$12\.50 list price$/m);
+    assert.match(await readFile(new URL(result.resultPage), 'utf8'), /oakenroom\.me[\s\S]*?\$8\.00<\/td><td>\$12\.50/);
     assert.equal(await runsIn(runs), 1);
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -494,7 +480,7 @@ test('a slow triage answers with every requested name and its verdict once finis
   assert.match(progress.display, /trademark, app and rival checks are still running/);
   const result = structured(await mcp.ask(call(3, { names: ['Slow Room'] }, 'triage_names')));
   assert.equal(result.names[0].verdict, 'No conflict found');
-  assert.match(result.display, /\.dev \$8\.00\/\$12\.50<br>\.app \$8\.28\/\$14\.49/);
+  assert.match(await readFile(new URL(result.resultPage), 'utf8'), /slowroom\.app[\s\S]*?\$8\.28<\/td><td>\$14\.49/);
 });
 
 test('keeps answering pings during a lookup, stops a lookup at the maximum time and on shutdown', async t => {
@@ -529,7 +515,6 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
     call(5, { names: ['Example One'], about: 'Book appointments for a clinic' }, 'triage_names'),
     call(6, { names: ['Example One'], about: ' '.repeat(160) }, 'triage_names')]);
   const two = callData(responses, 2);
-  assert.deepEqual(Object.keys(two), ['display', 'prices', 'names', 'legend', 'flags']);
   assert.deepEqual(two.names.map(row => row.name), ['Example One', 'Example Two']);
   assert.deepEqual(two.flags, ['--compact', '--eligible', 'no', '--category', 'Calendar app']);
   for (const id of [3, 4]) assert.match(errorText(responses, id), /1 to 20/);
@@ -540,20 +525,10 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
   // One name keeps all its evidence.
   assert.deepEqual(one.names[0].notes, ['iOS app: Example One (Example Inc., 12 ratings)']);
   assert.ok(one.names[0].memorable);
-  assert.equal(one.display, [
-    '**Name screen** (USD ex. VAT; list prices, the shop shows the final price; 2y = each payment covers two years)',
-    '',
-    '| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |',
-    '|---|---|---|---|---|',
-    '| Example One | Check first: An exact-name app already exists \\| see \\[x\\](https:\\/\\/example.com) | '
-      + '.co $3.11, then $31.05/yr, 10x jump<br>.app $8.28/$14.49<br>.ai $160.02/$160.02 2y<br>taken: .com<br>check at shop: .dev | '
-      + '[exampleone.co](https://www.spaceship.com/domain-search/?query=exampleone.co) | '
-      + 'Google: not checked · [search](https://www.google.com/search?q=%22Example+One%22)<br>'
-      + 'App Store (iOS): not checked · [search](https://apps.apple.com/us/iphone/search?term=Example+One)<br>'
-      + 'Google Play (Android): not checked · [search](https://play.google.com/store/search?q=Example+One&c=apps&hl=en&gl=US) |',
-    '',
-    'Choose a favorite and ask for its exact quote.',
-  ].join('\n'));
+  assert.match(one.say, /Keep Example One\? Check first/);
+  assert.match(one.say, /exampleone\.co \$3\.11, then \$31\.05/);
+  assert.doesNotMatch(one.say, /\[x\]\(/);
+  assert.match(await readFile(new URL(one.resultPage), 'utf8'), /exampleone\.ai[\s\S]*?\$160\.02/);
   assert.match(errorText(responses, 6), /product description/);
 });
 
@@ -906,7 +881,7 @@ test('forwards per-name GEO from the client memory and rejects anything else', a
   assert.match(geo.description, /own knowledge only, without searching/);
   assert.match(triage.description, /David vs Goliath/);
   assert.match(triage.description, /small or dormant same-name uses are notes/);
-  assert.match(triage.description, /Fill geo for every name from your own memory/);
+  assert.match(triage.description, /Fill geo for each name from memory/);
   const pattern = new RegExp(geo.additionalProperties.pattern);
   for (const value of ['known: notes app', 'Known (notes app)', 'unknown']) assert.ok(pattern.test(value), value);
   for (const value of ['known', 'maybe', 'unknown brand']) assert.ok(!pattern.test(value), value);
@@ -1051,7 +1026,7 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
       const responses = await runServer([fileURLToPath(entry)],
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
       assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
-      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find']);
+      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
   } finally {

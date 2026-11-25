@@ -334,7 +334,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   let priceListDate;
   let best;
   for (const { name, results } of groups) {
-    const taken = [], resale = [], free = [], shop_check = [], likelyFree = [], likelyTaken = [];
+    const taken = [], resale = [], free = [], shop_check = [], reserved = [], likelyFree = [], likelyTaken = [];
     for (const row of results) {
       checkedEndings.add(row.tld);
       const d = row.exact ? row.tld : row.domain;
@@ -368,6 +368,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       }
       if (row.status === 'reserved') {
         shop_check.push(d);
+        reserved.push(d);
         shopCheckWhy[row.domain] = String(row.registryReason ?? 'Not offered for registration').slice(0, 80);
         continue;
       }
@@ -399,6 +400,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
     const unicode = unicodeName(name);
     byName.set(name, { name, ...(unicode && { unicode }), ...(taken.length && { taken }), ...(resale.length && { resale }),
       ...(free.length && { free }), ...(shop_check.length && { shop_check }),
+      ...(reserved.length && { reserved }),
       // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
       ...(likelyFree.length && { likely_free: likelyFree }), ...(likelyTaken.length && { likely_taken: likelyTaken }) });
   }
@@ -511,13 +513,18 @@ export async function agentResult(input, options = {}) {
     complete = false;
   }
   const apply = row => quotes.has(row.domain) ? mergeQuote(row, quotes.get(row.domain)) : row;
-  const rankedGroups = fast.groups.map(({ name, results }) => ({ name, results: rankName(results.map(apply)) }));
+  const rankedGroups = fast.groups.map(group => ({ ...group, results: rankName(group.results.map(apply)) }));
   const checkedAt = options.now?.toISOString() ?? new Date().toISOString();
   // An exact .com gets the standard list prices of the other endings as one benchmark line, with no extra lookups.
   const exactCom = names.length === 1 && names[0].endsWith('.com') ? names[0] : null;
   const otherEndings = exactCom ? await endingBenchmarks(exactCom, options) : null;
-  return compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
+  const result = compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
     options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings });
+  if (options.receipt) result.receiptDetails = rankedGroups.map(({ results, sites }) => ({ endings: results.map(row => ({
+    domain: row.domain, source: row.source, checkedAt: row.checkedAt, priceAt: row.priceCheckedAt,
+    shop: row.shop, checkout: row.buyUrl, site: sites?.[row.tld], risk: row.premium === 'risk' || row.premiumRisk,
+  })) }));
+  return result;
 }
 
 // The cheapest standard list price of each other ending for this label, from the saved or bundled price list.
@@ -629,6 +636,7 @@ function lookupArgs(args) {
     else if (arg === '--eligible' && !options.eligible) options.eligible = (args[++index] ?? '').split(',');
     else if (arg === '--category' && !options.category) options.category = (args[++index] ?? '').slice(0, 100);
     else if (arg === '--compact') options.compact = true;
+    else if (arg === '--receipt') options.receipt = true;
     // The headless browser shop check runs only on this explicit flag.
     else if (arg === '--confirm') options.browser = true;
     else if (arg === '--geo' && options.geo === undefined) options.geo = readGeo(args[++index]);

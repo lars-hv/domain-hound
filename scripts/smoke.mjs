@@ -10,7 +10,7 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain'];
 const endings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no'];
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
@@ -61,7 +61,8 @@ async function smokeMcp(label, command, args, options) {
     for (const ending of endings) {
       assert.ok(batch.listPrices?.[ending]?.now > 0, 'First call has no list price for .' + ending);
     }
-    assert.ok(batch.display.includes('list prices from ' + batch.priceListDate), 'First call display has no price date');
+    const receipt = await readFile(new URL(batch.resultPage), 'utf8');
+    assert.ok(receipt.includes('Price checked ' + batch.priceListDate), 'First receipt has no price date');
 
     const lookupStarted = performance.now();
     const result = await request(4, 'tools/call', { name: 'check_domains', arguments: { query } });
@@ -71,9 +72,10 @@ async function smokeMcp(label, command, args, options) {
     assert.deepEqual(result.content, [{ type: 'text', text: display }]);
     assert.equal(names[0].name, query);
     assert.ok(display.includes(query));
-    assert.match(display, /Check at shop[^\n]*\]\(https:\/\//i);
-    assert.equal(display.split('\n').at(-1), 'via domainhound.dev');
-    assert.equal(display.match(/via domainhound\.dev/g)?.length, 1);
+    assert.equal(display, result.structuredContent.say);
+    assert.match(display.split('\n').at(-1), /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/);
+    const html = await readFile(new URL(result.structuredContent.resultPage), 'utf8');
+    assert.ok(endings.every(ending => html.includes(query + '.' + ending)));
 
     child.stdin.end();
     assert.equal((await replies.next()).done, true, 'Unexpected stdout after last response');
@@ -93,7 +95,8 @@ const temp = await mkdtemp(join(scratch, 'smoke-'));
 try {
   // Every run starts with its own empty npm and lookup caches, like a fresh install.
   const freshEnv = name => ({ ...process.env, npm_config_cache: join(temp, name, 'npm-cache'),
-    XDG_CACHE_HOME: join(temp, name, 'lookup-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, name, 'lookup-cache') });
+    XDG_CACHE_HOME: join(temp, name, 'lookup-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, name, 'lookup-cache'),
+    DOMAIN_HOUND_RESULTS_DIR: join(temp, name, 'results'), DOMAIN_HOUND_OPEN: 'off' });
   const direct = await exec(process.execPath, [join(root, 'clis/domain-check/index.mjs'), '--agent', query],
     { cwd: temp, env: freshEnv('cli'), timeout: 20_000 });
   const capability = JSON.parse(direct.stdout);

@@ -341,14 +341,14 @@ test('fixtures: Notion is a Goliath, RouteMender AI stays clear with a note, Oak
   // A same-name business with no visible traction never lowers the verdict.
   assert.equal(routemender.verdict, 'No conflict found');
   assert.equal(routemender.google.result, 'crowded');
-  assert.equal(routemender.reason, 'No close US mark, app or site overlap · Small same-name use: RouteMender AI (no visible traction)'
+  assert.equal(routemender.reason, 'No US mark, same-name app or active company found in the sources checked · Small same-name use: RouteMender AI (no visible traction)'
     + ' · Dormant: routemender.com (parked)');
   assert.equal(routemender.traction, undefined);
   assert.ok(report.top.some(row => row.name === 'RouteMender'));
 
   assert.equal(oakenroom.verdict, 'Check first');
   assert.match(oakenroom.reason, /^Same-name use with some traction: OakenRoom at oakenroom\.com \(domain since 2012\)/);
-  assert.deepEqual(oakenroom.traction, { rival: 'OakenRoom at oakenroom.com', level: 'some', signals: ['domain since 2012'],
+  assert.deepEqual(oakenroom.traction, { rival: 'OakenRoom at oakenroom.com', level: 'some', domain: 'oakenroom.com', signals: ['domain since 2012'],
     geo: 'stand-in Wikipedia/Wikidata: none' });
   assert.ok(Buffer.byteLength(JSON.stringify(report)) <= 7200);
 
@@ -372,6 +372,21 @@ test('fixtures: Notion is a Goliath, RouteMender AI stays clear with a note, Oak
   assert.equal(withGeo.names[1].verdict, 'No conflict found');
   assert.deepEqual(withGeo.names[1].traction, { geo: 'agent: unknown' });
   assert.ok(Buffer.byteLength(JSON.stringify(withGeo)) < 6000);
+});
+
+test('an exact active Norwegian company changes a clear verdict without misstating its website', async t => {
+  const { options } = await setUp(t);
+  const fetcher = async (value, init) => {
+    if (new URL(value).hostname !== 'data.brreg.no') return options.fetcher(value, init);
+    return Response.json({ page: { totalPages: 1 }, _embedded: { enheter: [{
+      navn: 'RouteMender AS', organisasjonsnummer: '123456789', antallAnsatte: 215,
+    }] } });
+  };
+  const report = await triageNames(['RouteMender'], { ...options, fetcher, receipt: true });
+  const [row] = report.names;
+  assert.equal(row.verdict, 'Check first');
+  assert.match(row.reason, /RouteMender AS is an active same-name company with 215 employees/);
+  assert.equal(report.receiptDetails[0].competition.sameName.Norway[0].employees, 215);
 });
 
 test('without the Tranco list or Common Crawl, a live same-name site keeps the earlier check instead of reading as zero', async t => {

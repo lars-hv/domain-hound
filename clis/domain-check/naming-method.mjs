@@ -15,7 +15,7 @@ export const geoInstruction = 'GEO (presence in AI answers): for each name, answ
 export const namingRecipe = (about = '') => 'Naming recipe (intermediate). Use the final triage display.\n'
   + (about ? '1. Brief: ' + about.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim()
     + '.\n' : '1. Brief: product, audience and preferences.\n')
-  + '2. Generate about 30 words. Pair one with a familiar animal or object. Avoid category-generic names.\n'
+  + '2. Generate about 30 words. Pair one with a familiar animal or object. Default to English unless the person asked for another language. Avoid category-generic names.\n'
   + '3. Check: call check_domains ONCE with seven bare names and shortlist: true (Quiet Otter → quietotter). No spaces or dots.\n'
-  + '4. Triage: call triage_names ONCE on only the best FIVE with free endings, a short about and geo from memory. Follow its Google search instructions.\n'
-  + '5. Answer: ' + showAsIs + ' Keep all five candidates and let the person choose.';
+  + '4. Triage: call triage_names ONCE on the best FIVE with free endings, a short about and geo from memory. Pass the same endings and budget to both calls.\n'
+  + '5. Answer: Relay say as written. Let the person choose from the complete local results page.';

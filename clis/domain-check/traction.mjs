@@ -348,6 +348,7 @@ export function collectRivals({ name, input = name, sites = {}, entities, topics
       owner.wikipedia ??= rival.wikipedia;
       owner.apps.push(...rival.apps);
       owner.description ??= rival.description;
+      owner.website ??= rival.website;
       if (rival.sources.includes('wikidata') && !owner.sources.includes('wikidata-name')) {
         owner.name = rival.name;
         owner.sources.push('wikidata-name');
@@ -371,7 +372,9 @@ export function collectRivals({ name, input = name, sites = {}, entities, topics
     // A site that redirects to another home of the same name (notion.ai to notion.com) joins that rival.
     const final = site.state === 'live' && site.host ? siteDomain(site.host) : null;
     add(base(head?.head ?? domain, 'site', {
-      domains: [domain, ...(final && final !== domain && ownsName(name, final) ? [final] : [])], refs: [domain], site: { domain, state: site.state, copyright: site.copyright, lastModified: site.lastModified },
+      domains: [domain, ...(final && final !== domain && ownsName(name, final) ? [final] : [])], refs: [domain],
+      website: final ?? (site.state === 'live' ? domain : undefined),
+      site: { domain, state: site.state, copyright: site.copyright, lastModified: site.lastModified },
       description: compactText([site.title, site.description].filter(Boolean).join(' '), 200) || undefined,
       sameBusiness: site.state === 'live' && sameBusiness([site.title, site.description].join(' ')),
     }));
@@ -380,7 +383,7 @@ export function collectRivals({ name, input = name, sites = {}, entities, topics
     if (!entity?.brand || letters(entity.name) !== letters(name)) continue;
     const homes = (entity.website ?? []).map(siteDomain).filter(domain => domain && ownsName(name, domain));
     add(base(entity.name, 'wikidata', {
-      domains: [...new Set(homes)], refs: [entity], description: entity.description || undefined,
+      domains: [...new Set(homes)], website: homes[0], refs: [entity], description: entity.description || undefined,
       wikipedia: entity.wikipedia ?? null, sitelinks: entity.sitelinks ?? 0,
       sameBusiness: sameBusiness(entity.name + ' ' + (entity.description ?? '')),
     }));
@@ -481,7 +484,7 @@ export function assessRival(rival, evidence = new Map(), { now = Date.now(), ans
   if (best.age && yearsSince(best.age.date, now) >= T.some.domainYears) {
     signals.push(signal('domain since ' + best.age.date.slice(0, 4), 'some', 0.3));
   }
-  const home = best.tranco?.domain ?? best.crawl?.domain ?? best.age?.domain ?? rival.domains[0];
+  const home = rival.website ?? (rival.site?.state === 'live' ? rival.site.domain : null);
   if (rival.wikipedia && T.strong.wikipediaArticle) signals.push(signal('Wikipedia article', 'strong', 0.9));
   for (const app of rival.apps) {
     if (!Number.isSafeInteger(app.ratings)) continue;
@@ -590,7 +593,7 @@ export function tractionSummary(judged) {
   if (!main || level[main.level] < 1) return judged.agent ? { geo } : null;
   return {
     rival: rivalLabel(main), level: main.level, ...(main.rival.sameBusiness && { sameBusiness: true }),
-    signals: main.signals.slice(0, 2).map(item => item.text), geo,
+    ...(main.home && { domain: main.home }), signals: main.signals.slice(0, 2).map(item => item.text), geo,
   };
 }
 

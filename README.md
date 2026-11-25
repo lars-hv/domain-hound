@@ -44,10 +44,15 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 - `check_domains` checks one name or exact domain, or up to 20 at once. A bare name checks ten endings. The first lookup on a fresh install shows the list prices bundled with the package, labelled with their date, while the local price list refreshes in the background.
 - `triage_names` screens names against public domain, trademark, app, company, and handle data.
 - `naming_method` gives your assistant a recipe for generating and screening new names.
+- `watch_domain` checks the registry, expiry and website. To start a free watch, give your assistant the email it should use. Confirm the watch in your inbox. Optional news requires a separate choice in that confirmation.
+
+Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. On macOS, naming and batch results open in the background. Windows and Wayland request a background open where the desktop supports it. Exact checks and watch results stay in chat with a file link. Set `DOMAIN_HOUND_OPEN=off` on the MCP server to keep every page closed.
 
 ## Privacy
 
-The server has no Domain Hound account or hosted backend. Lookups send the relevant name or domain to public sources. Domain searches use IANA and registry RDAP/WHOIS, public DNS, and public registrar pricing. When configured, the client sends selected domains to the Spaceship or Dynadot API for a quote. The optional browser check opens a registrar’s public search page. Name screening may also query the USPTO, Apple App Store, Google Play, Google Search and Trends, Wikidata, public company and package registries, social platforms, Tranco, Common Crawl, and candidate websites. If you configure a search provider via environment variables, queries can also go to Brave Search or Serper. Results may be cached locally.
+Lookups need no Domain Hound account. They send the relevant name or domain to public sources. Domain searches use IANA and registry RDAP/WHOIS, public DNS, and public registrar pricing. When configured, the client sends selected domains to the Spaceship or Dynadot API for a quote. The optional browser check opens a registrar’s public search page. Name screening may also query the USPTO, Apple App Store, Google Play, Google Search and Trends, Wikidata, public company and package registries, social platforms, Tranco, Common Crawl, and candidate websites. If you configure a search provider via environment variables, queries can also go to Brave Search or Serper. Results may be cached locally.
+
+Submitting a watch sends the domain, supplied email, optional name and news choice to the Domain Hound watch service. An agent’s yes highlights the news choice. The confirmation click records whether you want it. Result pages omit your supplied email and name.
 
 ## Daily checks
 

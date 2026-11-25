@@ -228,20 +228,38 @@ export async function searchCandidates(groups, options = {}) {
   const sites = new Map();
   const siteEndings = options.siteEndings ?? (options.skipComSite ? [] : ['com']);
   const lookedUp = new Map();
+  const checks = [];
   let catalog = null;
   let timer;
   let complete = false;
   const onResult = ({ domain, tld, exact }, registry) => {
     if (timeLeft() <= 0) return;
-    lookedUp.set(domain, registry);
-    const status = registrationStatus(registry);
-    options.onProgress?.({ domain, status: status === 'probably-free' && premiumRisk(domain) ? 'premium' : status });
-    if (registry.status !== 'taken' || !exact || !siteEndings.includes(tld)) return;
+    const publish = (result) => {
+      lookedUp.set(domain, result);
+      const status = registrationStatus(result);
+      options.onProgress?.({ domain, status: status === 'probably-free' && premiumRisk(domain) ? 'premium' : status });
+    };
+    // A negative registry answer can be wrong. A real response on the domain beats a free claim.
+    // Replay and unit callers that inject registry traffic can inject the site check as well.
+    const checkNegative = registry.status === 'free' && tld === 'com'
+      && (options.fetcher === undefined || options.verifyFreeSite);
+    const checkTaken = registry.status === 'taken' && exact && siteEndings.includes(tld);
+    if (!checkNegative) publish(registry);
+    if (!checkNegative && !checkTaken) return;
     const timeout = Math.min(options.siteTimeout ?? 1200, timeLeft());
-    sites.set(domain, { pending: (options.comSite ?? checkDomainSite)(domain, timeout, options.siteDetails).then(site => {
+    const visit = checkNegative ? options.verifyFreeSite ?? options.comSite ?? checkDomainSite
+      : options.comSite ?? checkDomainSite;
+    const pending = Promise.resolve().then(() => visit(domain, timeout, options.siteDetails || checkNegative)).then(site => {
       sites.get(domain).result = site;
       options.onSite?.(domain, site);
-    }).catch(() => {}) });
+      if (checkNegative) {
+        publish(['live', 'parked', 'for-sale'].includes(site?.state)
+          ? { status: 'taken', source: 'web', checkedAt: registry.checkedAt, forSale: site.state === 'for-sale' }
+          : registry);
+      }
+    }, () => { if (checkNegative) publish(registry); });
+    sites.set(domain, { pending });
+    checks.push(pending);
   };
   const loadCatalog = options.cachedOnly ? loadCachedCatalog(options.directory)
     : getNameCatalog({ ...options, now, coldWaitMs: bundled ? 0 : Math.min(1900, budgetMs) });
@@ -249,7 +267,7 @@ export async function searchCandidates(groups, options = {}) {
     lookupRegistrations([...candidates.values()], { ...options, now, timeLeft, onResult }),
     loadCatalog.then(value => { catalog = value; }),
   ]).then(async () => {
-    await Promise.all([...sites.values()].map(site => site.pending));
+    await Promise.all(checks);
     complete = lookedUp.size === candidates.size;
   });
   try {
