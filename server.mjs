@@ -1,27 +1,31 @@
 import { geoInstruction, googleSearchInstruction, namingRecipe, showAsIs } from './clis/domain-check/naming-method.mjs';
-import { normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
-import { execFile } from 'node:child_process';
+import { defaultEndings, normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
-import { attributed, checkText, errorText, triageText } from './display.mjs';
+import { progressPrefix } from './clis/domain-check/progress.mjs';
+import { attributed, checkText, errorText, progressText, triageText } from './display.mjs';
 
-const runFile = promisify(execFile);
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
 // One version for the server, package and manifests; the release workflow checks the tag against it.
 const serverVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
-const timeoutMs = 14_950;
-const timeoutMessage = 'Domain Hound timed out after 15 seconds.';
+// Each call answers within this budget, leaving a second under the clients' 15-second limit for formatting and
+// transport. A lookup that needs longer keeps running, and a repeated call with the same input collects it.
+const timeoutMs = 14_000;
+// A lookup still running after this long is stopped.
+const maxLookupMs = 120_000;
+// A finished lookup whose caller already had a progress answer waits this long for the repeated call.
+const keepFinishedMs = 120_000;
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 
 const entryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.(?:[A-Za-z]{2,63}|[xX][nN]--[A-Za-z0-9](?:[A-Za-z0-9-]{0,57}[A-Za-z0-9])?))?$/;
 const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entryPattern.source };
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: 10, uniqueItems: true,
-  items: { type: 'string', enum: ['com', 'dev', 'app', 'me', 'si', 'co', 'io', 'no', 'so', 'ai'] },
-  description: 'Optional filter. All ten endings, including .ai, are checked by default.',
+  items: { type: 'string', enum: defaultEndings },
+  description: 'Optional preferences in display order. Bare names always check and show all ten default endings, including .ai. Omit when no preference was given.',
 };
 const lookupProperties = {
   ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
@@ -31,10 +35,12 @@ const lookupProperties = {
 };
 const checkTool = {
   name: 'check_domains',
-  description: 'Use Domain Hound to check domains. Two input forms: query for one name or exact domain, e.g. {"query":"oakenroom.me"} or {"query":"oakenroom"}; names for a batch of up to 20 bare names, exact domains or both, e.g. {"names":["oakenroom","quietbook","oakenroom.me"]}. A dot means an exact domain; a bare name checks all ten endings, including .ai. For a single exact-domain question, call once with query and answer from that result. For a list, make one names call and report the results as returned. An unconfirmed result is enough for an availability answer. An exact quote for a favorite is a separate request. '
-    + 'Returns display (ready-to-copy Markdown that accounts for every requested name), then complete, shared checkedAt and priceListDate, optional best (confirmed, with buyUrl), and per name taken, resale, free (cheapest first) and shop_check. Read first payment, minimum term and renewal inline or in listPrices keyed by ending; shopCheckWhy gives the reason an ending needs a shop check. The legend and shop buyUrlTemplate values explain the fields and links. '
-    + showAsIs + ' For an exact lookup, copy the entire display including the purchase line. If asked to buy or register, explicitly say you cannot buy domains or complete checkout, including when the domain is taken. Give the price and checkout link only when an offer exists. If a domain is taken, say it is taken. Suggest free endings already in that result. Look up alternatives only if the person asks for alternatives. '
-    + 'Returns every option; let the person choose. Never buys. For naming help, call naming_method first when generating new names. Use triage_names alone to screen an existing name for conflicts. When shortlist is true, pass a single DNS label per name (Quiet Otter becomes quietotter).',
+  description: showAsIs + ' '
+    + 'For any request to buy or register, pass purchase: true and explicitly say “Domain Hound cannot buy or complete checkout,” even when the domain is taken. '
+    + 'Input: query for one name or exact domain ({"query":"oakenroom.me"}), or names for 1 to 20 names in one call ({"names":["oakenroom","oakenroom.me"]}). A bare name checks ten endings, including .ai. '
+    + 'For a batch, make one call and report check-at-shop endings as returned. Recheck only when the person asks. '
+    + 'Set confirm true only when the person asks for a live shop check (slower). '
+    + 'Prices are list prices unless marked confirmed at a shop; premium names show the shop price or "premium, price at shop". Look up alternatives only if asked. For new names, call naming_method first; to screen an existing name, use triage_names. With shortlist true, pass one DNS label per name (Quiet Otter becomes quietotter).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -45,6 +51,8 @@ const checkTool = {
         items: nameSchema,
         description: '1 to 20 bare names, exact domains or both, e.g. ["oakenroom","quietbook","oakenroom.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
       shortlist: { type: 'boolean', description: 'Use true for the preliminary bare-name batch specified by naming_method.' },
+      purchase: { type: 'boolean', description: 'Pass true when asked to buy or register, even for an exact domain that may be taken. State the checkout limitation from the display in the answer.' },
+      confirm: { type: 'boolean', description: 'True only when the person explicitly asks for a live shop check. Uses an optional headless browser and is slower.' },
     },
     additionalProperties: false,
     oneOf: [{ required: ['query'] }, { required: ['names'] }],
@@ -52,21 +60,21 @@ const checkTool = {
 };
 
 const legacyTool = { ...checkTool, name: 'broker_find',
-  description: 'Legacy alias for the Domain Hound check_domains tool. Same input forms: {"query":"oakenroom.me"} or {"names":["oakenroom","oakenroom.me"]}. ' + showAsIs + ' Returns every option; let the person choose.' };
+  description: showAsIs + ' Legacy alias for Domain Hound check_domains, same input. Never buys.' };
 
 const triageTool = {
   name: 'triage_names',
-  description: 'If asked whether an existing name is safe, call Domain Hound triage_names directly once with that bare name. Use this tool to screen 1 to 20 product names, e.g. {"names":["Quiet Otter","Hush Room"],"about":"book quiet meeting rooms"}. Checks same-name competitors, live US marks, iOS and Android apps, handles, memorability and every domain ending, including .ai. '
-    + 'Returns top (up to three ranked names), sources (coverage) and display (ready-to-copy Markdown with the top picks first and one row per name with its verdict and reason exactly, every free ending with today\'s payment and renewal, and a checkout link for the cheapest), then per name verdict, reason, free (endings free at the registry, cheapest first), own (this name\'s prices where they differ), taken, shop_check, buy (checkout link for the cheapest free ending) and competition evidence; prices holds the standard price per ending (now = payment today for term years, renew = renewal). '
-    + 'Show the cheapest eligible one-year price in each candidate row. Restricted endings such as .no remain listed with their eligibility note and are excluded from cheapest and Best value unless the buyer qualifies. Best value requires a known renewal at most twice the first payment. '
-    + 'Verdicts weigh each same-name rival by its SEO and GEO traction: a strong rival (David vs Goliath) or a same-business rival with traction means Avoid, another business with some traction means Check first, and small or dormant same-name uses are notes after the reason that never lower the verdict. '
-    + 'Fill geo for every name from your own memory before calling. ' + googleSearchInstruction + ' Copy the full display in the answer. Update only the Google result. Keep the verdict, reason, same-name notes, and each source on its own line with its direct link. Keep the cheapest eligible payment in every row even when prices match. Use the exact labels Google, App Store (iOS), and Google Play (Android). Do not omit or paraphrase rows. In a dense batch, account for every name in the structured results. Let the person choose.',
+  description: showAsIs + ' '
+    + 'Use to screen 1 to 20 product names, or once with a bare name when asked whether an existing name is safe: {"names":["Quiet Otter","Hush Room"],"about":"book quiet meeting rooms"}. Checks same-name rivals and their traction, live US marks, iOS and Android apps, handles and every domain ending, including .ai. '
+    + 'Verdicts weigh each same-name rival by its traction: a strong rival (David vs Goliath) or a same-business rival with traction means Avoid; small or dormant same-name uses are notes that never lower the verdict. '
+    + 'Fill geo for every name from your own memory before calling. ' + googleSearchInstruction + ' Let the person choose.',
   inputSchema: {
     type: 'object',
     properties: {
       ...lookupProperties,
       names: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 },
         description: '1 to 20 bare names without endings, e.g. ["Quiet Otter","Hush Room"].' },
+      purchase: { type: 'boolean', description: 'True when the person asks to buy or register a domain.' },
       category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for relevant trademark classes and competitors. Use travel, software, finance, retail, health, education, food or media.' },
       about: { type: 'string', minLength: 1, maxLength: 160, description: 'A short description of what your product does, to identify overlapping sites and apps.' },
       geo: { type: 'object', maxProperties: 20,
@@ -80,16 +88,19 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_method',
-  description: 'Get the Domain Hound naming recipe when asked to generate new product name ideas. For an existing name, use triage_names directly. Start with the final triage display; the recipe and the name batch are intermediate. '
-    + googleSearchInstruction,
+  description: 'Get the Domain Hound naming recipe for new names. For an existing name, use triage_names. The recipe and preliminary check are intermediate. For the final triage result, copy the tool display as written.',
   inputSchema: { type: 'object', properties: {
-    about: { type: 'string', minLength: 1, maxLength: 160, description: 'An optional brief product description.' },
+    about: { type: 'string', minLength: 1, maxLength: 512, description: 'An optional one-sentence product description.' },
   }, additionalProperties: false },
 };
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const textResult = (text, isError = false) => ({ content: [{ type: 'text', text }], isError });
-const errorResult = message => textResult(errorText(message), true);
+// The person sees one text block: the display. The structured result repeats the display first, then the fields.
+function toolResult(json, isError = false) {
+  const structured = JSON.parse(json);
+  return { content: [{ type: 'text', text: structured.display }], structuredContent: structured, isError };
+}
+const errorResult = message => toolResult(errorText(message), true);
 
 const showValue = value => JSON.stringify(String(value).slice(0, 40));
 
@@ -129,13 +140,17 @@ function lookupFlags(args) {
   }
   if (Object.hasOwn(args, 'ai') && typeof args.ai !== 'boolean') throw new Error('ai must be a boolean.');
   if (args.ai) flags.push('--ai');
+  for (const flag of ['purchase', 'confirm']) {
+    if (Object.hasOwn(args, flag) && typeof args[flag] !== 'boolean') throw new Error(flag + ' must be a boolean.');
+  }
+  // The headless browser runs only on this explicit request.
+  if (args.confirm === true) flags.push('--confirm');
   if (Object.hasOwn(args, 'endings')) {
     const endings = args.endings;
     if (!Array.isArray(endings) || endings.length < 1 || endings.length > 10 ||
         new Set(endings).size !== endings.length || endings.some(ending => !endingsSchema.items.enum.includes(ending))) {
       throw new Error('Choose supported domain endings.');
     }
-    flags.push('--endings', endings.join(','));
   }
   return flags;
 }
@@ -156,6 +171,25 @@ function cliArguments(args) {
   }
   if (hasQuery) return ['--agent', queryValue(args.query), ...flags];
   return ['--agent', '--names', names.join(','), ...flags];
+}
+
+// The rows a progress answer lists, in input order: a bare name with every requested ending, an exact domain as itself.
+function checkRows(args) {
+  const names = Object.hasOwn(args, 'query') ? [queryValue(args.query)] : batchNames(args.names);
+  const endings = [...new Set([...(args.endings ?? []), ...defaultEndings])];
+  return [...new Set(names)].map(name => name.includes('.')
+    ? { name, domains: [name] } : { name, domains: endings.map(ending => name + '.' + ending) });
+}
+
+function triageRows(args) {
+  const endings = [...new Set([...(args.endings ?? []), ...defaultEndings])];
+  const seen = new Set();
+  return args.names.flatMap(name => {
+    const label = normalizeName(name);
+    if (!label || seen.has(label)) return [];
+    seen.add(label);
+    return [{ name: name.trim(), domains: endings.map(ending => label + '.' + ending) }];
+  });
 }
 
 // GEO is the client's own recollection per name: "known: <what it is>" or "unknown", never a search result.
@@ -198,17 +232,11 @@ function triageArguments(args) {
   return ['--triage', args.names.join(','), '--compact', ...flags];
 }
 
-async function runBroker(args, cwd, timeout) {
-  let stdout;
-  let failed = false;
-  try {
-    ({ stdout } = await runFile(process.execPath, ['index.mjs', ...args], {
-      cwd, timeout, killSignal: 'SIGKILL',
-    }));
-  } catch (error) {
-    if (error.killed) throw new Error(timeoutMessage);
-    failed = true;
-    stdout = error.stdout;
+// The capability prints one JSON object on stdout.
+function parseOutput(stdout, failed, stoppedAfter) {
+  if (stoppedAfter) {
+    const seconds = Math.max(1, Math.round(stoppedAfter / 1000));
+    throw new Error('Domain Hound stopped the lookup after ' + seconds + (seconds === 1 ? ' second.' : ' seconds.'));
   }
   let data;
   try {
@@ -225,24 +253,122 @@ async function runBroker(args, cwd, timeout) {
   return data;
 }
 
-async function runLookup(args, cwd, timeout, buildArgs, render) {
-  let data;
-  try {
-    data = await runBroker(buildArgs(args), cwd, timeout);
-  } catch (error) {
-    return errorResult(error.message);
+// Progress events from the capability: each registry answer and its current stage.
+function readProgress(progress, line) {
+  if (!line.startsWith(progressPrefix)) return;
+  let event;
+  try { event = JSON.parse(line.slice(progressPrefix.length)); } catch { return; }
+  if (!isObject(event)) return;
+  if (typeof event.domain === 'string' && typeof event.status === 'string' && progress.answers.size < 1000) {
+    progress.answers.set(event.domain.slice(0, 127), event.status.slice(0, 20));
   }
-  try {
-    return textResult(render(data));
-  } catch {
-    return errorResult('Domain Hound could not format the result.');
-  }
+  if (typeof event.stage === 'string') progress.stage = event.stage.slice(0, 20);
 }
 
-export async function serve({ input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs } = {}) {
+// Start one capability run. It ends on its own; only the maximum lookup time or server shutdown stops it.
+function startLookup(args, cwd, maxMs) {
+  const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false,
+    collect: false, outcome: null };
+  const child = spawn(process.execPath, ['index.mjs', ...args], {
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOMAIN_HOUND_PROGRESS: '1' },
+  });
+  lookup.child = child;
+  const chunks = [];
+  let size = 0;
+  child.stdout.on('data', chunk => {
+    size += chunk.length;
+    if (size <= 4_000_000) chunks.push(chunk);
+  });
+  createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', line => readProgress(lookup.progress, line));
+  let stopped = false;
+  const limit = setTimeout(() => {
+    stopped = true;
+    child.kill('SIGKILL');
+  }, maxMs);
+  lookup.done = new Promise(resolve => {
+    let settled = false;
+    const finish = failed => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(limit);
+      try {
+        lookup.outcome = { data: parseOutput(Buffer.concat(chunks).toString('utf8'), failed, stopped && maxMs) };
+      } catch (problem) {
+        lookup.outcome = { error: problem.message };
+      }
+      lookup.finished = true;
+      resolve();
+    };
+    child.once('error', () => finish(true));
+    child.once('close', code => finish(code !== 0));
+  });
+  return lookup;
+}
+
+// Wait for the lookup while this call's budget lasts. The lookup itself keeps running either way.
+async function within(lookup, budget) {
+  let timer;
+  const finished = await Promise.race([
+    lookup.done.then(() => true),
+    new Promise(resolve => { timer = setTimeout(() => resolve(false), Math.max(0, budget)); }),
+  ]);
+  clearTimeout(timer);
+  return finished;
+}
+
+export async function serve({
+  input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
+} = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
   const pending = new Set();
+  const lookups = new Map();
+
+  // Join the running or finished lookup for the same input, or start one. Answer within the budget with the
+  // result, or with the progress so far while the lookup keeps running for a repeated call to collect.
+  async function runLookup(args, buildArgs, rowsFor, render, renderProgress) {
+    const started = performance.now();
+    let cliArgs;
+    let rows;
+    try {
+      cliArgs = buildArgs(args);
+      rows = rowsFor(args);
+    } catch (problem) {
+      return errorResult(problem.message);
+    }
+    const key = JSON.stringify(cliArgs);
+    let lookup = lookups.get(key);
+    if (!lookup) {
+      lookup = startLookup(cliArgs, cwd, maxLookup);
+      lookups.set(key, lookup);
+      lookup.done.then(() => {
+        if (lookups.get(key) !== lookup) return;
+        // A result nobody was told to collect is delivered by the calls already waiting on it.
+        if (!lookup.collect) {
+          lookups.delete(key);
+          return;
+        }
+        setTimeout(() => { if (lookups.get(key) === lookup) lookups.delete(key); }, keepFinishedMs).unref();
+      });
+    }
+    if (!await within(lookup, timeout - (performance.now() - started))) {
+      lookup.collect = true;
+      try {
+        return toolResult(renderProgress(lookup.progress, {
+          rows, elapsedMs: performance.now() - lookup.started, budgetMs: timeout }));
+      } catch {
+        return errorResult('Domain Hound could not format the progress.');
+      }
+    }
+    // The repeated call collected the finished result; the next call starts a fresh lookup.
+    if (lookups.get(key) === lookup) lookups.delete(key);
+    if (lookup.outcome.error) return errorResult(lookup.outcome.error);
+    try {
+      return toolResult(render(lookup.outcome.data));
+    } catch {
+      return errorResult('Domain Hound could not format the result.');
+    }
+  }
   let shortlist;
   let initialized = false;
   let negotiated = false;
@@ -282,21 +408,26 @@ export async function serve({ input = process.stdin, output = process.stdout, cw
     const { name, arguments: args } = params ?? {};
     if (name === namingTool.name) {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
-        (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() || args.about.length > 160)))) {
-        return reply(errorResult('naming_method accepts only an optional about description of up to 160 characters.'));
+        (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() ||
+          args.about.length > namingTool.inputSchema.properties.about.maxLength)))) {
+        return reply(errorResult('naming_method accepts an optional about description of up to 512 characters.'));
       }
       shortlist = undefined;
-      return reply(textResult(JSON.stringify({ display: attributed(namingRecipe(args?.about)) })));
+      return reply(toolResult(JSON.stringify({ display: attributed(namingRecipe(args?.about?.slice(0, 160))) })));
     }
+    const purchase = isObject(args) && args.purchase === true;
     if (name === triageTool.name) {
       const prior = shortlist && Date.now() - shortlist.at < 120_000 ? shortlist.data : undefined;
-      return reply(await runLookup(args, cwd, timeout, triageArguments, data => triageText(data, prior)));
+      return reply(await runLookup(args, triageArguments, triageRows, data => triageText(data, prior, { purchase, preferred: args.endings }),
+        (progress, timing) => progressText(progress, { ...timing, triage: true, purchase })));
     }
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
-    return reply(await runLookup(args, cwd, timeout, cliArguments, data => {
+    // An exact lookup includes the purchase line while its registration status is unsettled.
+    const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
+    return reply(await runLookup(args, cliArguments, checkRows, data => {
       if (args.shortlist) shortlist = { at: Date.now(), data };
-      return checkText(data, args.shortlist);
-    }));
+      return checkText(data, args.shortlist, { purchase, preferred: args.endings });
+    }, (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact })));
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });
@@ -305,6 +436,9 @@ export async function serve({ input = process.stdin, output = process.stdout, cw
     pending.add(response);
   }
   await Promise.all(pending);
+  // The client has gone, so nobody can collect a lookup that is still running.
+  for (const lookup of lookups.values()) if (!lookup.finished) lookup.child.kill('SIGKILL');
+  await Promise.all([...lookups.values()].map(lookup => lookup.done));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await serve();

@@ -2,17 +2,18 @@ import { execFile } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { confirmDomain, confirmingShops } from './confirm.mjs';
+import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { eligibilityNotes, mergeQuote, nameCandidates, normalizeName, pickName, rankName, registrationStatus,
-  searchCandidates, searchName, termCosts, validEligibility, validEndings } from './name-search.mjs';
+import { canRecommend, eligibilityNotes, mergeQuote, nameCandidates, normalizeName, pickName, rankName, registrationStatus,
+  searchCandidates, searchName, termCosts, validEligibility, validEndings, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
 import { lookupRegistrations } from './registry.mjs';
-import { namingRecipe } from './naming-method.mjs';
+import { namingRecipe, purchaseLine } from './naming-method.mjs';
+import { progressReporter } from './progress.mjs';
 import { namePresence, triageNames } from './triage.mjs';
 import { refreshTranco } from './traction.mjs';
 import {
-  catalogPrice, dynadotOffer, money, offer, porkbunOffer, rankedFirstYear, shops, shopSearchUrl, threeYearCost, transferStrategy, vatNorway,
+  catalogPrice, dynadotOffer, linkable, money, offer, porkbunOffer, rankedFirstYear, shops, shopSearchUrl, threeYearCost, transferStrategy, vatNorway,
 } from './prices.mjs';
 
 const runFile = promisify(execFile);
@@ -22,7 +23,7 @@ const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/5
 const porkbun = 'https://api.porkbun.com/api/json/v3/';
 const nokUrl = 'https://data.norges-bank.no/api/data/EXR/B.USD.NOK.SP?lastNObservations=1&format=sdmx-json';
 const shopHosts = new Set([
-  'spaceship.com', 'www.spaceship.com', 'porkbun.com', 'namecheap.com', 'www.namecheap.com',
+  'spaceship.com', 'www.spaceship.com', 'namecheap.com', 'www.namecheap.com',
   'dynadot.com', 'www.dynadot.com', 'domains.cloudflare.com', 'dash.cloudflare.com', 'www.cloudflare.com',
   'www.namesilo.com', 'shop.gandi.net', 'www.ionos.com', 'www.hover.com',
   'euipo.europa.eu', 'tmsearch.uspto.gov', 'www.godaddy.com', 'domains.squarespace.com', 'www.hostinger.com',
@@ -174,7 +175,7 @@ export async function checkDomain(input, {
   const tld = domain.split('.').at(-1);
   const deadline = performance.now() + totalTimeout;
   const timeout = () => Math.max(0, Math.min(maxTimeout, Math.floor(deadline - performance.now())));
-  const [registrations, catalog, pricing, dynadot, confirmed, nok] = await Promise.all([
+  const [registrations, catalog, pricing, dynadot, confirmed, nok, signals] = await Promise.all([
     lookupRegistrations([{ domain, tld }], { fetcher, directory, queryWhois, now,
       timeLeft: timeout, dnsFirst: false, readExpiry: true }),
     loadCachedCatalog(directory),
@@ -182,10 +183,37 @@ export async function checkDomain(input, {
     loadDynadot(tld, fetcher, timeout()),
     liveConfirmation(domain, env, fetcher, timeout()),
     loadNok(fetcher, timeout()),
+    cachedSignals([domain], { directory, now }),
   ]);
   const registry = registrations[0];
-  const verdict = confirmed ? 'confirmed' : registry.status;
+  const listFor = (_domain, shop) => datedListPrices(catalog, tld, now, bundled).find(row => row.id === shop) ?? null;
+  const shopQuote = registry.status === 'taken' ? null : signals.get(domain)
+    ?? (await lightConfirm([domain], { env, fetcher, directory, now, deadline: performance.now() + timeout(), listFor })).get(domain) ?? null;
+  // Porkbun's own quote above its list price, without a premium flag, may still be premium.
+  const porkbunList = pricing?.pricing?.[tld] ? catalogPrice(pricing.pricing[tld].registration) : null;
+  const porkbunPremium = confirmed && (confirmed.premium || (porkbunList != null && confirmed.price > porkbunList + 0.01));
+  const premium = registry.signal === 'premium' || shopQuote?.status === 'premium' || porkbunPremium;
+  const reserved = registry.signal === 'reserved' || shopQuote?.status === 'reserved';
+  const verdict = shopQuote?.status === 'taken' || registry.status === 'taken' ? 'taken'
+    : reserved ? 'reserved' : premium ? 'premium' : confirmed || shopQuote?.status === 'confirmed' ? 'confirmed' : registry.status;
   const offers = [];
+  if (verdict === 'premium' || verdict === 'reserved') {
+    // A premium or reserved name is never shown at list price.
+    const quoted = shopQuote?.price != null && shopQuote.status === 'premium' ? shopQuote : null;
+    const shopId = quoted?.shop ?? (tld === 'no' ? 'dynadot' : 'spaceship');
+    const best = quoted ? { ...offer(shopId, domain, { firstYear: quoted.price, regularFirstYear: quoted.price,
+      renewal: quoted.renewal, evidence: 'shop', source: 'api', checkedAt: quoted.checkedAt }),
+    premium: quoted.premium, label: 'confirmed at ' + shops[shopId].name + ' ' + quoteTime(quoted.checkedAt) } : null;
+    return {
+      domain, confirmShop: shopId, confirmShopName: shops[shopId].name, checkedAt: now.toISOString(), verdict, registry,
+      confirmed: confirmed ? { ...confirmed, ...(!confirmed.premium && { possible: true }) } : null,
+      ...(shopQuote && { shopQuote }), best, cheapestToday: null, offers: best ? [best] : [], stale: false,
+      priceDate: null, nok, vatNorway,
+      notes: [registry.reason, reserved ? 'Not offered for registration; check at the shop'
+        : best ? null : 'Premium, price at shop'].filter(Boolean),
+      buyUrl: shopSearchUrl(shopId, domain),
+    };
+  }
   if (verdict !== 'taken') {
     // Live shop prices replace a saved or bundled list price from the same shop.
     const priced = [...catalogOffers(catalog, tld, domain, datedListPrices(catalog, tld, now, bundled)),
@@ -195,6 +223,12 @@ export async function checkDomain(input, {
       const row = byShop.get(name) ?? offer(id, domain, {
         firstYear: null, regularFirstYear: null, renewal: null, checkedAt: null, source: null,
       });
+      if (shopQuote?.status === 'confirmed' && name === shopQuote.shopName) {
+        Object.assign(row, { firstYear: shopQuote.price, regularFirstYear: shopQuote.price, code: null, codeNote: null,
+          renewal: shopQuote.renewal, source: 'api', checkedAt: shopQuote.checkedAt,
+          label: 'confirmed at ' + name + ' ' + quoteTime(shopQuote.checkedAt) });
+        row.threeYear = threeYearCost(row);
+      }
       if (name === confirmed?.by && !confirmed.premium) {
         row.regularFirstYear = confirmed.price;
         if (!row.code || row.firstYear >= confirmed.price) {
@@ -205,18 +239,22 @@ export async function checkDomain(input, {
       offers.push(row);
     }
     offers.sort((a, b) => cost(rankedFirstYear(a)) - cost(rankedFirstYear(b)) || cost(a.renewal) - cost(b.renewal));
+    for (const row of offers) row.label ??= row.firstYear == null ? null : 'list price';
   }
-  const best = offers.find(row => rankedFirstYear(row) != null) ?? null;
-  const today = offers.reduce((lowest, row) => cost(rankedFirstYear(row)) < cost(rankedFirstYear(lowest ?? {})) ? row : lowest, best);
+  // Data-only shops stay in offers as evidence but are never the pick or the cheapest link.
+  const picks = offers.filter(row => !row.dataOnly);
+  const best = picks.find(row => rankedFirstYear(row) != null) ?? null;
+  const today = picks.reduce((lowest, row) => cost(rankedFirstYear(row)) < cost(rankedFirstYear(lowest ?? {})) ? row : lowest, best);
   const priceDate = best?.checkedAt?.slice(0, 10) ?? null;
   const stale = !best || !isListPriceUsable(best.checkedAt, now);
   const transfer = !stale && !confirmed?.premium && oneYearTransfer.has(tld)
-    ? transferStrategy(offers.filter(row => isListPriceUsable(row.checkedAt, now))) : null;
-  const confirmingOffer = offers.find(row => rankedFirstYear(row) != null && confirmingShops.includes(shopIds.get(row.shop)));
+    ? transferStrategy(picks.filter(row => isListPriceUsable(row.checkedAt, now))) : null;
+  const confirmingOffer = picks.find(row => rankedFirstYear(row) != null && confirmingShops.includes(shopIds.get(row.shop)));
   const confirmShop = shopIds.get(confirmingOffer?.shop)
     ?? (tld === 'no' ? 'dynadot' : tld === 'so' ? 'namecheap' : 'spaceship');
   return {
-    domain, confirmShop, confirmShopName: shops[confirmShop].name, checkedAt: now.toISOString(), verdict, registry, confirmed, best,
+    domain, confirmShop, confirmShopName: shops[confirmShop].name, checkedAt: now.toISOString(), verdict, registry, confirmed,
+    ...(shopQuote && { shopQuote }), best,
     cheapestToday: today === best ? null : today,
     ...(transfer && { transfer }),
     offers, stale, priceDate, nok, vatNorway,
@@ -226,9 +264,16 @@ export async function checkDomain(input, {
 
 const shopIds = new Map(Object.entries(shops).map(([id, { name }]) => [name, id]));
 
+// "12:04 UTC" for a shop quote.
+function quoteTime(value) {
+  const time = typeof value === 'string' ? value.match(/T(\d{2}:\d{2})/)?.[1] : null;
+  return time ? time + ' UTC' : '';
+}
+
 const agentLegend = {
-  nc: 'Free, not confirmed',
-  ok: 'Free, confirmed by a shop',
+  nc: 'Free at the registry; list price, not confirmed',
+  ok: 'Free, price confirmed at the shop (at = quote time)',
+  prem: 'Premium: price at the shop, never a list price',
   resale: 'Taken, possible resale',
   shop_check: 'Registry did not settle; check at a shop',
   d: 'Ending, or full domain for a name variant',
@@ -267,6 +312,9 @@ function agentPrice({ firstPayment: now, renewalPayment: renew, threeYear: y3, m
     ...(minimumYears > 1 && { term: minimumYears }), ...(renewalJump && { jump: true }), ...(shop && { shop }) };
 }
 
+// The shop quote time as HH:MM UTC.
+const quoteClock = value => typeof value === 'string' ? value.match(/T(\d{2}:\d{2})/)?.[1] ?? null : null;
+
 function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimited = false, liveCheck = null) {
   const buyUrlTemplate = {};
   const shopCheckWhy = {};
@@ -281,9 +329,10 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       checkedEndings.add(row.tld);
       const d = row.exact ? row.tld : row.domain;
       const shop = row.shop ?? shops[row.confirmShop]?.name;
-      const confirmed = row.status === 'confirmed';
+      const premium = row.status === 'premium';
+      const confirmed = row.status === 'confirmed' || (premium && row.price != null && row.source === 'shop');
       const price = agentPrice({ ...row, shop });
-      if (batch && !confirmed && row.status !== 'premium' && listPrices[d]?.now == null) {
+      if (batch && !confirmed && !premium && row.status !== 'reserved' && listPrices[d]?.now == null) {
         const listed = row.listPrice ? agentPrice(row.listPrice) : price;
         if (Object.keys(listed).length) listPrices[d] = listed;
       }
@@ -295,9 +344,19 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
         continue;
       }
       const shopId = shopIds.get(shop);
-      if (shopId) {
+      if (shopId && linkable(shopId)) {
         const { url, suffix = '' } = shops[shopId];
         buyUrlTemplate[shop] = url + '{domain}' + suffix;
+      }
+      if (premium && !confirmed) {
+        // Premium without a price: free to register, but only the shop shows the price.
+        free.push({ d, s: 'prem', ...(shop && { shop }) });
+        continue;
+      }
+      if (row.status === 'reserved') {
+        shop_check.push(d);
+        shopCheckWhy[row.domain] = String(row.registryReason ?? 'Not offered for registration').slice(0, 80);
+        continue;
       }
       if (!confirmed && row.status !== 'probably-free') {
         if (!batch && row.status === 'check-at-shop' && price.now != null) listPrices[d] = price;
@@ -307,11 +366,15 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       }
       // A batch row repeats its ending's standard price only when it differs.
       const standard = batch && !confirmed && listPrices[d] && JSON.stringify(listPrices[d]) === JSON.stringify(price);
-      free.push({ d, s: confirmed ? 'ok' : 'nc', ...(!standard && price) });
-      if (confirmed) {
+      const at = confirmed ? quoteClock(row.quotedAt ?? row.checkedAt) : null;
+      free.push({ d, s: confirmed ? 'ok' : 'nc', ...(!standard && price), ...(premium && { prem: row.premium ?? true }),
+        ...(at && { at }) });
+      if (confirmed && !premium) {
         const { now, renew, y3, term, jump } = price;
         const buyUrl = row.buyUrl ?? shopSearchUrl(shopId, row.domain);
-        best = { domain: row.domain, status: 'free-confirmed', ...(now != null && { priceNow: now }),
+        // The cheapest confirmed quote is the pick; rows are already sorted by first payment within a name.
+        if (best && (best.priceNow ?? Infinity) <= (now ?? Infinity)) continue;
+        best = { domain: row.domain, status: 'free-confirmed', ...(now != null && { priceNow: now }), ...(at && { at }),
           ...(renew != null && { renewal: renew }), ...(y3 != null && { threeYear: y3 }),
           ...(term && { term }),
           ...(jump && { renewalNote: 'Renews at $' + renew.toFixed(2) }),
@@ -322,12 +385,12 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       ...(free.length && { free }), ...(shop_check.length && { shop_check }) });
   }
   const result = {
+    ...(!batch && names[0].includes('.') && {
+      purchaseAdvice: 'For a purchase request, include this sentence even when the domain is taken: ' + purchaseLine,
+    }),
     complete, checkedAt, ...(priceListDate && { priceListDate }), ...(best && { best }),
     eligibility: eligibilityNotes([...checkedEndings]),
     names: names.map(name => byName.get(name)),
-    ...(!batch && names[0].includes('.') && {
-      purchaseAdvice: 'If the person asked to buy, say Domain Hound cannot buy domains, even if the domain is taken.',
-    }),
     legend: agentLegend,
     ...(Object.keys(buyUrlTemplate).length && { buyUrlTemplate }),
     ...(Object.keys(shopCheckWhy).length && { shopCheckWhy }),
@@ -347,11 +410,21 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   return result;
 }
 
+// The top pick and up to three runners-up get a light confirm: registry signals first, then a keyed shop API.
+export function lightTargets(rows, eligible, count = 4) {
+  const top = pickName(rows, eligible);
+  const others = rankName(rows.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
+    && canRecommend(row.tld, eligible)));
+  return [top, ...others].filter(Boolean).slice(0, count);
+}
+
 export async function agentResult(input, options = {}) {
-  // Leave room under the 15-second wall clock limit for Node startup and browser cleanup.
-  const deadline = performance.now() + (options.budgetMs ?? 13_900);
-  const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
   const batch = Array.isArray(input);
+  // The default path has no browser and answers a single name or a small batch within 8 seconds.
+  // Larger batches and the explicit browser check keep room under the 15-second wall clock limit.
+  const small = !batch || input.length <= 3;
+  const deadline = performance.now() + (options.budgetMs ?? (options.browser || !small ? 13_900 : 7_400));
+  const remaining = () => Math.max(0, Math.floor(deadline - performance.now()));
   if (batch && (!input.length || input.length > 20)) return { error: 'Provide 1 to 20 names.' };
   if (options.endings && !validEndings(options.endings)) return { error: 'Choose supported domain endings.' };
   if (options.eligible !== undefined && !validEligibility(options.eligible)) return { error: 'Eligible endings must list supported restricted endings, such as no.' };
@@ -364,19 +437,39 @@ export async function agentResult(input, options = {}) {
   const exact = new Set(domain ? [domain] : names.filter((name, index) => batch && exactDomain(input[index])));
   const groups = [...new Set(names)].map(name => ({ name, candidates: exact.has(name)
     ? [{ domain: name, tld: name.split('.').at(-1), exact: true }] : nameCandidates(name, { ...options, variants: !batch }) }));
-  const searchOptions = { ...options, budgetMs: Math.min(remaining(), batch ? 10_700 : 2700),
+  const keyed = apiShops(options.env ?? process.env).length > 0;
+  const reserve = keyed ? 1800 : 0;
+  const searchOptions = { ...options, budgetMs: Math.max(0, Math.min(remaining() - reserve, batch ? 10_700 : 2700)),
     skipComSite: batch || options.skipComSite };
   const fast = await searchCandidates(groups, searchOptions);
   let rateLimited = fast.groups.some(group => group.results.some(row =>
     googleEndings.has(row.tld) && /HTTP 429/.test(row.registryReason ?? '')));
   if (batch) rateLimited = await retryGoogle(fast, remaining, options) || rateLimited;
   const rows = fast.groups.flatMap(group => group.results);
-  const candidate = domain ? rows.find(row => row.status === 'probably-free' || row.status === 'check-at-shop')
-    : pickName(rankName(rows), options.eligible);
+  const targets = domain ? rows.filter(row => ['probably-free', 'check-at-shop', 'premium'].includes(row.status))
+    : lightTargets(rows, options.eligible);
+  const [candidate] = targets;
   // A Google retry can settle every row that the first pass left waiting.
   let complete = fast.complete || !rows.some(row => row.registryReason === 'Registry lookup timed out');
+  const quotes = new Map();
+  if (targets.length) {
+    options.onProgress?.({ stage: 'quotes' });
+    const catalog = await loadCachedCatalog(options.directory);
+    const listFor = (target, shop) => datedListPrices(catalog, target.split('.').at(-1), options.now ?? new Date(),
+      options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog).find(row => row.id === shop) ?? null;
+    const light = options.lightConfirm ?? lightConfirm;
+    const found = await light(targets.map(row => row.domain), { env: options.env, fetcher: options.fetcher,
+      directory: options.directory, now: options.now, deadline: performance.now() + Math.max(0, remaining() - 150), listFor })
+      .catch(() => new Map());
+    for (const [key, value] of found) quotes.set(key, value);
+  }
   let quote;
-  if (candidate && remaining() >= 1000) {
+  const firstQuote = candidate && quotes.get(candidate.domain);
+  const fallback = options.browser && candidate && (!firstQuote || firstQuote.status === 'could-not-confirm'
+    || firstQuote.status === 'premium' && firstQuote.price == null);
+  if (fallback && remaining() >= 1000) {
+    // The headless browser runs only when the person explicitly asks for it.
+    options.onProgress?.({ stage: 'browser' });
     const confirm = options.confirm ?? confirmDomain;
     let timer;
     try {
@@ -389,13 +482,18 @@ export async function agentResult(input, options = {}) {
     } finally {
       clearTimeout(timer);
     }
-  } else if (candidate) {
+    if (quote && quote.status !== 'could-not-confirm') {
+      quotes.set(candidate.domain, firstQuote?.status === 'premium' && quote.available === true
+        ? { ...quote, status: 'premium', premium: firstQuote.premium } : quote);
+    }
+  } else if (fallback) {
     complete = false;
   }
-  const apply = row => row.domain === candidate?.domain ? mergeQuote(row, quote) : row;
+  const apply = row => quotes.has(row.domain) ? mergeQuote(row, quotes.get(row.domain)) : row;
   const rankedGroups = fast.groups.map(({ name, results }) => ({ name, results: rankName(results.map(apply)) }));
   const checkedAt = options.now?.toISOString() ?? new Date().toISOString();
-  return compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited, liveCheckFor(candidate, quote));
+  return compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
+    options.browser ? liveCheckFor(candidate, quote) : null);
 }
 
 // Give unresolved .app and .dev rows one bounded registry retry with the batch time that is left.
@@ -434,6 +532,8 @@ async function retryGoogle(fast, remaining, options) {
       }
       const settled = { ...row, status, source: answer.source, registryReason: undefined, forSale: Boolean(answer.forSale),
         checkedAt: answer.checkedAt ?? (options.now ?? new Date()).toISOString() };
+      if (status === 'premium') return { ...withoutListPrice(settled, status), premium: true };
+      if (status === 'reserved') return withoutListPrice(settled, status, answer.reason);
       if (status !== 'taken') return settled;
       const { price, renewal, shop, priceCheckedAt } = row;
       for (const key of ['price', 'renewal', 'shop', 'priceSource', 'priceCheckedAt', 'buyUrl']) delete settled[key];
@@ -454,14 +554,16 @@ function workflowAgent(input) {
   let value;
   try { value = JSON.parse(input); } catch { return { error: 'Provide a query or a list of names.' }; }
   if (!value || typeof value !== 'object' ||
-      Object.keys(value).some(key => !['query', 'names', 'endings', 'ai', 'eligible'].includes(key)) ||
+      Object.keys(value).some(key => !['query', 'names', 'endings', 'ai', 'eligible', 'confirm'].includes(key)) ||
+      (Object.hasOwn(value, 'confirm') && typeof value.confirm !== 'boolean') ||
       Object.hasOwn(value, 'query') === Object.hasOwn(value, 'names') ||
       !(typeof value.query === 'string' || Array.isArray(value.names)) ||
       (Object.hasOwn(value, 'ai') && typeof value.ai !== 'boolean') ||
       (Object.hasOwn(value, 'endings') && !validEndings(value.endings))) {
     return { error: 'Provide either a query or a list of names.' };
   }
-  return agentResult(value.query ?? value.names, value);
+  const { confirm, ...rest } = value;
+  return agentResult(value.query ?? value.names, { ...rest, browser: confirm === true });
 }
 
 // Per-name GEO from the calling agent's own recollection: {"Name":"known: what it is"|"unknown"}.
@@ -484,6 +586,8 @@ function lookupArgs(args) {
     else if (arg === '--eligible' && !options.eligible) options.eligible = (args[++index] ?? '').split(',');
     else if (arg === '--category' && !options.category) options.category = (args[++index] ?? '').slice(0, 100);
     else if (arg === '--compact') options.compact = true;
+    // The headless browser shop check runs only on this explicit flag.
+    else if (arg === '--confirm') options.browser = true;
     else if (arg === '--geo' && options.geo === undefined) options.geo = readGeo(args[++index]);
     else if (arg === '--about' && options.about === undefined) options.about = (args[++index] ?? '').slice(0, 160);
     else positional.push(arg);
@@ -498,6 +602,9 @@ function runConfirmation(shop, domain) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
   const { options, positional } = lookupArgs(args.slice(1));
+  // The MCP server reads these to answer with progress when a lookup outlasts its budget.
+  const onProgress = progressReporter();
+  if (onProgress) options.onProgress = onProgress;
   const refreshDir = process.env.DOMAIN_HOUND_PRICE_CACHE;
   if (args[0] === '--naming-method' && !positional.length) {
     console.log(namingRecipe(options.about));
@@ -506,8 +613,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       : args[0] === '--agent' ? await agentArgs(positional, options)
       : args[0] === '--agent-input' && args.length === 2 ? await workflowAgent(args[1])
       : args[0] === '--confirm' ? await runConfirmation(args[1], args.length === 3 ? normalize(args[2]) : null)
-      : args[0] === '--refresh-prices' && args.length === 1
-        ? await refreshPrices({ directory: refreshDir ? pathToFileURL(refreshDir) : undefined })
+      : args[0] === '--refresh-prices' && (args.length === 1 || args.length === 2 && args[1] === '--confirm')
+        ? await refreshPrices({ directory: refreshDir ? pathToFileURL(refreshDir) : undefined, browser: args.length === 2 })
       : args[0] === '--naming-method' ? { error: 'Use --naming-method with an optional --about "product description".' }
       : args[0] === '--name' ? positional.length > 1 || /\s/.test(positional[0] ?? '')
         ? { error: 'Use --name with one domain label. For a multiword product name, run --naming-method.' }

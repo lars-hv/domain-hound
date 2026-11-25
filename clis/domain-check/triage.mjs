@@ -327,6 +327,7 @@ export async function triageNames(inputs, options = {}) {
     startEvidence(traction, rivals);
     return rivals;
   });
+  options.onProgress?.({ stage: 'rivals' });
   const evidence = await traction.settle();
   const rows = domains.groups.map(({ name, results, sites }, index) => {
       const marks = marksByName[index];
@@ -406,7 +407,10 @@ export async function triageNames(inputs, options = {}) {
         ...(summary && { traction: summary }),
         google: { ...(google.google ?? { result: 'not checked', why: google.unchecked }), link: googleSearchLink(names.get(name)) },
         taken: requested.filter(row => row.status === 'taken').map(row => row.tld),
-        shop_check: requested.filter(row => row.status === 'check-at-shop').map(row => row.tld),
+        shop_check: requested.filter(row => ['check-at-shop', 'reserved'].includes(row.status)).map(row => row.tld),
+        // Premium endings never carry a list price; the shop shows their price.
+        ...(requested.some(row => row.status === 'premium') && {
+          premium: requested.filter(row => row.status === 'premium').map(row => row.tld) }),
         competition, buy: best?.buyUrl ?? null,
         details: {
           memorable: memorability(name, names.get(name)),

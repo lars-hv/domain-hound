@@ -175,7 +175,7 @@ export async function searchAndroidApps(names, options = {}) {
       finally { await source?.close?.(); }
     }
   });
-  if (pending.length) {
+  if (pending.length && performance.now() < deadline) {
     let browserReady = false;
     let browserFailed = false;
     await withShopPages(deadline, async (_, openPage) => {

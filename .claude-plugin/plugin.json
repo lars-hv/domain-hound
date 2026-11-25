@@ -1,16 +1,28 @@
 {
   "name": "domain-hound",
   "displayName": "Domain Hound",
-  "version": "0.1.1",
-  "description": "Check domains, compare registrar prices, and screen product names.",
-  "author": { "name": "Lars Hvinden" },
+  "version": "0.1.2",
+  "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
+  "author": {
+    "name": "Lars Hvinden"
+  },
   "homepage": "https://domainhound.dev",
   "license": "MIT",
-  "keywords": ["mcp", "domains"],
+  "keywords": [
+    "mcp",
+    "domains"
+  ],
   "mcpServers": {
     "domain-hound": {
       "command": "npx",
-      "args": ["-y", "domain-hound"]
+      "args": [
+        "-y",
+        "domain-hound"
+      ]
     }
-  }
+  },
+  "icon": "./assets/icon-512.png",
+  "documentationUrl": "https://github.com/lars-hv/domain-hound#readme",
+  "supportUrl": "https://github.com/lars-hv/domain-hound/issues",
+  "privacyPolicyUrl": "https://domainhound.dev/privacy/"
 }

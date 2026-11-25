@@ -1,14 +1,32 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "domain-hound",
-  "version": "0.1.1",
-  "description": "Check domains, compare registrar prices, and screen product names.",
-  "author": { "name": "Lars Hvinden" },
+  "version": "0.1.2",
+  "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
+  "author": {
+    "name": "Lars Hvinden"
+  },
   "homepage": "https://domainhound.dev",
   "license": "MIT",
   "extensions": {
     "com.openai": {
-      "interface": { "displayName": "Domain Hound" }
+      "interface": {
+        "displayName": "Domain Hound",
+        "shortDescription": "Domain prices and name checks",
+        "longDescription": "Domain Hound is a local MCP server that helps you pick a product name and the best domain. It checks real registry availability, finds the cheapest trusted shop including the renewal price, and screens names for trademark conflicts, app store clashes and web traction. It has three tools: check_domains, triage_names and naming_method. It runs on your machine over stdio, needs no account, and is open source under the MIT license.",
+        "developerName": "Lars Hvinden",
+        "category": "Developer Tools",
+        "capabilities": [
+          "Check domain availability",
+          "Compare registrar prices",
+          "Screen product names"
+        ],
+        "websiteURL": "https://domainhound.dev",
+        "privacyPolicyURL": "https://domainhound.dev/privacy/",
+        "supportURL": "https://github.com/lars-hv/domain-hound/issues",
+        "logo": "./assets/icon-1024.png",
+        "composerIcon": "./assets/icon-512.png"
+      }
     }
   }
 }

@@ -2,6 +2,8 @@ node_modules/
 cache/
 checks/
 .verify/
+dist/
 *.log
 *.tgz
 .DS_Store
+/REPORT*.md

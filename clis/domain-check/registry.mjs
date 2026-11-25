@@ -59,6 +59,31 @@ function unknown(source, reason) {
   return { status: 'unknown', source, reason };
 }
 
+// A registry that exposes premium or reserved status says so in plain words. "All rights reserved" never counts.
+const reservedWords = /\b(?:(?:domain|name) (?:is |has been )?reserved|reserved (?:domain|name)|reserved (?:by|for) (?:the )?registry|not available for registration)\b/i;
+const premiumWords = /\bpremium (?:domain|name|price|pricing|tier)\b|\b(?:domain|name) is premium\b/i;
+
+export function registrySignal(text) {
+  const value = String(text ?? '');
+  if (reservedWords.test(value)) return 'reserved';
+  return value.split('\n').some(line => premiumWords.test(line) && !/\b(?:not|non[- ]|no)\s*(?:an?\s+)?premium\b/i.test(line))
+    ? 'premium' : null;
+}
+
+// Only the human-readable fields of an RDAP error document are read.
+export function rdapSignal(body) {
+  let data;
+  try { data = JSON.parse(body); } catch { return null; }
+  const text = [data?.title, data?.description, ...(Array.isArray(data?.notices) ? data.notices : [])
+    .flatMap(notice => [notice?.title, notice?.description])].flat().filter(value => typeof value === 'string');
+  return registrySignal(text.join('\n'));
+}
+
+function signalled(source, signal) {
+  if (signal === 'reserved') return { status: 'unknown', source, signal, reason: 'Registry lists it as reserved' };
+  return { status: 'free', source, ...(signal && { signal }) };
+}
+
 async function dnsStatus(domain, resolveNs) {
   try {
     const nameservers = await resolveNs(domain);
@@ -71,7 +96,7 @@ async function dnsStatus(domain, resolveNs) {
   }
 }
 
-function whois(host, query, timeout) {
+export function systemQueryWhois(host, query, timeout) {
   if (timeout <= 0) return Promise.resolve('');
   return new Promise(resolve => {
     const socket = createConnection({ host, port: 43 });
@@ -107,6 +132,8 @@ async function lookupWhois(domain, tld, query, timeLeft, referrals) {
     const expires = Number.isFinite(Date.parse(expiry)) ? new Date(expiry).toISOString() : null;
     return { status: 'taken', source: 'whois', ...(expires && { expires }) };
   }
+  const signal = registrySignal(result);
+  if (signal) return signalled('whois', signal);
   if (/^\s*(?:(?:%|>>>|#)\s*)?(?:no (?:match|entries found|data found|object found)|(?:domain\s+)?not found|no such domain|the queried object does not exist)/im.test(result)) {
     return { status: 'free', source: 'whois' };
   }
@@ -150,9 +177,10 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
           ...(Number.isFinite(Date.parse(expires)) && { expires }) };
       }
       if (status === 404) {
-        // Drain the small RDAP error document so the connection can be reused.
-        await response.text();
-        return { status: 'free', source: 'rdap' };
+        // A 404 says only that the name is not registered. It is not a standard-price signal; a registry
+        // that exposes premium or reserved status in the error document is read here.
+        const body = await response.text().catch(() => '');
+        return signalled('rdap', rdapSignal(body.slice(0, 16_384)));
       }
       await response.body?.cancel().catch(() => {});
       last = unknown('rdap', 'Registry RDAP returned HTTP ' + status);
@@ -174,7 +202,7 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
 }
 
 export async function lookupRegistrations(candidates, {
-  directory = cacheDir, fetcher = globalThis.fetch, resolveNs = systemResolveNs, queryWhois = whois,
+  directory = cacheDir, fetcher = globalThis.fetch, resolveNs = systemResolveNs, queryWhois = systemQueryWhois,
   now = new Date(), timeLeft = () => 8500, dnsFirst = true, readExpiry = false, pause = delay,
   onResult = () => {}, concurrency = 4, rdapAttempts = 3,
 } = {}) {

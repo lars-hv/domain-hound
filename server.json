@@ -2,15 +2,26 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "dev.domainhound/domain-hound",
   "title": "Domain Hound",
-  "description": "Check domains, compare registrar prices, and screen product names.",
+  "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.1",
-      "transport": { "type": "stdio" }
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/lars-hv/domain-hound/releases/download/v0.1.2/domain-hound-0.1.2.mcpb",
+      "version": "0.1.2",
+      "fileSha256": "3545b3607c1ed95f4fd6cbcc0edf247dc987933b93274b197a70e5de07499cf9",
+      "transport": {
+        "type": "stdio"
+      }
     }
   ]
 }

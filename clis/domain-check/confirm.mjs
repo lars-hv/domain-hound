@@ -1,7 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { cacheDir, readCache, writeCache } from './cache.mjs';
 import { money, shops, shopSearchUrl } from './prices.mjs';
-import { watchSpaceshipFeed } from './spaceship-feed.mjs';
 
 const budget = 20_500;
 const shopBudget = 10_000;
@@ -178,18 +177,6 @@ export function cloudflareSettlement(domain) {
   };
 }
 
-function watchCloudflare(page, domain) {
-  const settlement = cloudflareSettlement(domain);
-  page.on('websocket', socket => {
-    const { origin, pathname } = new URL(socket.url());
-    if (origin !== 'wss://search.registrar.cloudflare.com' || pathname !== '/v1/ws') return;
-    socket.on('framereceived', ({ payload }) => {
-      try { settlement.receive(JSON.parse(payload)); } catch { /* Unknown payload stays unconfirmed. */ }
-    });
-  });
-  return settlement;
-}
-
 const adapters = {
   spaceship: {
     rows: '[data-zid="instantSearchMainResult"], [data-zid="instantSearchDomainListItem"]',
@@ -260,29 +247,21 @@ async function checkShop(page, shop, domain, deadline) {
   const adapter = Object.hasOwn(adapters, shop) ? adapters[shop] : null;
   if (!adapter) return unknown('Shop has no supported exact-domain result.');
   if (performance.now() >= deadline) return unknown(timedOut);
-  const settlement = shop === 'cloudflare' ? watchCloudflare(page, domain) : null;
-  const feed = shop === 'spaceship' ? await watchSpaceshipFeed(page, domain) : null;
   try {
     const response = await page.goto(url, { waitUntil: 'commit', timeout: remaining() });
     if ([401, 403, 429].includes(response?.status())) return unknown('Shop blocked the check.');
     if (!response?.ok()) return unknown('Shop search is unavailable.');
     while (performance.now() < deadline) {
       if (new URL(page.url()).origin !== origin) return unknown('Shop redirected the check.');
-      const quote = feed?.read();
-      if (quote) return quote;
       const result = await readResult(page, adapter, domain, remaining());
       if (blocked.test(result.pageStatus)) return unknown('Shop blocked the check.');
       if (shop === 'spaceship') {
         const quote = parseSpaceshipRows(result.rows, [domain]).get(domain);
         if (quote) return quote;
       } else {
-        const final = settlement?.read();
-        if (!settlement || final) {
-          for (const row of result.rows) {
-            const parsed = adapter.parse(row.text, domain, final?.premium ?? row.premium, row.buyLabel);
-            if (parsed && !(parsed.available && row.canBuy === false) &&
-                (!settlement || parsed.available === final.available)) return parsed;
-          }
+        for (const row of result.rows) {
+          const parsed = adapter.parse(row.text, domain, row.premium, row.buyLabel);
+          if (parsed && !(parsed.available && row.canBuy === false)) return parsed;
         }
       }
       await delay(Math.min(200, remaining()));
@@ -290,8 +269,6 @@ async function checkShop(page, shop, domain, deadline) {
     return unknown(timedOut);
   } catch (error) {
     return unknown(error?.name === 'TimeoutError' ? timedOut : 'Shop search is unavailable.');
-  } finally {
-    await feed?.close();
   }
 }
 
@@ -426,5 +403,210 @@ export async function confirmDomain(shopValue, domain, options = {}) {
   const settled = options.usePage ? await run(options.usePage) : await withShopPages(deadline, run, options);
   const result = formatResult(start, domain, shop, settled.shop ?? shop, settled.result ?? settled, now);
   if (result.status === 'confirmed') await writeCache(directory, filename, result).catch(() => {});
+  if (result.status === 'premium') await writeCache(directory, quoteFile(domain), result).catch(() => {});
   return result;
+}
+
+// Light confirm uses documented read operations. Without a key, prices stay labelled as list prices.
+// Spaceship: https://docs.spaceship.dev/ (domains:read) · Dynadot: https://www.dynadot.com/domain/api-commands (search).
+const spaceshipApi = 'https://spaceship.dev/api/v1/domains/';
+const dynadotApi = 'https://api.dynadot.com/api3.json';
+const signalLifetime = 24 * 3_600_000;
+const apiTimeout = 2500;
+
+export function apiShops(env = process.env) {
+  return [
+    ...(env.DOMAIN_HOUND_SPACESHIP_KEY?.trim() && env.DOMAIN_HOUND_SPACESHIP_SECRET?.trim() ? ['spaceship'] : []),
+    ...(env.DOMAIN_HOUND_DYNADOT_KEY?.trim() ? ['dynadot'] : []),
+  ];
+}
+
+const cents = value => Math.round(value * 100) / 100;
+
+// The yearly USD price of the shortest documented period.
+function yearly(entries) {
+  const rows = (Array.isArray(entries) ? entries : []).map(row => {
+    const years = row?.period?.unit === 'y' && Number.isSafeInteger(row.period.value) && row.period.value > 0
+      ? row.period.value : null;
+    const final = row?.priceInDefaultCurrency?.finalPrice;
+    const amount = final?.currency === 'USD' && typeof final.amount === 'string' ? money(final.amount) : null;
+    return years && amount > 0 ? { years, amount } : null;
+  }).filter(Boolean).sort((a, b) => a.years - b.years);
+  return rows[0] ? cents(rows[0].amount / rows[0].years) : null;
+}
+
+function apiQuote(shop, domain, fields, now) {
+  return { shop, shopName: shops[shop].name, domain, buyUrl: shopSearchUrl(shop, domain), checkedAt: now.toISOString(),
+    source: 'api', price: null, renewal: null, ...fields };
+}
+
+// Availability: result and premiumPricing. Pricing: priceClass and the register and renew price lists.
+// premiumPricing marks a premium name even when it carries no price.
+export function parseSpaceshipApi(availability, pricing, domains, now = new Date()) {
+  const quotes = new Map();
+  const find = (body, domain) => (Array.isArray(body?.domains) ? body.domains : [])
+    .find(row => typeof row?.domain === 'string' && row.domain.toLowerCase() === domain);
+  for (const domain of domains) {
+    const open = find(availability, domain);
+    if (typeof open?.result !== 'string') continue;
+    if (open.result !== 'available') {
+      const status = ['reserved', 'taken'].includes(open.result) ? open.result : 'could-not-confirm';
+      quotes.set(domain, apiQuote('spaceship', domain, { status, available: status === 'could-not-confirm' ? null : false,
+        reason: 'Not offered for registration at Spaceship' }, now));
+      continue;
+    }
+    const priced = find(pricing, domain);
+    const marked = Array.isArray(open.premiumPricing) && open.premiumPricing.length > 0;
+    const premiumClass = priced?.priceClass === 'premium';
+    if (marked || premiumClass) {
+      const listed = marked ? money(open.premiumPricing.find(row => row?.operation === 'register' && row.currency === 'USD')?.price) : null;
+      // Availability does not specify a term. Price multi-year endings from the pricing endpoint only.
+      const price = (premiumClass ? yearly(priced.prices?.register) : null)
+        ?? (!domain.endsWith('.ai') && listed > 0 ? listed : null);
+      quotes.set(domain, apiQuote('spaceship', domain, { status: 'premium', available: true, premium: true, price,
+        renewal: price != null && premiumClass ? yearly(priced.prices?.renew) : null }, now));
+      continue;
+    }
+    const price = priced?.priceClass === 'standard' ? yearly(priced.prices?.register) : null;
+    const renewal = priced?.priceClass === 'standard' ? yearly(priced.prices?.renew) : null;
+    quotes.set(domain, price > 0 && renewal > 0
+      ? apiQuote('spaceship', domain, { status: 'confirmed', available: true, premium: false, standard: true, price, renewal }, now)
+      : apiQuote('spaceship', domain, { status: 'could-not-confirm', available: null, premium: false,
+        reason: 'Spaceship gave no explicit standard price' }, now));
+  }
+  return quotes;
+}
+
+// Dynadot search with show_price=1: "Price": "77.00 in USD", optionally "... and domain is not premium".
+// Without a marker, a price that matches Dynadot's own list price is standard; any other price may be premium.
+export function parseDynadotSearch(body, domain, list = null, now = new Date()) {
+  const response = body?.SearchResponse;
+  if (String(response?.ResponseCode) !== '0' || !Array.isArray(response.SearchResults)) return null;
+  const row = response.SearchResults.find(item => String(item?.DomainName ?? '').toLowerCase() === domain);
+  if (!row || row.Error) return null;
+  const available = String(row.Available ?? '').toLowerCase();
+  if (available === 'no') {
+    return apiQuote('dynadot', domain, { status: 'could-not-confirm', available: null,
+      reason: 'Not offered for registration at Dynadot' }, now);
+  }
+  if (available !== 'yes') return null;
+  const text = String(row.Price ?? '');
+  const price = money(text.match(/^\s*(\d[\d,]*(?:\.\d{1,2})?) in USD\b/i)?.[1]?.replace(/,/g, ''));
+  const twoYears = domain.endsWith('.ai');
+  const marker = /\bis not premium\b/i.test(text) ? false : /\bpremium\b/i.test(text) ? true : null;
+  if (marker) return apiQuote('dynadot', domain, { status: 'premium', available: true, premium: true,
+    price: !twoYears && price > 0 ? price : null }, now);
+  if (!(price > 0)) return null;
+  // The legacy response gives one amount with no term or renewal. A list match can disambiguate .ai.
+  const yearsMatch = list && (twoYears ? [1, 2] : [1]).find(years => Math.abs(price - cents(list.firstYear * years)) < 0.011);
+  if (yearsMatch || marker === false && !twoYears) {
+    const yearlyPrice = yearsMatch ? list.firstYear : price;
+    return apiQuote('dynadot', domain, { status: 'confirmed', available: true, premium: false, standard: marker === false || undefined,
+      price: yearlyPrice }, now);
+  }
+  return apiQuote('dynadot', domain, { status: 'premium', available: true, premium: 'possible',
+    price: twoYears ? null : price }, now);
+}
+
+async function postJson(fetcher, url, body, headers, timeout) {
+  const response = await fetcher(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeout),
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers }, body: JSON.stringify(body) });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error('HTTP ' + response.status);
+  }
+  return response.json();
+}
+
+async function spaceshipQuotes(domains, { env, fetcher, timeout, now }) {
+  const headers = { 'X-API-Key': env.DOMAIN_HOUND_SPACESHIP_KEY.trim(), 'X-API-Secret': env.DOMAIN_HOUND_SPACESHIP_SECRET.trim() };
+  const [availability, pricing] = await Promise.all([
+    postJson(fetcher, spaceshipApi + 'available', { domains }, headers, timeout),
+    postJson(fetcher, spaceshipApi + 'pricing/query', { domains }, headers, timeout).catch(() => null),
+  ]);
+  return parseSpaceshipApi(availability, pricing, domains, now);
+}
+
+async function dynadotQuotes(domains, { env, fetcher, timeout, now, listFor, deadline }) {
+  const quotes = new Map();
+  // A regular Dynadot account checks one domain per command and one request at a time.
+  for (const domain of domains) {
+    const wait = Math.min(timeout, Math.floor(deadline - performance.now()));
+    if (wait < 300) break;
+    const url = dynadotApi + '?' + new URLSearchParams({ key: env.DOMAIN_HOUND_DYNADOT_KEY.trim(), command: 'search',
+      domain0: domain, show_price: '1', currency: 'USD' });
+    try {
+      const response = await fetcher(url, { redirect: 'error', signal: AbortSignal.timeout(wait), headers: { Accept: 'application/json' } });
+      if (!response.ok) { await response.body?.cancel().catch(() => {}); continue; }
+      const quote = parseDynadotSearch(await response.json(), domain, listFor(domain, 'dynadot'), now);
+      if (quote) quotes.set(domain, quote);
+    } catch { /* One failed check leaves that domain at its list price. */ }
+  }
+  return quotes;
+}
+
+const quoteFile = domain => 'quote-' + domain + '.json';
+
+// Premium and reserved answers are kept for a day; a standard quote for 15 minutes.
+function usableQuote(saved, domain, now) {
+  const age = now - Date.parse(saved?.checkedAt);
+  if (saved?.domain !== domain || !(age >= 0)) return false;
+  if (['premium', 'reserved'].includes(saved.status)) return age < signalLifetime;
+  return saved.status === 'confirmed' && money(saved.price) > 0 && age < cacheLifetime;
+}
+
+export async function cachedSignals(domains, { directory, now = new Date() } = {}) {
+  const folder = directory === undefined ? cacheDir : directory;
+  const found = new Map();
+  if (!folder) return found;
+  await Promise.all(domains.map(async domain => {
+    const saved = await readCache(folder, quoteFile(domain));
+    if (usableQuote(saved, domain, now) && ['premium', 'reserved'].includes(saved.status)) found.set(domain, saved);
+  }));
+  return found;
+}
+
+// Combine the shops: any premium or reserved answer wins; otherwise the cheapest explicit standard quote.
+function combine(answers) {
+  const known = answers.filter(Boolean);
+  const premium = known.filter(quote => quote.status === 'premium');
+  if (premium.length) {
+    const explicit = premium.filter(quote => quote.premium === true);
+    const pool = explicit.length ? explicit : premium;
+    return pool.find(quote => quote.price != null) ?? pool[0];
+  }
+  const confirmed = known.filter(quote => quote.status === 'confirmed').sort((a, b) => a.price - b.price);
+  return confirmed[0] ?? known.find(quote => ['taken', 'reserved'].includes(quote.status)) ?? known[0] ?? null;
+}
+
+export async function lightConfirm(domains, {
+  env = process.env, fetcher = globalThis.fetch, directory, now = new Date(), deadline = performance.now() + 3000,
+  listFor = () => null,
+} = {}) {
+  const folder = directory === undefined ? cacheDir : directory;
+  const results = new Map();
+  const wanted = [...new Set(domains)].slice(0, 20);
+  const pending = [];
+  for (const domain of wanted) {
+    const saved = folder ? await readCache(folder, quoteFile(domain)) : null;
+    if (usableQuote(saved, domain, now)) results.set(domain, { ...saved, cached: true });
+    else pending.push(domain);
+  }
+  const keyed = apiShops(env);
+  const timeout = Math.min(apiTimeout, Math.floor(deadline - performance.now()));
+  if (!pending.length || !keyed.length || timeout < 300) return results;
+  const context = { env, fetcher, timeout, now, listFor, deadline };
+  const [spaceship, dynadot] = await Promise.all([
+    keyed.includes('spaceship') ? spaceshipQuotes(pending, context).catch(() => new Map()) : new Map(),
+    keyed.includes('dynadot') ? dynadotQuotes(pending, context) : new Map(),
+  ]);
+  for (const domain of pending) {
+    const quote = combine([spaceship.get(domain), dynadot.get(domain)]);
+    if (!quote) continue;
+    results.set(domain, quote);
+    if (folder && ['confirmed', 'premium', 'reserved'].includes(quote.status)) {
+      await writeCache(folder, quoteFile(domain), quote).catch(() => {});
+    }
+  }
+  return results;
 }
