@@ -199,7 +199,7 @@ function summary(groups, args, triage, selection) {
     const intro = picked.domain + ': ' + picked.status.toLowerCase() + '.' + price + (overBudget ? ' Over budget.' : '');
     const step = overBudget ? 'Next: try a cheaper domain.' : picked.checkout
       ? 'Next: [check at ' + plain(picked.shop) + '](' + picked.checkout + ').' : watch ?? 'Next: check another domain.';
-    return { lines: [...constraints, intro, ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []), step], savings: [] };
+    return { lines: [...constraints, intro, ...(args.purchase ? ['This check leaves checkout to you.'] : []), step], savings: [] };
   }
   const reason = evidenceText(wanted.row.reason).replace('David vs Goliath: ', 'Established rival: ');
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
@@ -233,7 +233,7 @@ function summary(groups, args, triage, selection) {
     'Cheapest: ' + (cheapest ? label(cheapest) : 'none found in scope.'),
     'Best value: ' + (value ? value.record.domain + ', ' + cash(value.record.total) + ' in payments due in 3 years'
       + ' (' + value.record.priceLabel.toLowerCase() + priceDate(value.record) + ')' + caution(value) : 'needs a shop quote') + '.',
-    (args.purchase ? 'Domain Hound cannot buy or complete checkout. ' : '') + next + eligibility,
+    (args.purchase ? 'This check leaves checkout to you. ' : '') + next + eligibility,
   ];
   // Savings are page-only proof for each pick: dated list prices from at least three shops, never a pitch.
   const savings = picks.map(({ record }) => savingsLine(record)).filter(Boolean);
@@ -555,7 +555,7 @@ export function resultPages({ env = process.env,
       const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
-        ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []),
+        ...(args.purchase ? ['This check leaves checkout to you.'] : []),
       ], savings: [] } : summary(groups, args, triage, selection);
       // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
       const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);

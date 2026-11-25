@@ -122,13 +122,21 @@ test('offers its latest protocol for an unsupported version', async () => {
   assert.equal(resultOf(responses, 1).protocolVersion, '2025-11-25');
 });
 
-test('advertises the lookup, naming, watch and dossier tools and the legacy alias', async () => {
+test('advertises all lookup, naming, watch, dossier and Spaceship tools and the legacy alias', async () => {
   const responses = await exchange([...handshake(), request(2, 'tools/list')]);
   const { tools } = resultOf(responses, 2);
-  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier']);
+  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain',
+    'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain']);
   const [{ description, inputSchema }, triage, naming, alias, watch] = tools;
   for (const tool of [tools[0], triage, alias]) {
     assert.match(tool.description, /clickable Markdown link on the first line of say/);
+  }
+  for (const tool of tools) assert.doesNotMatch(tool.description, /cannot buy|never buys/i, tool.name);
+  assert.match(alias.description, /This check leaves checkout to you\./);
+  assert.match(description, /use quote_domain, then buy_domain\.$/);
+  assert.match(tools.find(tool => tool.name === 'buy_domain').description, /^COSTS MONEY/);
+  assert.match(tools.find(tool => tool.name === 'setup_domain').description, /^Changes DNS/);
+  for (const tool of [tools[0], triage, alias]) {
     assert.ok(tool.description.length < 1000, tool.name);
   }
   assert.match(description, /purchase: true/);
@@ -182,12 +190,12 @@ test('forwards purchase and the explicit browser confirm flag, and rejects non-b
     call(5, { names: ['oakenroom'], purchase: 1 }), call(6, { names: ['oakenroom'] })]);
   assert.deepEqual(callData(responses, 2).flags, ['--confirm']);
   const bought = callText(responses, 3);
-  assert.match(bought, /Domain Hound cannot buy or complete checkout/);
+  assert.match(bought, /This check leaves checkout to you/);
   assert.equal(callData(responses, 3).flags, undefined);
   assert.match(errorText(responses, 4), /^confirm must be a boolean\.$/);
   assert.match(errorText(responses, 5), /^purchase must be a boolean\.$/);
   // Without a purchase request, a batch keeps the ordinary never-buys wording and no purchase line.
-  assert.doesNotMatch(callText(responses, 6), /cannot buy or complete checkout/);
+  assert.doesNotMatch(callText(responses, 6), /leaves checkout to you(?:\.|; use the link above)/);
 });
 
 test('passes a normalized query as a separate argument and returns compact JSON', async () => {
@@ -214,7 +222,9 @@ test('a taken exact domain links to a watch and retains the purchase limitation 
     assert.match(result.say, /https:\/\/domainhound\.dev\/watch\/\?domain=taken\.me/);
     assert.doesNotMatch(result.say, /domain-search|\$/);
   }
-  assert.match(callText(responses, 3), /Domain Hound cannot buy or complete checkout/);
+  assert.match(callText(responses, 3), /This check leaves checkout to you/);
+  // A taken domain gets no quote offer.
+  assert.doesNotMatch(callText(responses, 3), /quote taken\.me/);
 });
 
 test('passes 20 names to one native batch invocation and preserves partial compact results', async () => {
@@ -1041,7 +1051,7 @@ test('without Playwright an unconfirmed free domain says check at shop with a li
   // A taken domain stays taken; the fallback never adds a link or price.
   const taken = { ...exactLive, names: [{ name: 'quietotter.me', taken: ['me'] }] };
   const shownTaken = body(JSON.parse(checkText(taken)).display);
-  assert.match(shownTaken, /^\*\*quietotter\.me is taken, and Domain Hound cannot buy or complete checkout\.\*\*/);
+  assert.match(shownTaken, /^\*\*quietotter\.me is taken\. This check leaves checkout to you\.\*\*/);
   assert.doesNotMatch(shownTaken, /\$|https?:|Live shop check/);
 
   // A batch keeps the shared list prices and taken rows, and links the candidate to check at the shop.
@@ -1090,7 +1100,8 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
       const responses = await runServer([fileURLToPath(entry)],
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
       assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
-      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier']);
+      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find',
+        'watch_domain', 'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
   } finally {

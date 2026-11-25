@@ -86,7 +86,7 @@ test('a partial shop quote keeps renewal unknown and an exact offer above budget
   assert.doesNotMatch(html, /query=reserved\.com/);
 
   const exact = await pages({ ...data, names: [data.names[0]] }, { budget: 10, purchase: true });
-  assert.match(exact.say, /Over budget\.\nDomain Hound cannot buy or complete checkout\.\nNext: try a cheaper domain\./);
+  assert.match(exact.say, /Over budget\.\nThis check leaves checkout to you\.\nNext: try a cheaper domain\./);
   assert.doesNotMatch(exact.say, /https:\/\//);
 });
 

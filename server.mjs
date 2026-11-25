@@ -10,6 +10,7 @@ import { attributed, errorText, progressText } from './display.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
+import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -80,7 +81,7 @@ const checkTool = {
 };
 
 const legacyTool = { ...checkTool, name: 'broker_find',
-  description: 'Legacy alias for check_domains. ' + relay };
+  description: 'Legacy alias for check_domains. This check leaves checkout to you. ' + relay };
 
 const triageTool = {
   name: 'triage_names',
@@ -612,8 +613,9 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: [checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool] });
+    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool]) });
     const { name, arguments: args } = params ?? {};
+    if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
     if (name === namingTool.name) {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
         (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() ||
@@ -625,7 +627,7 @@ export async function serve({
     if (name === watchTool.name) {
       let result;
       try {
-        result = await watch(args);
+        result = withWatchQuoteOffer(await watch(args));
       } catch (problem) {
         return reply(errorResult(problem.message));
       }
@@ -665,7 +667,7 @@ export async function serve({
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    return reply(await runLookup(args, cliArguments, checkRows, data => pages(data, args),
+    return reply(await runLookup(args, cliArguments, checkRows, data => pages(data, args).then(page => withCheckQuoteOffer(page, args)),
       (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact })));
   }
 
