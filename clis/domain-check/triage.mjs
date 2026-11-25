@@ -295,7 +295,7 @@ export async function triageNames(inputs, options = {}) {
   });
   const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName] =
     await Promise.all([
-      searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
+      searchCandidates(groups, { ...options, bundledCatalog: null, budgetMs: Math.min(budgetMs, 11500),
         siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite }),
       check(6, searchMarks), check(8, searchApps, (result, index) => startHomes(entries[index][0],
         (result ?? []).map(row => siteDomain(row.sellerUrl)).filter(domain => domain?.split('.')[0].includes(entries[index][0])))),

@@ -1,6 +1,6 @@
 {
   "name": "domain-hound",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check domains, compare registrar prices, and screen product names from your MCP client.",
   "license": "MIT",
   "type": "module",
@@ -37,6 +37,7 @@
     "clis/domain-check/naming-method.mjs",
     "clis/domain-check/parking.mjs",
     "clis/domain-check/price-catalog.mjs",
+    "clis/domain-check/price-snapshot.json",
     "clis/domain-check/prices.mjs",
     "clis/domain-check/registry.mjs",
     "clis/domain-check/spaceship-feed.mjs",
@@ -53,7 +54,8 @@
   ],
   "scripts": {
     "test": "node --test server.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "snapshot-prices": "node scripts/snapshot-prices.mjs"
   },
   "dependencies": {
     "parse5": "^7.3.0"

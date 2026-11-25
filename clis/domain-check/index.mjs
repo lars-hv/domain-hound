@@ -6,7 +6,7 @@ import { confirmDomain, confirmingShops } from './confirm.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
 import { eligibilityNotes, mergeQuote, nameCandidates, normalizeName, pickName, rankName, registrationStatus,
   searchCandidates, searchName, termCosts, validEligibility, validEndings } from './name-search.mjs';
-import { catalogOffers, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
+import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
 import { lookupRegistrations } from './registry.mjs';
 import { namingRecipe } from './naming-method.mjs';
 import { namePresence, triageNames } from './triage.mjs';
@@ -167,7 +167,7 @@ async function liveConfirmation(domain, env, fetcher, timeout) {
 const cost = value => value ?? Infinity;
 
 export async function checkDomain(input, {
-  fetcher = globalThis.fetch, directory, queryWhois, env = process.env, now = new Date(),
+  fetcher = globalThis.fetch, directory, queryWhois, env = process.env, now = new Date(), bundled = bundledCatalog,
 } = {}) {
   const domain = normalize(input);
   if (!domain) return { error: 'Enter a domain such as example.com.' };
@@ -187,8 +187,9 @@ export async function checkDomain(input, {
   const verdict = confirmed ? 'confirmed' : registry.status;
   const offers = [];
   if (verdict !== 'taken') {
-    const priced = [...catalogOffers(catalog, tld, domain).filter(row => isListPriceUsable(row.checkedAt, now)), porkbunOffer(pricing, tld, domain, now),
-      dynadotOffer(dynadot, tld, domain, now)].filter(Boolean);
+    // Live shop prices replace a saved or bundled list price from the same shop.
+    const priced = [...catalogOffers(catalog, tld, domain, datedListPrices(catalog, tld, now, bundled)),
+      porkbunOffer(pricing, tld, domain, now), dynadotOffer(dynadot, tld, domain, now)].filter(Boolean);
     const byShop = new Map(priced.map(row => [row.shop, row]));
     for (const [id, { name }] of Object.entries(shops)) {
       const row = byShop.get(name) ?? offer(id, domain, {
@@ -299,6 +300,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
         buyUrlTemplate[shop] = url + '{domain}' + suffix;
       }
       if (!confirmed && row.status !== 'probably-free') {
+        if (!batch && row.status === 'check-at-shop' && price.now != null) listPrices[d] = price;
         shop_check.push(d);
         shopCheckWhy[d] ??= shopCheckReason(row, rateLimited);
         continue;
@@ -332,9 +334,9 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
     // The registry and list-price evidence above stays; this only says the shop quote could not be checked.
     ...(liveCheck && !best && { liveCheck }),
   };
-  if (batch && Object.keys(listPrices).length) {
+  if (Object.keys(listPrices).length) {
     result.listPrices = listPrices;
-    result.legend = { ...agentLegend, listPrices: 'Standard price by ending; use when a free row has no inline price' };
+    result.legend = { ...agentLegend, listPrices: 'List estimate by ending when no shop quote is shown' };
   }
   if (batch && Buffer.byteLength(JSON.stringify(result)) >= 7900) {
     for (const row of byName.values()) {

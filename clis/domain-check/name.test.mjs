@@ -245,7 +245,7 @@ test('uses exactly one fallback for the same candidate and preserves an inconclu
 });
 
 const registryOptions = {
-  directory: null, skipComSite: true,
+  directory: null, skipComSite: true, bundledCatalog: null,
   fetcher: async url => url === 'https://data.iana.org/rdap/dns.json'
     ? Response.json({ services: [[['com', 'ai', 'co', 'dev', 'app', 'si'], ['https://rdap.example/']]] })
     : new Response(null, { status: 404 }),

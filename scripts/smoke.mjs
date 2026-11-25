@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,8 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
 const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find'];
+const endings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no'];
+const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
 async function smokeMcp(label, command, args, options) {
   const started = performance.now();
@@ -42,14 +44,26 @@ async function smokeMcp(label, command, args, options) {
     const startup = Math.round(performance.now() - started);
     assert.equal(initialize.protocolVersion, '2025-11-25');
     assert.equal(initialize.serverInfo.name, 'domain-hound');
-    assert.equal(initialize.serverInfo.version, '0.1.0');
+    assert.equal(initialize.serverInfo.version, version);
     assert.ok(startup < 5000, `${label} took ${startup} ms to initialize`);
     send({ method: 'notifications/initialized' });
     const advertised = await request(2, 'tools/list');
     assert.deepEqual(advertised.tools.map(tool => tool.name), tools);
 
+    // The first lookup on an empty cache must already carry a dated list price for every ending.
+    const firstStarted = performance.now();
+    const first = await request(3, 'tools/call', { name: 'check_domains', arguments: { names: [query] } });
+    const firstLookup = Math.round(performance.now() - firstStarted);
+    assert.equal(first.isError, false, JSON.stringify(first.content));
+    const batch = JSON.parse(first.content[0].text);
+    assert.match(batch.priceListDate ?? '', /^\d{4}-\d{2}-\d{2}$/, 'First call has no price date');
+    for (const ending of endings) {
+      assert.ok(batch.listPrices?.[ending]?.now > 0, 'First call has no list price for .' + ending);
+    }
+    assert.ok(batch.display.includes('list price from ' + batch.priceListDate), 'First call display has no price date');
+
     const lookupStarted = performance.now();
-    const result = await request(3, 'tools/call', { name: 'check_domains', arguments: { query } });
+    const result = await request(4, 'tools/call', { name: 'check_domains', arguments: { query } });
     const lookup = Math.round(performance.now() - lookupStarted);
     assert.equal(result.isError, false, JSON.stringify(result.content));
     const { display, names } = JSON.parse(result.content[0].text);
@@ -62,7 +76,8 @@ async function smokeMcp(label, command, args, options) {
     child.stdin.end();
     assert.equal((await replies.next()).done, true, 'Unexpected stdout after last response');
     assert.equal(await completion, null);
-    console.log(`${label}: initialize ${startup} ms, tools/list ${tools.length}, check_domains ${lookup} ms`);
+    console.log(`${label}: initialize ${startup} ms, tools/list ${tools.length}, first check_domains ${firstLookup} ms `
+      + `(10 endings priced, list price from ${batch.priceListDate}), check_domains ${lookup} ms`);
   } finally {
     clearTimeout(timeout);
     reader.close();
@@ -74,20 +89,22 @@ async function smokeMcp(label, command, args, options) {
 await mkdir(scratch, { recursive: true });
 const temp = await mkdtemp(join(scratch, 'smoke-'));
 try {
-  const env = { ...process.env, npm_config_cache: join(temp, 'npm-cache'),
-    XDG_CACHE_HOME: join(temp, 'lookup-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, 'lookup-cache') };
+  // Every run starts with its own empty npm and lookup caches, like a fresh install.
+  const freshEnv = name => ({ ...process.env, npm_config_cache: join(temp, name, 'npm-cache'),
+    XDG_CACHE_HOME: join(temp, name, 'lookup-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, name, 'lookup-cache') });
   const direct = await exec(process.execPath, [join(root, 'clis/domain-check/index.mjs'), '--agent', query],
-    { cwd: temp, env, timeout: 20_000 });
+    { cwd: temp, env: freshEnv('cli'), timeout: 20_000 });
   const capability = JSON.parse(direct.stdout);
   assert.equal(capability.names[0].name, query);
   assert.equal(direct.stderr, '');
   console.log('Capability CLI: returned the requested name');
 
-  await smokeMcp('Source bin', process.execPath, [join(root, 'bin/domain-hound.mjs')], { cwd: temp, env });
-  const pack = await exec('npm', ['pack', '--json', '--pack-destination', temp], { cwd: root, env });
-  const [{ filename }] = JSON.parse(pack.stdout);
-  await smokeMcp('Cold npx tarball', 'npx', ['-y', '--package', join(temp, filename), 'domain-hound'],
-    { cwd: temp, env });
+  await smokeMcp('Source bin', process.execPath, [join(root, 'bin/domain-hound.mjs')], { cwd: temp, env: freshEnv('bin') });
+  const pack = await exec('npm', ['pack', '--json', '--pack-destination', temp], { cwd: root, env: freshEnv('pack') });
+  const [{ filename, files }] = JSON.parse(pack.stdout);
+  assert.ok(files.some(file => file.path === 'clis/domain-check/price-snapshot.json'), 'Tarball lacks the price snapshot');
+  await smokeMcp('Cold npx tarball', 'npx', ['-y', 'file:' + join(temp, filename)],
+    { cwd: temp, env: freshEnv('npx') });
 } finally {
   await rm(temp, { recursive: true, force: true });
 }
