@@ -193,7 +193,9 @@ test('the default check confirms the top pick and up to three runners-up through
   assert.equal(result.best.domain, 'quietfern.com');
   const { display } = JSON.parse(checkText(result));
   assert.match(display, /^- quietfern\.com \$9\.48\/\$10\.68 ✓ confirmed at Spaceship 12:04 UTC$/m);
-  assert.match(display, /^- quietfern\.co \$3\.11\/\$31\.05 list price$/m);
+  // The renewal jump is said on the price line itself, with both figures.
+  assert.match(display, /^- quietfern\.co \$3\.11, then \$31\.05\/yr, 10x jump \(list price\)$/m);
+  assert.match(display, /^Cheapest now: quietfern\.co\nBest value: quietfern\.com, \$30\.84 over 3 years$/m);
   assert.match(display, /^Confirmed at Spaceship 12:04 UTC: \[quietfern\.com\]/m);
   assert.equal(result.liveCheck, undefined);
   assert.ok(Buffer.byteLength(checkText(result)) < 8000);

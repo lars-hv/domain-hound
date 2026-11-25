@@ -10,7 +10,7 @@ import { offer, porkbunOffer, rankedFirstYear, threeYearCost } from './prices.mj
 
 const porkbun = JSON.parse(await readFile(new URL('./fixtures/porkbun.json', import.meta.url), 'utf8'));
 const dynadotHtml = await readFile(new URL('./fixtures/dynadot.html', import.meta.url), 'utf8');
-const spaceshipQuotes = (await readFile(new URL('./fixtures/spaceship.txt', import.meta.url), 'utf8')).trim().split('\n===\n');
+const spaceshipQuotes = (await readFile(new URL('./fixtures/spaceship.txt', import.meta.url), 'utf8')).trim().split(/\r?\n===\r?\n/);
 const now = new Date('2026-11-24T04:00:00Z');
 const nokRate = { rate: 9.8076, date: '2026-11-23' };
 const nokResponse = {

@@ -1,5 +1,6 @@
-import { canRecommend, defaultEndings, eligibilityNotes, nameCandidates, normalizeName, searchCandidates,
+import { canRecommend, defaultEndings, eligibilityNotes, nameCandidates, normalizeName, searchCandidates, searchKey,
   validEligibility, validEndings } from './name-search.mjs';
+import { shopSearchUrl } from './prices.mjs';
 import { checkHandles, compactText, handleSearches, letters, searchApps, searchEntities, searchMarks, trademarkSearches } from './triage-sources.mjs';
 import { loadEdgarCompanies, matchEdgarCompanies, searchNorwegianCompanies } from './company-search.mjs';
 import { mapLimit } from './cache.mjs';
@@ -216,7 +217,7 @@ export async function namePresence(input, options = {}) {
 // Same-name rivals with measured traction follow the traction rules first; evidence whose traction could not be
 // measured keeps the earlier same-name checks. Trademark and availability guardrails stay in place.
 function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, mark, site, best, available, marks, apps, android,
-  androidAnswered = android, com }) {
+  androidAnswered = android, com, premium = [] }) {
   if (rival?.[0] === 'Avoid') return rival;
   if (overlap) return ['Avoid', overlap.domain + ' is a live business in the same category'];
   if (activeApp) return ['Avoid', activeApp.name + ' is an app in the same category with ' + activeApp.ratings + ' ' + activeApp.store + ' ratings'];
@@ -231,7 +232,10 @@ function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, 
   if (entity) return ['Check first', 'An exact-name Wikidata entity already exists'];
   if (!marks || !apps || !androidAnswered || sameName.unchecked?.length) return ['Check first', 'A competition source did not answer'];
   if (com?.status === 'check-at-shop') return ['Check first', 'The .com registry status is unresolved'];
-  if (!best) return ['Check first', available.length ? 'The free endings require buyer eligibility' : 'No domain was found free at the registry'];
+  if (!best) {
+    return ['Check first', available.length ? 'The free endings require buyer eligibility'
+      : premium.length ? 'The free endings may be premium, price at shop' : 'No domain was found free at the registry'];
+  }
   return ['No conflict found', 'No close US mark, app or site overlap'];
 }
 
@@ -244,10 +248,14 @@ export async function triageNames(inputs, options = {}) {
   if (options.eligible !== undefined && !validEligibility(options.eligible)) return { error: 'Eligible endings must list supported restricted endings, such as no.' };
   const endings = options.endings ?? defaultEndings;
   const websiteEndings = [...new Set([...endings, ...coreWebsiteEndings])];
+  // Each name has its DNS label (punycode for æøå) for domains, and a Latin key for the rival, app and mark sources.
   const names = new Map();
+  const keys = new Map();
   for (const input of inputs) {
     const name = normalizeName(input);
-    if (!names.has(name)) names.set(name, input.trim());
+    if (names.has(name)) continue;
+    names.set(name, input.trim());
+    keys.set(name, searchKey(input));
   }
   const budgetMs = options.budgetMs ?? 13200;
   const started = performance.now();
@@ -275,7 +283,7 @@ export async function triageNames(inputs, options = {}) {
   const groups = [...names.keys()].map(name => ({
     name, candidates: nameCandidates(name, { variants: false, endings: websiteEndings }),
   }));
-  const entries = [...names].map(([name, input], index) => [name, input, index]);
+  const entries = [...names].map(([name, input], index) => [keys.get(name), input, index]);
   const check = (concurrency, lookup, after = () => {}) => mapLimit(entries, concurrency, async ([name, input, index]) => {
     const result = signal.aborted ? null : await retry(() => lookup(name, input, sources), found);
     after(result, index);
@@ -295,14 +303,16 @@ export async function triageNames(inputs, options = {}) {
   });
   const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName] =
     await Promise.all([
-      searchCandidates(groups, { ...options, bundledCatalog: null, budgetMs: Math.min(budgetMs, 11500),
+      // A cold cache still gets the bundled, dated list prices, so free endings never all read "price at shop".
+      searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
         siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite }),
       check(6, searchMarks), check(8, searchApps, (result, index) => startHomes(entries[index][0],
         (result ?? []).map(row => siteDomain(row.sellerUrl)).filter(domain => domain?.split('.')[0].includes(entries[index][0])))),
       entityChecks,
       Promise.all(entries.map(([name]) => checkHandles(name, sources))),
       check(8, searchNorwegianCompanies),
-      searchAndroidApps(names, { ...sources, playBudgetMs: Math.min(12000, options.playBudgetMs ?? Infinity, budgetMs) }),
+      searchAndroidApps(new Map(entries.map(([key, input]) => [key, input])),
+        { ...sources, playBudgetMs: Math.min(12000, options.playBudgetMs ?? Infinity, budgetMs) }),
       retry(() => loadEdgarCompanies(sources), found),
       mapLimit(entries, 5, ([name, input, index]) => searchGoogle(name, input, {
         ...sources, timeoutMs: timeLeft(),
@@ -315,14 +325,15 @@ export async function triageNames(inputs, options = {}) {
   const geoByName = new Map(Object.entries(options.geo ?? {}).map(([key, value]) => [normalizeName(key), parseGeo(value)]));
   const storeAppsByName = domains.groups.map(({ name }, index) => [
     ...(appsByName[index] ?? []).map(row => ({ ...row, store: 'iOS', ref: row })),
-    ...(androidApps.get(name) ?? []).map(row => ({ ...row, store: 'Android', ref: row })),
+    ...(androidApps.get(keys.get(name)) ?? []).map(row => ({ ...row, store: 'Android', ref: row })),
   ]);
   const rivalsByName = domains.groups.map(({ name, sites }, index) => {
     const raw = googleByName[index].raw ?? {};
+    const key = keys.get(name);
     const rivals = collectRivals({
-      name, input: names.get(name), sites, entities: entitiesByName[index], topics: raw.topics, suggestions: raw.suggestions,
+      name: key, input: names.get(name), sites, entities: entitiesByName[index], topics: raw.topics, suggestions: raw.suggestions,
       apps: storeAppsByName[index], geo: geoByName.get(name),
-      sameBusiness: text => describedBusiness(name, text, options.about, options.category),
+      sameBusiness: text => describedBusiness(key, text, options.about, options.category),
     });
     startEvidence(traction, rivals);
     return rivals;
@@ -338,14 +349,15 @@ export async function triageNames(inputs, options = {}) {
       const [app] = apps ?? [];
       const brand = entities?.find(row => row.brand);
       const entity = brand ?? entities?.[0];
-      const android = androidApps.get(name);
+      const key = keys.get(name);
+      const android = androidApps.get(key);
       const google = googleByName[index];
       const judged = judgeRivals(rivalsByName[index], evidence, { now: (options.now ?? new Date()).getTime(),
         answered: { wikidata: entities != null, apps: apps != null && android != null },
         geo: geoByName.get(name), entities });
       const { explained } = judged;
       const storeApps = storeAppsByName[index];
-      const activeApp = storeApps.find(row => !explained.has(row.ref) && row.ratings >= 100 && describedBusiness(name,
+      const activeApp = storeApps.find(row => !explained.has(row.ref) && row.ratings >= 100 && describedBusiness(key,
         [row.name, row.category, row.description].join(' '), options.about, options.category));
       const mark = marks?.[0];
       const others = marks?.filter(item => letters(item.name) !== letters(mark?.name)) ?? [];
@@ -360,29 +372,29 @@ export async function triageNames(inputs, options = {}) {
       const live = Object.entries(sites).flatMap(([tld, site]) => {
         const domain = name + '.' + tld;
         if (site.state !== 'live' || (site.host && site.host !== domain && !site.host.endsWith('.' + domain)
-            && !letters([site.title, site.description].join(' ')).includes(letters(name)))) return [];
+            && !letters([site.title, site.description].join(' ')).includes(letters(key)))) return [];
         const business = siteCategories.find(([, pattern]) => pattern.test(site.title ?? ''))?.[0]
           ?? siteCategories.find(([, pattern]) => pattern.test(site.description ?? ''))?.[0] ?? 'unknown';
-        const sameBusiness = describedBusiness(name, [site.title, site.description].join(' '), options.about, options.category);
+        const sameBusiness = describedBusiness(key, [site.title, site.description].join(' '), options.about, options.category);
         return [{ domain, title: compactText(site.title, 75), business, ...(sameBusiness && { sameBusiness }) }];
       });
       // Only same-name evidence whose traction could not be measured keeps the earlier checks.
       const unmeasured = live.filter(row => !explained.has(row.domain));
       const site = unmeasured[0];
       const overlap = unmeasured.find(row => row.sameBusiness && /\.(com|ai)$/.test(row.domain));
-      const us = matchEdgarCompanies(name, edgar);
-      const sameName = sameNameEvidence({ name, live, norway, us, entities, entity, github, handles });
+      const us = matchEdgarCompanies(key, edgar);
+      const sameName = sameNameEvidence({ name: key, live, norway, us, entities, entity, github, handles });
       const otherEntities = entities?.filter(row => !explained.has(row));
-      const legacy = sameNameEvidence({ name, live: unmeasured, norway, us, entities: otherEntities, entity, github, handles });
+      const legacy = sameNameEvidence({ name: key, live: unmeasured, norway, us, entities: otherEntities, entity, github, handles });
       const silent = silentSources({ marks, apps, android, entities, norway, edgar, github, handles });
       const otherEntity = otherEntities?.find(row => row.brand) ?? otherEntities?.[0];
       const [decision, reason] = verdict({
         rival: tractionVerdict(judged), overlap, sameName: legacy, activeApp,
         brand: otherEntity?.brand ? otherEntity : undefined, app: apps?.find(row => !explained.has(row)), entity: otherEntity,
-        mark, otherMark, site, silent, best, available, marks, apps,
+        mark, otherMark, site, silent, best, available, marks, apps, premium: results.filter(row => row.status === 'premium'),
         android: android?.filter(row => !explained.has(row)), androidAnswered: android, com: results.find(row => row.tld === 'com'),
       });
-      const googleExplained = explainedGoogle(name, googleByName[index].raw, judged, entities);
+      const googleExplained = explainedGoogle(key, googleByName[index].raw, judged, entities);
       const summary = tractionSummary(judged);
       const answered = {
         USPTO: marks, 'App Store': apps, 'Google Play': android, Google: google.google, Wikidata: entities,
@@ -408,12 +420,15 @@ export async function triageNames(inputs, options = {}) {
         google: { ...(google.google ?? { result: 'not checked', why: google.unchecked }), link: googleSearchLink(names.get(name)) },
         taken: requested.filter(row => row.status === 'taken').map(row => row.tld),
         shop_check: requested.filter(row => ['check-at-shop', 'reserved'].includes(row.status)).map(row => row.tld),
-        // Premium endings never carry a list price; the shop shows their price.
+        // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
+        ...likelyEndings(requested),
+        // Premium endings never carry a list price; the shop shows their price. A short name may be premium.
         ...(requested.some(row => row.status === 'premium') && {
           premium: requested.filter(row => row.status === 'premium').map(row => row.tld) }),
-        competition, buy: best?.buyUrl ?? null,
+        // The checkout is the listed shop's search, or the confirming shop's search when no list price is known.
+        competition, buy: best ? best.buyUrl ?? shopSearchUrl(best.confirmShop, best.domain) : null,
         details: {
-          memorable: memorability(name, names.get(name)),
+          memorable: memorability(key, names.get(name)),
           presence: Object.fromEntries(Object.entries(handles).map(([service, status]) =>
             [service, status === 'unknown' ? null : status])),
           sites: Object.fromEntries(seen), appName: appStatus(apps, android),
@@ -450,10 +465,17 @@ function priceEntry(row) {
   };
 }
 
+function likelyEndings(rows) {
+  const open = rows.filter(row => row.status === 'check-at-shop');
+  const free = open.filter(row => row.likely === 'free').map(row => row.tld);
+  const taken = open.filter(row => row.likely === 'taken').map(row => row.tld);
+  return { ...(free.length && { likely_free: free }), ...(taken.length && { likely_taken: taken }) };
+}
+
+// Best value is the lowest total of the payments due in three years; the cheaper first payment breaks a tie.
 function bestValue(options) {
-  const value = options.find(row => Number.isFinite(row.firstPayment) && Number.isFinite(row.renewalPayment)
-    && row.renewalPayment <= 2 * row.firstPayment);
-  return value === options[0] ? undefined : value;
+  return options.filter(row => Number.isFinite(row.threeYear)).reduce((best, row) => !best || row.threeYear < best.threeYear
+    || (row.threeYear === best.threeYear && row.firstPayment < best.firstPayment) ? row : best, undefined);
 }
 
 function rankedRows(rows) {
@@ -471,7 +493,7 @@ function topChoices(rows) {
         name, verdict, reason, domain: best?.domain ?? null, ending: best?.tld ?? null,
         now: best?.firstPayment ?? null, renew: best?.renewalPayment ?? null, term: best?.minimumYears ?? null,
         ...(value && { bestValue: { domain: value.domain, now: value.firstPayment,
-          renew: value.renewalPayment, term: value.minimumYears } }),
+          renew: value.renewalPayment, term: value.minimumYears, y3: value.threeYear } }),
       };
     });
 }

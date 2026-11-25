@@ -1,6 +1,6 @@
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { isSearchLink, nameCheckLines } from './clis/domain-check/google-search.mjs';
-import { canRecommend } from './clis/domain-check/name-search.mjs';
+import { canRecommend, eligibilityNeed, normalizeName, premiumRisk, unicodeName } from './clis/domain-check/name-search.mjs';
 import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
 export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
@@ -25,11 +25,49 @@ export function md(value) {
 }
 
 const money = value => '$' + Number(value).toFixed(2);
-const label = name => String(name).normalize('NFKD').toLowerCase().replace(/[^a-z0-9-]/g, '');
+// The DNS label of a screened name: punycode for æøå, never with letters removed.
+const label = name => normalizeName(String(name ?? '')) ?? String(name ?? '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9-]/g, '');
 const fullDomain = (name, d) => d.includes('.') ? d : name + '.' + d;
 const suffix = domain => domain.split('.').at(-1);
 const registered = (row, ending) => row.taken?.includes(ending) || row.resale?.includes(ending);
 const checkoutLimitation = 'Domain Hound cannot buy or complete checkout.';
+const mayBePremium = 'may be premium, price at shop';
+
+// A name or domain in its own spelling with the ASCII form registrars use beside it: "grønn.no (xn--grnn-zua.no)".
+export function shown(value) {
+  const text = String(value ?? '');
+  const unicode = unicodeName(text);
+  return unicode ? md(unicode) + ' (' + md(text) + ')' : md(text);
+}
+
+// "not eligible: needs Norwegian org/ID" for a restricted ending the buyer has not said they qualify for.
+function ineligible(ending, eligible) {
+  return canRecommend(ending, eligible ?? []) ? null : 'not eligible: needs ' + eligibilityNeed(ending);
+}
+
+// The shop whose search page is the fallback checkout for an ending.
+const fallbackShop = ending => ending === 'no' ? 'dynadot' : ending === 'so' ? 'namecheap' : 'spaceship';
+// A checkout link that is never empty: the given URL when it is a trusted shop search, else the fallback shop search.
+function checkoutLink(url, domain) {
+  return safeLink(url, domain) ?? safeLink(shopSearchUrl(fallbackShop(suffix(domain)), domain), domain);
+}
+
+// The renewal jump as a whole multiple, when the renewal is over twice the first payment for the same term.
+// Both payments cover the same number of years (.ai: two), so the payments compare directly.
+export function jumpRatio(price) {
+  if (!(price?.now > 0) || price.renew == null) return null;
+  const ratio = price.renew / price.now;
+  return ratio > 2 ? Math.round(ratio) : null;
+}
+
+// Payments due in three years and the years they cover: .ai pays two years at a time, so it covers four.
+function threeYears(price) {
+  if (price?.now == null || price.renew == null) return null;
+  if (price.y3 != null && !(price.term > 1)) return { total: price.y3, years: 3 };
+  const term = price.term > 1 ? price.term : 1;
+  const renewals = Math.ceil((3 - term) / term);
+  return { total: price.y3 ?? Math.round((price.now + renewals * price.renew) * 100) / 100, years: term + renewals * term };
+}
 
 function preferredFirst(values, preferred, endingOf = value => value) {
   if (!preferred?.length) return values;
@@ -40,8 +78,9 @@ function preferredFirst(values, preferred, endingOf = value => value) {
   return [...values].sort((a, b) => rank(a) - rank(b));
 }
 
+// A data-only shop has no search URL (null), so a missing URL must never match it.
 export function safeLink(url, domain) {
-  if (!/^[a-z0-9-]+\.[a-z0-9-]+$/i.test(domain) ||
+  if (typeof url !== 'string' || !url || !/^[a-z0-9-]+\.[a-z0-9-]+$/i.test(domain) ||
       !registrarIds.some(id => shopSearchUrl(id, domain) === url)) return null;
   return '[' + domain + '](' + url + ')';
 }
@@ -52,8 +91,13 @@ function templateLink(templates, shop, domain) {
     ? safeLink(template.replace('{domain}', encodeURIComponent(domain)), domain) : null;
 }
 
+// ".no not eligible: needs Norwegian org/ID." unless the buyer said they qualify.
 function eligibilityLine(result) {
-  return Object.entries(result.eligibility ?? {}).map(([ending, note]) => '.' + ending + ' — ' + md(note) + '.').join(' ');
+  return Object.keys(result.eligibility ?? {}).map(ending => {
+    const need = eligibilityNeed(ending);
+    return '.' + ending + (ineligible(ending, result.eligible) ? ' not eligible: needs ' + need + '.'
+      : ': eligible, you said you qualify (' + need + ').');
+  }).join(' ');
 }
 
 // When the live shop check could not run (no Playwright or no browser), the domain still needs a shop check.
@@ -66,11 +110,25 @@ function liveCheckLine(result, withLink = true) {
     + (check.reason ? ' (' + md(check.reason) + ')' : '') + '. Any prices shown are list estimates.';
 }
 
-// ".co $3.11/$31.05" with the term when a payment covers more than one year.
+// ".com $9.48/$10.68", with the term when a payment covers more than one year. A renewal over twice the first
+// payment is said in the same place: ".co $3.11, then $31.05/yr, 10x jump".
+function priceText(price) {
+  const term = price.term > 1 ? ' ' + price.term + 'y' : '';
+  const ratio = jumpRatio(price);
+  if (ratio) return money(price.now) + term + ', then ' + money(price.renew) + (term ? '/' + price.term + 'y' : '/yr') + ', ' + ratio + 'x jump';
+  return money(price.now) + (price.renew != null ? '/' + money(price.renew) : '') + term;
+}
+
 function priced(ending, price) {
-  if (price?.now == null) return ending + ' price at shop';
-  const renew = price.renew != null ? '/' + money(price.renew) : '';
-  return ending + ' ' + money(price.now) + renew + (price.term > 1 ? ' ' + price.term + 'y' : '');
+  return ending + ' ' + (price?.now == null ? 'price at shop' : priceText(price));
+}
+
+// "Best value: lanternbay.com, $30.84 over 3 years" (the lowest total of the payments due in three years).
+function bestValueLine(domain, price) {
+  const value = threeYears(price);
+  if (!value) return '';
+  return 'Best value: ' + shown(domain) + ', ' + money(value.total) + ' over 3 years'
+    + (value.years > 3 ? ' (covers ' + value.years + ' years)' : '');
 }
 
 // The date of the oldest list price shown, e.g. "list price from 2026-11-25".
@@ -87,21 +145,48 @@ function priceLabel(option, shop) {
   return premium + 'confirmed at ' + md(shop ?? 'the shop') + clock(option.at);
 }
 
+// "Other endings (list prices, availability not checked): .ai $159.96/$159.96 2y · .io $21.40/$53.50 · ..."
+function otherEndingsLine(result) {
+  const entries = Object.entries(result.otherEndings ?? {}).filter(([ending, price]) =>
+    price?.now != null && !ineligible(ending, result.eligible));
+  return entries.length ? 'Other endings (list prices, availability not checked): '
+    + entries.map(([ending, price]) => priced('.' + ending, price)).join(' · ') : '';
+}
+
 function exactDisplay(result) {
   const row = result.names?.[0] ?? {};
   const domain = row.name;
+  const name = shown(domain);
   const ending = domain.split('.').at(-1);
   const checked = result.checkedAt ? ' Checked ' + String(result.checkedAt).slice(0, 16).replace('T', ' ') + ' UTC.' : '';
+  const others = otherEndingsLine(result);
+  const tail = others ? [others] : [];
+  const notEligible = ineligible(ending, result.eligible);
+  const eligibility = result.eligibility ? [eligibilityLine(result)] : [];
   if (registered(row, ending)) {
     const resale = row.resale?.includes(ending) ? ' The owner may list it for resale.' : '';
-    return '**' + domain + ' is taken, and ' + checkoutLimitation + '**' + resale + checked;
+    // The ending's standard list price, labelled as a benchmark: this name is not for sale at it.
+    const standard = result.listPrices?.[ending];
+    const date = listDate(result);
+    const showBenchmark = standard?.now != null && !notEligible && (ending === 'ai' || !premiumRisk(domain));
+    const term = standard?.term ?? 1;
+    const renewal = ending === 'ai' && standard?.renew != null
+      ? money(standard.renew / term) + '/yr renewal, billed as ' + money(standard.renew) + ' every ' + term + ' years'
+      : showBenchmark ? priceText(standard) : '';
+    const benchmark = showBenchmark
+      ? ['Standard .' + ending + ' list price (benchmark' + (date ? ' from ' + date : '') + ', USD ex. VAT): ' + renewal + '.']
+      : [];
+    return ['**' + name + ' is taken, and ' + checkoutLimitation + '**' + resale + checked, ...benchmark, ...tail].join('\n');
   }
   const free = row.free?.find(option => option.d === ending);
   if (free?.s === 'prem') {
+    if (notEligible) return ['**' + name + ' is free at the registry.** ' + notEligible + '.' + checked, ...tail].join('\n');
     const shop = free.shop ?? Object.keys(result.buyUrlTemplate ?? {})[0];
     const link = templateLink(result.buyUrlTemplate, shop, domain);
-    return ['**' + domain + ' is free at the registry, but premium.** Premium, price at shop' + (link ? ': ' + link : '') + '.'
-      + ' No list price applies.' + checked, ...(result.eligibility ? [eligibilityLine(result)] : [])].join('\n');
+    const head = free.risk ? '**' + name + ' is free at the registry.** May be premium, price at shop'
+      : '**' + name + ' is free at the registry, but premium.** Premium, price at shop';
+    return [head + (link ? ': ' + link : '') + '.' + (free.risk ? ' No list price shown.' : ' No list price applies.') + checked,
+      ...eligibility, ...tail].join('\n');
   }
   if (free) {
     const confirmed = free.s === 'ok';
@@ -111,63 +196,72 @@ function exactDisplay(result) {
     const shop = offer.shop ?? best?.shop;
     const link = safeLink(best?.buyUrl, domain) ?? templateLink(result.buyUrlTemplate, shop, domain);
     const term = offer.term > 1 ? ' for ' + offer.term + ' years' : '';
-    const live = !confirmed && result.liveCheck?.domain === domain ? liveCheckLine(result) : '';
+    const live = !notEligible && !confirmed && result.liveCheck?.domain === domain ? liveCheckLine(result) : '';
     const date = listDate(result);
+    const ratio = jumpRatio(offer);
+    const checkout = notEligible ?? (link ? link + (shop ? ' at ' + md(shop) : '') : '—');
     const lines = [
-      '**' + domain + (free.prem ? ' is free, at a premium price.** ' : ' is free.** ')
+      '**' + name + (free.prem ? ' is free, at a premium price.** ' : ' is free.** ')
         + (confirmed ? 'Price ' + priceLabel(free, shop) + '.'
           : 'The registry shows it free; the price is a list price' + (offer.now != null && date ? ' from ' + date : '')
             + ', not a shop quote.') + checked,
       '',
       '| Domain | Today | Renewal | 3 years | Checkout |',
       '|---|---|---|---|---|',
-      '| ' + domain + ' | ' + (offer.now != null ? money(offer.now) + term : 'price at shop') + ' | '
-        + (offer.renew != null ? money(offer.renew) + (offer.term > 1 ? term : '/yr') : '—') + (offer.jump ? ' (renewal jump)' : '')
-        + ' | ' + (offer.y3 != null ? money(offer.y3) : '—') + ' | ' + (link ? link + (shop ? ' at ' + md(shop) : '') : '—') + ' |',
+      '| ' + name + ' | ' + (offer.now != null ? money(offer.now) + term : 'price at shop') + ' | '
+        + (offer.renew != null ? money(offer.renew) + (offer.term > 1 ? term : '/yr') : '—') + (ratio ? ', ' + ratio + 'x jump' : '')
+        + ' | ' + (offer.y3 != null ? money(offer.y3) : '—') + ' | ' + checkout + ' |',
       '',
       ...(live ? [live] : []),
       'USD ex. VAT.' + (confirmed ? '' : ' Estimate: the shop shows the final price.'),
-      ...(result.eligibility ? [eligibilityLine(result)] : []),
+      ...eligibility,
+      ...tail,
     ];
     return lines.join('\n');
   }
+  if (notEligible) return ['**' + name + ': ' + notEligible + '.**' + checked, ...tail].join('\n');
   const why = result.shopCheckWhy?.[domain] ?? result.shopCheckWhy?.[ending];
   const shop = Object.keys(result.buyUrlTemplate ?? {})[0];
   const link = templateLink(result.buyUrlTemplate, shop, domain);
   if (result.shopCheckWhy?.[domain]) {
     // Reserved or not offered: no list price applies.
-    return '**' + domain + ': not offered for registration.** ' + md(why) + '. Check at shop' + (link ? ': ' + link : '') + '.' + checked;
+    return ['**' + name + ': not offered for registration.** ' + md(why) + '. Check at shop' + (link ? ': ' + link : '') + '.' + checked,
+      ...tail].join('\n');
   }
   const live = result.liveCheck?.domain === domain ? liveCheckLine(result, !link) : '';
   const estimate = result.listPrices?.[ending];
   const date = listDate(result);
-  const hasEstimate = estimate?.now != null && date;
-  return ['**' + domain + ': not settled.** The registry did not settle it' + (why ? ' (' + md(why) + ')' : '')
-    + '. Check at shop' + (link ? ': ' + link : '') + '.' + (hasEstimate ? '' : ' No price yet.') + checked,
+  const hasEstimate = estimate?.now != null && date && !premiumRisk(domain);
+  // DNS is a likelihood only; the registry or the shop settles it.
+  const likely = row.likely_free?.includes(ending) ? ' Likely free (DNS), confirm at shop.'
+    : row.likely_taken?.includes(ending) ? ' Likely taken (DNS).' : '';
+  const risk = premiumRisk(domain) ? ' A short name ' + mayBePremium + '.' : '';
+  return ['**' + name + ': not settled.** The registry did not settle it' + (why ? ' (' + md(why) + ')' : '') + '.' + likely
+    + ' Check at shop' + (link ? ': ' + link : '') + '.' + risk + (hasEstimate || risk ? '' : ' No price yet.') + checked,
     ...(hasEstimate ? [
       priced('.' + ending, estimate) + ' at ' + md(estimate.shop) + ' (USD ex. VAT, list price from ' + date + ').',
-      ...(result.eligibility ? [eligibilityLine(result)] : []),
+      ...eligibility,
     ] : []),
-    ...(live ? [live] : [])].join('\n');
+    ...(live ? [live] : []), ...tail].join('\n');
 }
 
-// One line per free domain, so a copied answer cannot merge or drop an ending.
+// One line per free domain, so a copied answer cannot merge or drop an ending. Each price appears once.
 // Level 1 drops the "list price" word (the header says it); level 2 leaves standard prices to the shared line;
 // level 3, for the densest batches, names each name once above its own ending lines.
-function freeLines(row, listPrices, level) {
-  const lines = (row.free ?? []).map(option => {
-    const domain = level >= 3 && !option.d.includes('.') && !row.name.includes('.') ? '.' + option.d
-      : option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
-    if (option.s === 'prem') return '- ' + domain + ' premium, price at shop';
+function freeLines(row, listPrices, level, eligible) {
+  return (row.free ?? []).map(option => {
+    const full = option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
+    const domain = level >= 3 && !option.d.includes('.') && !row.name.includes('.') ? '.' + option.d : shown(full);
+    const blocked = ineligible(suffix(full), eligible);
+    if (blocked) return '- ' + domain + ' ' + blocked;
+    if (option.s === 'prem') return '- ' + domain + ' ' + (option.risk ? mayBePremium : 'premium, price at shop');
     const own = option.now != null;
     if (!own && level >= 2) return '- ' + domain;
     const quote = own ? option : listPrices[option.d];
-    const price = quote?.now == null ? ' price at shop'
-      : ' ' + money(quote.now) + (quote.renew != null ? '/' + money(quote.renew) : '') + (quote.term > 1 ? ' ' + quote.term + 'y' : '');
-    const label = option.s === 'ok' ? ' ✓ ' + priceLabel(option, option.shop) : level >= 1 || quote?.now == null ? '' : ' list price';
-    return '- ' + domain + price + label;
+    const listed = jumpRatio(quote) ? ' (list price)' : ' list price';
+    const tag = option.s === 'ok' ? ' ✓ ' + priceLabel(option, option.shop) : level >= 1 || quote?.now == null ? '' : listed;
+    return '- ' + domain + ' ' + (quote?.now == null ? 'price at shop' : priceText(quote)) + tag;
   });
-  return lines;
 }
 
 function groupRows(rows, linesFor) {
@@ -177,21 +271,40 @@ function groupRows(rows, linesFor) {
     if (!lines.length) continue;
     const key = lines.join('\n');
     if (!groups.has(key)) groups.set(key, { names: [], lines });
-    groups.get(key).names.push(md(row.name));
+    groups.get(key).names.push(shown(row.name));
   }
   return [...groups.values()];
+}
+
+// For one bare name: the cheapest first payment and the best three-year value among the endings this buyer can register.
+function choiceLines(row, listPrices, eligible) {
+  const options = (row.free ?? []).flatMap(option => {
+    const domain = option.d.includes('.') ? option.d : row.name + '.' + option.d;
+    if (option.s === 'prem' || option.prem || premiumRisk(domain) || ineligible(suffix(domain), eligible)) return [];
+    const price = option.now != null ? option : listPrices[option.d];
+    return price?.now != null ? [{ domain, price, value: threeYears(price)?.total ?? Infinity }] : [];
+  });
+  if (!options.length) return [];
+  const cheapest = options.reduce((best, row) => row.price.now < best.price.now ? row : best);
+  const value = options.reduce((best, row) => row.value < best.value
+    || (row.value === best.value && row.price.now < best.price.now) ? row : best);
+  return ['Cheapest now: ' + shown(cheapest.domain), ...(value.value < Infinity ? [bestValueLine(value.domain, value.price)] : [])];
 }
 
 export function checkDisplay(result, level = 0, purchase = false) {
   const rows = (result.names ?? []).filter(Boolean);
   if (rows.length === 1 && rows[0].name?.includes('.')) return exactDisplay(result);
   const listPrices = result.listPrices ?? {};
+  const eligible = result.eligible ?? [];
+  // The shared line carries a standard price only where no free line shows it: free endings from level 2 on, and
+  // endings left to a shop check. Short names may be premium, so their open endings add no list price.
   const standard = new Set();
   for (const row of rows) {
-    for (const option of row.free ?? []) if (option.now == null && option.s !== 'prem') standard.add(option.d);
+    for (const option of row.free ?? []) if (level >= 2 && option.now == null && option.s !== 'prem') standard.add(option.d);
+    if (premiumRisk(row.name)) continue;
     for (const d of row.shop_check ?? []) if (listPrices[d]?.now != null) standard.add(d);
   }
-  const shared = [...standard].filter(d => !d.includes('.') && listPrices[d])
+  const shared = [...standard].filter(d => !d.includes('.') && listPrices[d] && !ineligible(d, eligible))
     .map(d => priced('.' + d, listPrices[d])).join(' · ');
   const lines = [
     '**Domain check, ' + rows.length + (rows.length === 1 ? ' name' : ' names') + '** (USD ex. VAT, today/renewal; '
@@ -201,20 +314,26 @@ export function checkDisplay(result, level = 0, purchase = false) {
   if (shared) lines.push('Standard prices: ' + shared);
   if (result.eligibility) lines.push(eligibilityLine(result));
   const free = level >= 3
-    ? groupRows(rows, row => freeLines(row, listPrices, level))
+    ? groupRows(rows, row => freeLines(row, listPrices, level, eligible))
       .flatMap(group => [group.names.join(', ') + ':', ...group.lines])
-    : rows.flatMap(row => freeLines(row, listPrices, level));
+    : rows.flatMap(row => freeLines(row, listPrices, level, eligible));
   lines.push('', '**Free domains, one ending per line**' + (free.length ? '' : ': none found'), ...free, '');
   const endingsOf = (row, key) => (row[key] ?? []).map(d => d.includes('.') ? d : '.' + d);
   const statusLines = project => level >= 3
     ? groupRows(rows, project).map(group => group.names.join(', ') + ' ' + group.lines.join(' '))
     : rows.flatMap(row => {
       const endings = project(row);
-      return endings.length ? [md(row.name) + ' ' + endings.join(' ')] : [];
+      return endings.length ? [shown(row.name) + ' ' + endings.join(' ')] : [];
     });
+  const likely = row => new Set([...(row.likely_free ?? []), ...(row.likely_taken ?? [])]);
   const taken = statusLines(row => [...endingsOf(row, 'taken'), ...endingsOf(row, 'resale').map(d => d + ' (resale)')]);
-  const check = statusLines(row => endingsOf(row, 'shop_check'));
+  const likelyTaken = statusLines(row => endingsOf(row, 'likely_taken'));
+  const likelyFree = statusLines(row => endingsOf(row, 'likely_free'));
+  const check = statusLines(row => endingsOf({ open: (row.shop_check ?? []).filter(d => !likely(row).has(d)) }, 'open'));
   if (taken.length) lines.push('Taken: ' + taken.join(' · '));
+  // DNS is a likelihood only; the registry or the shop settles these.
+  if (likelyTaken.length) lines.push('Likely taken (DNS): ' + likelyTaken.join(' · '));
+  if (likelyFree.length) lines.push('Likely free (DNS), confirm at shop: ' + likelyFree.join(' · '));
   if (check.length) lines.push('Check at shop: ' + check.join(' · '));
   const reasons = new Map();
   for (const [ending, reason] of Object.entries(result.shopCheckWhy ?? {})) {
@@ -223,12 +342,12 @@ export function checkDisplay(result, level = 0, purchase = false) {
   }
   for (const [reason, endings] of reasons) lines.push(endings.join(', ') + ' — ' + md(reason) + '.');
   if (result.complete === false) lines.push('Some checks did not finish in time; check those at a shop.');
+  if (rows.length === 1) lines.push(...choiceLines(rows[0], listPrices, eligible));
   const best = result.best;
   const link = best && safeLink(best.buyUrl, best.domain);
   if (link) {
     lines.push('Confirmed at ' + md(best.shop ?? 'the shop') + clock(best.at) + ': ' + link + ' '
-      + (best.priceNow != null ? money(best.priceNow) : 'price at shop')
-      + (best.renewal != null ? '/' + money(best.renewal) : '') + (best.term > 1 ? ' ' + best.term + 'y' : '') + '.');
+      + (best.priceNow != null ? priceText({ now: best.priceNow, renew: best.renewal, term: best.term }) : 'price at shop') + '.');
     lines.push(neverBuys);
   } else if (result.liveCheck) {
     const live = liveCheckLine(result);
@@ -236,7 +355,7 @@ export function checkDisplay(result, level = 0, purchase = false) {
   } else if (rows.length === 1 || purchase) {
     const available = rows.flatMap(row => (row.free ?? []).flatMap(option => {
       const domain = option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
-      if (!canRecommend(domain.split('.').at(-1))) return [];
+      if (!canRecommend(domain.split('.').at(-1), eligible)) return [];
       const price = option.prem || option.s === 'prem' ? option : { ...listPrices[option.d], ...option };
       const link = templateLink(result.buyUrlTemplate, price.shop, domain);
       return link ? [{ link, price: price.now ?? Infinity }] : [];
@@ -245,12 +364,6 @@ export function checkDisplay(result, level = 0, purchase = false) {
     if (cheapest) lines.push('Check at shop: ' + cheapest.link);
   }
   return lines.join('\n').trim();
-}
-
-function bestValueLine(domain, quote) {
-  if (quote?.now == null || quote.renew == null) return '';
-  const term = quote.term > 1 ? ' (each payment covers ' + quote.term + ' years)' : '';
-  return 'Best value: ' + md(domain) + ' ' + money(quote.now) + ' now, ' + money(quote.renew) + ' renewal' + term;
 }
 
 function rowBestValue(row, prices) {
@@ -305,14 +418,20 @@ export function topPicks(result) {
   return picks;
 }
 
+// A screened name as typed, with its DNS label beside it when that is punycode: "Grønnstue (xn--grnnstue-64a)".
+function nameLabel(name) {
+  const dns = label(name);
+  return md(name) + (dns.startsWith('xn--') ? ' (' + md(dns) + ')' : '');
+}
+
 function topLines(result, showReason, showValue = true) {
   return ['**Top picks**', ...topPicks(result).map(row => {
-    const ending = row.domain ?? (row.ending && '.' + row.ending);
-    const domain = ending ? ', ' + priced(ending, row) : ', no eligible free ending';
+    const ending = row.domain ? shown(row.domain) : row.ending && '.' + row.ending;
+    const domain = ending ? ', cheapest now ' + priced(ending, row) : ', no eligible free ending';
     const value = !showValue ? '' : typeof row.bestValue === 'string'
       ? rowBestValue(result.names.find(candidate => candidate.name === row.name), result.prices)
       : row.bestValue && bestValueLine(row.bestValue.domain, row.bestValue);
-    return '- **' + md(row.name) + '** — ' + md(row.verdict) + domain + (showReason ? '. ' + md(row.reason) : '')
+    return '- **' + nameLabel(row.name) + '** — ' + md(row.verdict) + domain + (showReason ? '. ' + md(row.reason) : '')
       + (value ? '  \n  ' + value : '');
   })];
 }
@@ -349,14 +468,16 @@ export function triageDisplay(result, prior, { short = false, compact = false, p
   for (const row of rows) {
     const base = label(row.name);
     const free = Array.isArray(row.free) ? row.free : [];
-    const first = free.find(ending => canRecommend(ending, result.eligible));
-    const link = first && base ? safeLink(row.buy, fullDomain(base, first)) : null;
-    const checkoutPrice = prior && link && (row.own?.[first] ?? prices[first]);
     const earlier = earlierRows.get(base) ?? [];
     // An earlier premium answer, or a shop quote above the list price, replaces the list price for that ending.
     const premiumQuote = ending => earlier.find(option => option.d === ending && (option.s === 'prem' || option.prem ||
       (option.s === 'ok' && option.now != null && option.now > ((row.own?.[ending] ?? prices[ending])?.now ?? Infinity) + 0.01)));
+    const first = free.find(ending => canRecommend(ending, result.eligible) && !premiumQuote(ending));
+    // The checkout always links a real shop search; it never renders an empty link.
+    const link = first && base ? checkoutLink(row.buy, fullDomain(base, first)) : null;
     const cell = preferredFirst(free, preferred).map(ending => {
+      const blocked = ineligible(ending, result.eligible);
+      if (blocked) return '.' + ending + ' ' + blocked;
       const own = row.own?.[ending];
       const premium = premiumQuote(ending);
       if (premium) {
@@ -370,17 +491,24 @@ export function triageDisplay(result, prior, { short = false, compact = false, p
     const taken = earlier.filter(option => row.taken?.includes(option.d));
     const exact = earlier.filter(option => option.s === 'ok' && free.includes(option.d) && !premiumQuote(option.d) &&
       option.now !== (row.own?.[option.d] ?? prices[option.d])?.now);
-    for (const [key, heading] of [['premium', 'premium, price at shop'], ['taken', 'taken'], ['shop_check', 'check at shop']]) {
-      if (row[key]?.length) cell.push(heading + ': ' + preferredFirst(row[key], preferred).map(ending => '.' + ending).join(' '));
+    const likely = new Set([...(row.likely_free ?? []), ...(row.likely_taken ?? [])]);
+    const groups = {
+      premium: row.premium, taken: row.taken, likely_taken: row.likely_taken, likely_free: row.likely_free,
+      shop_check: row.shop_check?.filter(ending => !likely.has(ending)),
+    };
+    for (const [key, heading] of [['premium', premiumRisk(base) ? mayBePremium : 'premium, price at shop'], ['taken', 'taken'],
+      ['likely_taken', 'likely taken (DNS)'], ['likely_free', 'likely free (DNS), confirm at shop'], ['shop_check', 'check at shop']]) {
+      if (groups[key]?.length) cell.push(heading + ': ' + preferredFirst(groups[key], preferred).map(ending => '.' + ending).join(' '));
     }
     if (!compact && recheck.length) cell.push('earlier price, recheck: ' + recheck.map(previous).join(', '));
     if (!compact && taken.length) cell.push('earlier price, now taken: ' + taken.map(previous).join(', '));
     if (!compact && exact.length) cell.push('earlier shop quote: ' + exact.map(previous).join(', '));
-    const checkout = checkoutPrice && !compact ? priced(link, checkoutPrice) : compact ? '—' : link ?? '—';
+    // The price stays on the ending's own line, so the checkout cell carries only the link.
+    const checkout = compact ? '—' : link ?? '—';
     const value = !compact && rowBestValue(row, prices);
     const reason = compact ? shorten(String(row.reason ?? '').split(' · ', 1)[0], 80) : row.reason;
     const checks = compact ? checkLines(row, false).map(line => line.split(' · [search]', 1)[0]) : checkLines(row, short);
-    lines.push('| ' + md(row.name) + ' | ' + md(row.verdict) + ': ' + md(reason) + (compact ? '' : tractionLine(row, Boolean(prior) || short)) + ' | '
+    lines.push('| ' + nameLabel(row.name) + ' | ' + md(row.verdict) + ': ' + md(reason) + (compact ? '' : tractionLine(row, Boolean(prior) || short)) + ' | '
       + (cell.join('<br>') || 'none free') + (value ? '<br>' + value : '') + ' | ' + checkout + ' | '
       + checks.join('<br>') + ' |');
   }
@@ -395,7 +523,7 @@ function denseDisplay(result, short = false, links = true) {
   const results = (result.names ?? []).filter(Boolean);
   const checksFor = row => checkLines(row, short).map(line =>
     links ? line : line.replace(/\[([^\]]+)\]\(https:\/\/[^)]+\)/g, '$1'));
-  const names = results.map(row => '- **' + md(row.name) + '** — ' + md(row.verdict));
+  const names = results.map(row => '- **' + nameLabel(row.name) + '** — ' + md(row.verdict));
   const individual = names.map((name, index) => name + '  \n  ' + checksFor(results[index]).join('  \n  '));
   const groups = links ? [] : groupRows(results, checksFor);
   const shared = groups.flatMap(({ names, lines }) => [
@@ -506,7 +634,8 @@ export function checkText(result, shortlist = false, { purchase = false, preferr
     }
     const groups = new Map();
     for (const row of data.names) {
-      const free = (row.free ?? []).map(option => '.' + option.d + (option.s === 'prem' || option.prem ? ' (premium)' : ''));
+      const free = (row.free ?? []).map(option => '.' + option.d
+        + (option.risk ? ' (may be premium)' : option.s === 'prem' || option.prem ? ' (premium)' : ''));
       const statuses = ['Free ' + (free.join(' ') || 'none found')];
       for (const [key, heading] of [['taken', 'taken'], ['resale', 'resale'], ['shop_check', 'check at shop']]) {
         if (row[key]?.length) statuses.push(heading + ' ' + row[key].map(ending => '.' + ending).join(' '));

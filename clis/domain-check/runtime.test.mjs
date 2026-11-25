@@ -109,7 +109,8 @@ test('with the explicit confirm flag and no Playwright, a batch keeps taken rows
   assert.equal(result.liveCheck.domain, 'example.me');
   assert.equal(result.liveCheck.reason, 'Playwright is not installed');
   const { display } = JSON.parse(checkText(result));
-  assert.match(display, /^Standard prices: \.me \$3\.50\/\$6\.00 · \.io \$30\.00\/\$50\.00$/m);
+  // Each price appears once: on its own free line, not again on a shared line.
+  assert.doesNotMatch(display, /^Standard prices/m);
   assert.match(display, /^- example\.me \$3\.50\/\$6\.00 list price\n- example\.io \$30\.00\/\$50\.00 list price$/m);
   assert.match(display, /^Taken: example \.com$/m);
   assert.match(display, /\nCheck at shop: \[example\.me\]\(https:\/\/www\.dynadot\.com\/domain\/search\?domain=example\.me\)\. Live shop check unavailable/);

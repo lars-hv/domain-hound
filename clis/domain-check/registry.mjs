@@ -5,11 +5,17 @@ import { saleSignal } from './parking.mjs';
 import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
 
 export const bootstrapUrl = 'https://data.iana.org/rdap/dns.json';
-const cachedEndings = new Set(['co', 'me', 'io', 'app', 'dev']);
-const registrationLifetime = 5 * 60_000;
+// A conclusive registry answer is reused: a registration for a day, an absence for an hour. DNS still runs first,
+// so a name registered since then shows up through its name servers.
+export const takenLifetime = 24 * 3_600_000;
+export const freeLifetime = 3_600_000;
 const identityDigital = 'https://rdap.identitydigital.services';
-const identityDigitalCooldown = 'rdap-identity-digital-cooldown.json';
 const rdapRateLimit = 'Registry RDAP returned HTTP 429';
+// A rate-limited registry host is left alone for its Retry-After in this process and the next.
+const legacyIdentityCooldown = 'rdap-identity-digital-cooldown.json';
+const cooldownFile = origin => 'rdap-cooldown-' + new URL(origin).hostname + '.json';
+// The fallback steps (registry WHOIS, then DNS) keep this much of the lookup time.
+const fallbackReserve = 800;
 
 const overrides = new Map([
   ['co', 'https://rdap.registry.co/co/'],
@@ -61,7 +67,7 @@ function unknown(source, reason) {
 
 // A registry that exposes premium or reserved status says so in plain words. "All rights reserved" never counts.
 const reservedWords = /\b(?:(?:domain|name) (?:is |has been )?reserved|reserved (?:domain|name)|reserved (?:by|for) (?:the )?registry|not available for registration)\b/i;
-const premiumWords = /\bpremium (?:domain|name|price|pricing|tier)\b|\b(?:domain|name) is premium\b/i;
+const premiumWords = /\bregistry premium\b|\bpremium (?:domain|name|price|pricing|tier)\b|\b(?:domain|name) is premium\b/i;
 
 export function registrySignal(text) {
   const value = String(text ?? '');
@@ -84,16 +90,62 @@ function signalled(source, signal) {
   return { status: 'free', source, ...(signal && { signal }) };
 }
 
+// The recursive DNS answer: name servers mean registered; otherwise a reason and the DNS error code.
 async function dnsStatus(domain, resolveNs) {
   try {
     const nameservers = await resolveNs(domain);
     if (nameservers.length) return { status: 'taken', source: 'dns', nameservers, ...saleSignal(nameservers) };
-    return 'DNS returned no name servers';
+    return { reason: 'DNS returned no name servers', code: null };
   } catch (error) {
-    if (['ENOTFOUND', 'ENODATA'].includes(error?.code)) return 'DNS returned no name servers';
-    if (['ETIMEOUT', 'ECANCELLED'].includes(error?.code)) return 'DNS timed out';
-    return 'DNS query failed';
+    const code = typeof error?.code === 'string' ? error.code : null;
+    if (['ENOTFOUND', 'ENODATA'].includes(code)) return { reason: 'DNS returned no name servers', code };
+    if (['ETIMEOUT', 'ECANCELLED'].includes(code)) return { reason: 'DNS timed out', code };
+    return { reason: 'DNS query failed', code };
   }
+}
+
+// Ask the ending's own authoritative name servers whether they delegate the name. NXDOMAIN means it is not in the
+// zone (likely free, though a registered name without name servers looks the same); a referral or an answer means it
+// is delegated (likely taken). Only a likelihood: a registry or shop still settles it.
+const tldServers = new Map();
+export async function systemAuthoritativeNs(domain, timeout) {
+  if (!(timeout >= 150)) return null;
+  const deadline = Date.now() + timeout;
+  const left = () => Math.max(1, deadline - Date.now());
+  const tld = domain.split('.').at(-1);
+  const lookup = new Resolver({ timeout: Math.min(800, timeout), tries: 1 });
+  const stop = setTimeout(() => lookup.cancel(), timeout);
+  let direct;
+  let stopDirect;
+  try {
+    if (!tldServers.has(tld)) {
+      tldServers.set(tld, lookup.resolveNs(tld).then(async hosts => (await Promise.all(hosts.slice(0, 3)
+        .map(host => lookup.resolve4(host).catch(() => [])))).flat().slice(0, 4)).catch(() => []));
+    }
+    const servers = await tldServers.get(tld);
+    if (!servers.length) {
+      tldServers.delete(tld);
+      return null;
+    }
+    direct = new Resolver({ timeout: left(), tries: 1 });
+    direct.setServers(servers);
+    stopDirect = setTimeout(() => direct.cancel(), left());
+    await direct.resolveSoa(domain);
+    return 'taken';
+  } catch (error) {
+    if (!direct) return null;
+    if (error?.code === 'ENOTFOUND') return 'free';
+    if (error?.code === 'ENODATA') return 'taken';
+    return null;
+  } finally {
+    clearTimeout(stop);
+    clearTimeout(stopDirect);
+  }
+}
+
+// The recursive answer as a likelihood, used when the authoritative check is not available.
+function recursiveLikely(code) {
+  return code === 'ENOTFOUND' ? 'free' : null;
 }
 
 export function systemQueryWhois(host, query, timeout) {
@@ -140,15 +192,29 @@ async function lookupWhois(domain, tld, query, timeLeft, referrals) {
   return unknown('whois', 'Registry WHOIS returned no definitive answer');
 }
 
+// Retry-After as milliseconds from now: delta seconds ("120") or an HTTP date. Null when absent or unreadable.
+export function retryAfterMs(value, now = Date.now()) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return null;
+  if (/^\d+$/.test(text)) {
+    const duration = Number(text) * 1000;
+    return Number.isSafeInteger(now + duration) ? duration : null;
+  }
+  if (!/[a-z]/i.test(text)) return null;
+  const at = Date.parse(text);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
 function retryWait(value, attempt, limited = false) {
   const backoff = (limited ? 650 : 150) * 2 ** attempt;
-  return Math.max(backoff, /^\d+$/.test(value ?? '') ? Number(value) * 1000 : Date.parse(value) - Date.now() || 0);
+  return Math.max(backoff, retryAfterMs(value) ?? 0);
 }
 
 async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, registry, attempts, directory) {
   let last = unknown('rdap', 'Registry lookup timed out');
   for (let attempt = 0; attempt < attempts && timeLeft() > 0; attempt++) {
     const now = Date.now();
+    // A queued request never goes to a host that is cooling down.
     if (registry.limitedUntil > now) return unknown('rdap', rdapRateLimit);
     const startsAt = Math.max(registry.retryAt, registry.nextStart, now);
     if (startsAt - now >= timeLeft()) return last;
@@ -159,6 +225,7 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
       if (wait >= timeLeft()) return last;
       if (wait > 0) await pause(wait);
     }
+    if (registry.limitedUntil > Date.now()) return unknown('rdap', rdapRateLimit);
     if (timeLeft() <= 0) return last;
     let wait = retryWait(null, attempt);
     try {
@@ -185,12 +252,16 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
       await response.body?.cancel().catch(() => {});
       last = unknown('rdap', 'Registry RDAP returned HTTP ' + status);
       if (status !== 429 && status < 500) return last;
-      wait = retryWait(response.headers?.get('retry-after'), attempt, status === 429);
+      const header = response.headers?.get('retry-after');
+      wait = retryWait(header, attempt, status === 429);
       if (status === 429 || status === 503) registry.retryAt = Math.max(registry.retryAt, Date.now() + wait);
-      if (status === 429 && registry.identity && wait >= timeLeft()) {
-        registry.limitedUntil = registry.retryAt;
-        await writeCache(directory, identityDigitalCooldown, { until: registry.limitedUntil }).catch(() => {});
-        return last;
+      // The host's cooldown holds for this process and, through the cache, for the next lookups too.
+      if (status === 429 || (status === 503 && retryAfterMs(header) != null)) {
+        const outlasts = wait >= timeLeft();
+        // Queued requests see the cooldown before the cache write finishes.
+        if (outlasts) registry.limitedUntil = Math.max(registry.limitedUntil, registry.retryAt);
+        await writeCache(directory, cooldownFile(base), { until: registry.retryAt }).catch(() => {});
+        if (outlasts) return last;
       }
     } catch {
       last = unknown('rdap', 'Registry RDAP did not respond');
@@ -202,25 +273,53 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
 }
 
 export async function lookupRegistrations(candidates, {
-  directory = cacheDir, fetcher = globalThis.fetch, resolveNs = systemResolveNs, queryWhois = systemQueryWhois,
+  directory = cacheDir, fetcher = globalThis.fetch, resolveNs = systemResolveNs, queryWhois, authoritativeNs,
   now = new Date(), timeLeft = () => 8500, dnsFirst = true, readExpiry = false, pause = delay,
   onResult = () => {}, concurrency = 4, rdapAttempts = 3,
 } = {}) {
+  const whois = queryWhois ?? systemQueryWhois;
+  // The fallbacks use the system network only in live use: a caller that injects its own network gets no other.
+  const fallbackWhois = queryWhois ?? (fetcher === globalThis.fetch ? systemQueryWhois : null);
+  const dnsSignal = authoritativeNs ?? (resolveNs === systemResolveNs ? systemAuthoritativeNs : null);
+  const reserve = Math.min(fallbackReserve, Math.max(0, timeLeft() - 1500));
+  const rdapLeft = () => timeLeft() - reserve;
   const services = candidates.some(({ tld }) => !rdapBase(tld))
     ? bootstrap(directory, fetcher, now, timeLeft) : null;
   const referrals = new Map();
   const pending = candidates.map(async (candidate, index) => {
-    const dns = dnsFirst ? await dnsStatus(candidate.domain, resolveNs) : '';
+    const dns = dnsFirst ? await dnsStatus(candidate.domain, resolveNs) : null;
     return { candidate, index, dns };
   });
   const results = [];
   function record({ candidate, index, dns }, registry) {
-    if (registry.status === 'unknown' && dns) registry.reason = dns + '; ' + registry.reason;
+    if (registry.status === 'unknown' && dns?.reason) registry.reason = dns.reason + '; ' + registry.reason;
     results[index] = registry;
     onResult(candidate, registry);
   }
+  async function finish(row, result, filename) {
+    record(row, result);
+    if (filename && ['taken', 'free'].includes(result.status)) {
+      await writeCache(directory, filename, { at: now.getTime(), result }).catch(() => {});
+    }
+  }
+  // DNS as a likelihood when the registry stays silent: the ending's authoritative servers when available, else the
+  // recursive answer from the first DNS step. Never a free result.
+  async function dnsLikely(row) {
+    const wait = Math.min(900, Math.floor(timeLeft()));
+    if (dnsSignal && wait >= 150) {
+      // The deadline holds even if a resolver never answers.
+      let timer;
+      const answer = await Promise.race([
+        Promise.resolve().then(() => dnsSignal(row.candidate.domain, wait)).catch(() => null),
+        new Promise(resolve => { timer = setTimeout(resolve, wait + 50, null); }),
+      ]);
+      clearTimeout(timer);
+      if (answer === 'free' || answer === 'taken') return answer;
+    }
+    return recursiveLikely(row.dns?.code);
+  }
   const records = pending.map(entry => entry.then(row => {
-    if (typeof row.dns !== 'string') {
+    if (row.dns?.status === 'taken') {
       record(row, row.dns);
       return null;
     }
@@ -240,35 +339,49 @@ export async function lookupRegistrations(candidates, {
     }
     registries.get(origin).jobs.push({ base, entry: records[index] });
   }));
-  await Promise.all([...registries.values()].map(async registry => {
-    if (registry.identity) {
-      const saved = await readCache(directory, identityDigitalCooldown);
-      if (Number.isFinite(saved?.until) && saved.until > Date.now()) registry.limitedUntil = saved.until;
+  // Rows the registry left open, for the WHOIS and DNS fallbacks once every host has had its turn.
+  const unsettled = [];
+  await Promise.all([...registries].map(async ([origin, registry]) => {
+    if (origin.startsWith('https:')) {
+      const saved = await readCache(directory, cooldownFile(origin));
+      const legacy = origin === identityDigital ? await readCache(directory, legacyIdentityCooldown) : null;
+      registry.limitedUntil = Math.max(saved?.until || 0, legacy?.until || 0);
     }
     return mapLimit(registry.jobs, registry.limit, async ({ base, entry }) => {
       const row = await entry;
       if (!row) return;
       const { domain, tld } = row.candidate;
-      const filename = dnsFirst && cachedEndings.has(tld) ? 'rdap-' + domain + '.json' : null;
+      const filename = dnsFirst ? 'rdap-' + domain + '.json' : null;
       const cached = filename && await readCache(directory, filename);
       const age = now - cached?.at;
-      if (age >= 0 && age < registrationLifetime && ['taken', 'free'].includes(cached.result?.status)) {
+      const lifetime = { taken: takenLifetime, free: freeLifetime }[cached?.result?.status] ?? 0;
+      if (age >= 0 && age < lifetime) {
         record(row, { ...cached.result, checkedAt: new Date(cached.at).toISOString() });
         return;
       }
-      const fromWhois = () => lookupWhois(domain, tld, queryWhois, timeLeft, referrals)
-        .catch(() => unknown('whois', 'Registry WHOIS did not respond'));
-      let result = base ? await lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, registry, rdapAttempts, directory)
-        : await services ? await fromWhois() : unknown('rdap', 'IANA RDAP bootstrap is unavailable');
-      if ((tld === 'me' || tld === 'io') && result.reason === rdapRateLimit && timeLeft() > 0) {
-        const fallback = await fromWhois();
-        if (fallback.status !== 'unknown') result = fallback;
-      }
-      record(row, result);
-      if (filename && result.status !== 'unknown') {
-        await writeCache(directory, filename, { at: now.getTime(), result }).catch(() => {});
-      }
+      const result = base ? await lookupRdap(base, domain, fetcher, rdapLeft, readExpiry, pause, registry, rdapAttempts, directory)
+        : await services ? await lookupWhois(domain, tld, whois, timeLeft, referrals)
+          .catch(() => unknown('whois', 'Registry WHOIS did not respond'))
+          : unknown('rdap', 'IANA RDAP bootstrap is unavailable');
+      if (result.status === 'unknown' && !result.signal) unsettled.push({ row, result, filename, viaWhois: !base });
+      else await finish(row, result, filename);
     });
   }));
+  // Registry WHOIS (where IANA documents one for the ending) and the DNS likelihood run side by side per row, so a
+  // slow WHOIS server never uses up the time of the DNS step. A WHOIS answer settles the row; DNS only suggests.
+  await mapLimit(unsettled, 6, async ({ row, result, filename, viaWhois }) => {
+    const { domain, tld } = row.candidate;
+    // IANA lists RDAP as the sole registration service for Google's .app and .dev.
+    const query = ['app', 'dev'].includes(tld) ? null : fallbackWhois;
+    const [answer, likely] = await Promise.all([
+      query && !viaWhois && timeLeft() > 600
+        ? lookupWhois(domain, tld, query, () => timeLeft() - 300, referrals)
+          .catch(() => unknown('whois', 'Registry WHOIS did not respond')) : null,
+      dnsLikely(row),
+    ]);
+    const settled = answer && (answer.status !== 'unknown' || answer.signal) ? answer
+      : likely ? { ...result, likely, likelySource: 'dns' } : result;
+    await finish(row, settled, filename);
+  });
   return results;
 }

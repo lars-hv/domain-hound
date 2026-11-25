@@ -6,7 +6,8 @@ const budget = 20_500;
 const shopBudget = 10_000;
 const cacheLifetime = 15 * 60_000;
 const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36';
-const dollars = String.raw`\$\s*(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{2}`;
+// Shops write whole-dollar prices without cents too ("$8" at Dynadot).
+const dollars = String.raw`\$\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{2})?`;
 const priceLine = new RegExp('^' + dollars + '$');
 const dynadotPrices = new RegExp('^(?:' + dollars + '){1,2}$');
 const lastPrice = new RegExp(dollars + '$');
@@ -16,7 +17,8 @@ const namecheapPrice = new RegExp('^(' + dollars + ')/yr$', 'i');
 const namecheapRenewal = new RegExp('^Renews at (' + dollars + ')/yr\\.?$', 'i');
 const cloudflareQuote = new RegExp('^Buy now: ([a-z0-9.-]+) for (' + dollars + ')\\. Renews at (' + dollars + ') per year\\.$', 'i');
 const taken = /^(?:Taken|Registered in \d{4})$/i;
-const premiumLabel = /^(?:Premium|Premium domain)$/i;
+// "Premium", "Premium domain", and Dynadot's "Registry Premium" for a price the registry sets.
+const premiumLabel = /^(?:Registry\s+)?Premium(?:\s+(?:domain|name))?$/i;
 const trackerRoots = [
   'google-analytics.com', 'googletagmanager.com', 'doubleclick.net', 'googlesyndication.com',
   'facebook.net', 'facebook.com', 'nr-data.net', 'newrelic.com', 'crazyegg.com',
