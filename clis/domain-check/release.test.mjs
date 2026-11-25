@@ -1,11 +1,12 @@
 import '../../test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { domainToASCII, pathToFileURL } from 'node:url';
+import { domainToASCII, fileURLToPath, pathToFileURL } from 'node:url';
 import { checkText, triageText } from '../../display.mjs';
 import { writeCache } from './cache.mjs';
 import { parseDynadot } from './confirm.mjs';
@@ -327,4 +328,212 @@ test('CI runs the tests on Windows too and smokes the packed package through npx
   assert.match(ci, /package-smoke:/);
   assert.match(ci, /node scripts\/package-smoke\.mjs/);
   assert.ok(existsSync(new URL('../../scripts/package-smoke.mjs', import.meta.url)));
+});
+
+// Release workflow: the readiness wait and the published npx smoke run against fixture npm and npx commands on PATH.
+// The workflow shell is bash on ubuntu-latest, so these run where bash is; Windows CI covers the rest of the suite.
+const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
+const publishYml = () => readFileSync(join(repoRoot, '.github/workflows/publish.yml'), 'utf8').replace(/\r\n/g, '\n');
+const shellTests = { skip: process.platform === 'win32' && 'the release workflow shell runs on Linux' };
+
+// The `run: |` block of one named step, dedented, exactly as GitHub Actions hands it to the shell.
+function stepRun(workflow, name) {
+  const lines = workflow.split('\n');
+  const at = lines.findIndex(line => line.trim() === '- name: ' + name);
+  assert.ok(at >= 0, 'No step named ' + name);
+  const next = lines.findIndex((line, index) => index > at && /^\s*- (?:name|uses):/.test(line));
+  const runAt = lines.findIndex((line, index) => index > at && /^\s+run: \|$/.test(line));
+  assert.ok(runAt > at && (next < 0 || runAt < next), 'Step ' + name + ' has no run block');
+  const indent = lines[runAt].search(/\S/);
+  const body = [];
+  for (const line of lines.slice(runAt + 1)) {
+    if (line.trim() && line.search(/\S/) <= indent) break;
+    body.push(line);
+  }
+  while (body.length && !body.at(-1).trim()) body.pop();
+  const strip = Math.min(...body.filter(line => line.trim()).map(line => line.search(/\S/)));
+  return body.map(line => line.slice(strip)).join('\n') + '\n';
+}
+
+function run(command, args, options) {
+  return new Promise((resolve, reject) => {
+    const started = performance.now();
+    const child = spawn(command, args, { ...options, timeout: 12_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', code => resolve({ code, stdout, stderr, ms: performance.now() - started }));
+  });
+}
+
+// A fixture command: a sh wrapper on PATH that runs a Node script with this Node.
+async function fixtureCommand(bin, name, source) {
+  await writeFile(join(bin, name + '.mjs'), source);
+  await writeFile(join(bin, name), `#!/bin/sh\nexec "${process.execPath}" "${join(bin, name + '.mjs')}" "$@"\n`);
+  await chmod(join(bin, name), 0o755);
+}
+
+// Each call takes the next answer from plan.json (the last one repeats) and logs its arguments and npm cache.
+const planned = `import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+const dir = process.env.FIXTURE_DIR;
+const plan = JSON.parse(readFileSync(dir + '/plan.json', 'utf8'));
+const count = existsSync(dir + '/count') ? Number(readFileSync(dir + '/count', 'utf8')) : 0;
+writeFileSync(dir + '/count', String(count + 1));
+const args = process.argv.slice(2);
+const cache = args.includes('--cache') ? args[args.indexOf('--cache') + 1] : process.env.npm_config_cache;
+const fresh = !existsSync(cache) || readdirSync(cache).length === 0;
+appendFileSync(dir + '/calls.jsonl', JSON.stringify({ args, cache, fresh }) + '\\n');
+// Like npm, leave something in the cache, so a reused cache would no longer look fresh.
+mkdirSync(cache + '/_cacache', { recursive: true });
+export const step = plan[Math.min(count, plan.length - 1)];
+`;
+
+async function fixtureBin(t, plan) {
+  const dir = await mkdtemp(join(tmpdir(), 'hound-release-fixture-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 'plan.json'), JSON.stringify(plan));
+  await writeFile(join(dir, 'planned.mjs'), planned);
+  // Nothing in the wait may touch the tarball URL; a curl or wget call is recorded and fails.
+  for (const name of ['curl', 'wget']) {
+    await writeFile(join(dir, name), `#!/bin/sh\necho "$0 $*" >> "${join(dir, 'downloads')}"\nexit 22\n`);
+    await chmod(join(dir, name), 0o755);
+  }
+  // macOS ships no coreutils timeout; a minimal stand-in keeps the shell runnable there. Linux CI uses the real one.
+  if (spawnSync('sh', ['-c', 'command -v timeout']).status !== 0) {
+    await writeFile(join(dir, 'timeout'), '#!/bin/sh\n[ "$1" = "-s" ] && shift 2\nsecs=$1; shift\n'
+      + 'exec perl -e \'alarm shift; exec @ARGV or die\' "$secs" "$@"\n');
+    await chmod(join(dir, 'timeout'), 0o755);
+  }
+  const calls = async () => (await readFile(join(dir, 'calls.jsonl'), 'utf8').catch(() => ''))
+    .split('\n').filter(Boolean).map(line => JSON.parse(line));
+  return { dir, calls, env: { ...process.env, PATH: dir + ':' + process.env.PATH, FIXTURE_DIR: dir } };
+}
+
+const fakeNpm = `const { step } = await import(process.env.FIXTURE_DIR + '/planned.mjs');
+if (step === 'ok') console.log('0.1.6');
+else if (step === 'stale') console.log('0.1.5');
+else if (step === 'e404') { console.error('npm error code E404\\nnpm error 404 Not Found - GET https://registry.npmjs.org/domain-hound'); process.exit(1); }
+else if (step === 'hang') setInterval(() => {}, 1000);
+// 'empty': npm view exits 0 and prints nothing when the version is not in the document yet.
+`;
+
+async function waitStep(t, plan, timing) {
+  const fixture = await fixtureBin(t, plan);
+  await fixtureCommand(fixture.dir, 'npm', fakeNpm);
+  const script = join(fixture.dir, 'wait.sh');
+  await writeFile(script, stepRun(publishYml(), 'Wait until npm lists the new version'));
+  const result = await run('bash', ['--noprofile', '--norc', '-eo', 'pipefail', script], {
+    env: { ...fixture.env, VERSION: '0.1.6', ...timing } });
+  return { ...result, calls: await fixture.calls(), downloaded: existsSync(join(fixture.dir, 'downloads')) };
+}
+
+test('the publish workflow waits on npm view with fresh caches, then smokes through npx before the MCP Registry', () => {
+  const workflow = publishYml();
+  const wait = stepRun(workflow, 'Wait until npm lists the new version');
+  assert.match(wait, /npm view "domain-hound@\$\{VERSION\}" version/);
+  assert.match(wait, /--cache "\$cache"/);
+  assert.match(wait, /timeout -s KILL "\$limit" npm view/);
+  assert.doesNotMatch(workflow, /curl[^\n]*domain-hound-\$\{?VERSION|registry\.npmjs\.org\/domain-hound\/-\//,
+    'no step fetches the tarball URL');
+  assert.match(workflow, /run: node scripts\/package-smoke\.mjs --published "\$VERSION"/);
+  assert.match(workflow, /mcp-registry:\n\s+needs: \[publish, smoke\]/);
+  const smokeJob = workflow.slice(workflow.indexOf('  smoke:'), workflow.indexOf('  mcp-registry:'));
+  const minutes = Number(/^ {4}timeout-minutes: (\d+)$/m.exec(smokeJob)?.[1]);
+  assert.ok(minutes >= 15 + 10 + 5, 'the smoke job has room for setup beyond both retry windows: ' + minutes);
+  const steps = [...smokeJob.matchAll(/^ {8}timeout-minutes: (\d+)$/gm)].map(match => Number(match[1]));
+  assert.equal(steps[0], 15);
+  assert.ok(steps[1] >= 10 && steps[0] + steps[1] < minutes, steps.join());
+});
+
+test('the readiness wait needs three npm view answers in a row and starts the count again after a miss', shellTests, async t => {
+  const plan = ['e404', 'empty', 'stale', 'ok', 'ok', 'e404', 'ok', 'ok', 'ok', 'e404'];
+  const result = await waitStep(t, plan, { READY_TIMEOUT_SECONDS: '60', READY_ATTEMPT_SECONDS: '10', READY_POLL_SECONDS: '0' });
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.equal(result.calls.length, 9, 'stops at the third answer in a row');
+  assert.ok(result.calls.every(call => call.args.slice(0, 3).join(' ') === 'view domain-hound@0.1.6 version'), JSON.stringify(result.calls));
+  assert.equal(new Set(result.calls.map(call => call.cache)).size, 9, 'a new npm cache for every try');
+  assert.ok(result.calls.every(call => call.fresh), 'every cache starts empty');
+  assert.match(result.stdout, /^Try 5: npm view lists 0\.1\.6 \(2 of 3 in a row\)\.$/m);
+  assert.match(result.stdout, /^Try 6: not listed yet \(npm view exit 1: npm error code E404/m);
+  assert.match(result.stdout, /^Try 3: not listed yet \(npm view answered '0\.1\.5'\)\.$/m);
+  assert.match(result.stdout, /^Try 9: npm view lists 0\.1\.6 \(3 of 3 in a row\)\.$/m);
+  assert.equal(result.downloaded, false, 'no tarball download');
+});
+
+test('the readiness wait gives up at its deadline even when npm view hangs', shellTests, async t => {
+  const result = await waitStep(t, ['hang'], { READY_TIMEOUT_SECONDS: '3', READY_ATTEMPT_SECONDS: '1', READY_POLL_SECONDS: '0' });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /was not listed by npm view 3 times in a row within 3 s/);
+  assert.match(result.stdout, /not listed yet/);
+  assert.ok(result.ms < 9000, 'ends near its deadline: ' + Math.round(result.ms) + ' ms');
+});
+
+// The fake npx fails like npm while the version is missing, then serves this checkout's MCP server.
+const fakeNpx = `const { step } = await import(process.env.FIXTURE_DIR + '/planned.mjs');
+if (step === 'etarget') {
+  console.error('npm error code ETARGET\\nnpm error notarget No matching version found for domain-hound@0.1.6.');
+  process.exit(1);
+} else if (step === 'e404') {
+  console.error('npm error code E404');
+  process.exit(1);
+} else if (step === 'other') {
+  console.error('npm error code EACCES\\nnpm error syscall mkdir');
+  process.exit(1);
+} else {
+  if (step.startsWith('hang')) {
+    process.on('SIGTERM', () => {});
+    setInterval(() => {}, 1000);
+  }
+  if (step !== 'hang') await import(${JSON.stringify(pathToFileURL(join(repoRoot, 'bin/domain-hound.mjs')).href)});
+}
+`;
+
+async function publishedSmoke(t, plan, env = {}) {
+  const fixture = await fixtureBin(t, plan);
+  await fixtureCommand(fixture.dir, 'npx', fakeNpx);
+  const { version } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
+  const result = await run(process.execPath, [join(repoRoot, 'scripts/package-smoke.mjs'), '--published', version], {
+    env: { ...fixture.env, PACKAGE_SMOKE_RETRY_DELAY_MS: '0', ...env } });
+  return { ...result, calls: await fixture.calls(), version };
+}
+
+test('the published smoke retries ETARGET and E404 with fresh npm caches, then lists the tools', shellTests, async t => {
+  const result = await publishedSmoke(t, ['etarget', 'e404', 'serve']);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.equal(result.calls.length, 3);
+  assert.ok(result.calls.every(call => call.args.join(' ') === '-y domain-hound@' + result.version), JSON.stringify(result.calls));
+  assert.equal(new Set(result.calls.map(call => call.cache)).size, 3);
+  assert.ok(result.calls.every(call => call.fresh));
+  assert.match(result.stderr, /Attempt 2: npx could not find domain-hound@[\d.]+ yet \(ETARGET\/E404\)/);
+  assert.match(result.stderr, /npm error notarget No matching version found/, 'npm diagnostics still reach the log');
+  assert.match(result.stdout, /^MCP tools: check_domains, /m);
+  assert.match(result.stdout, /Published npx smoke on .*, attempt 3$/m);
+});
+
+test('the published smoke fails at once on any other npx error and stops retrying at its overall cap', shellTests, async t => {
+  const other = await publishedSmoke(t, ['other', 'serve']);
+  assert.notEqual(other.code, 0);
+  assert.equal(other.calls.length, 1, 'no retry for an unrelated error');
+  assert.match(other.stderr, /npm error code EACCES/);
+
+  const stale = await publishedSmoke(t, ['etarget'], { PACKAGE_SMOKE_WINDOW_MS: '1500', PACKAGE_SMOKE_RETRY_DELAY_MS: '200' });
+  assert.notEqual(stale.code, 0);
+  assert.ok(stale.calls.length >= 2, 'retried within the window');
+  assert.match(stale.stderr, /npx still could not find domain-hound@[\d.]+ after \d+ attempts/);
+  assert.ok(stale.ms < 8000, Math.round(stale.ms) + ' ms');
+
+  // A hanging npx is cut off at the overall cap, not after the full per-attempt allowance.
+  const hung = await publishedSmoke(t, ['hang'], { PACKAGE_SMOKE_WINDOW_MS: '1500' });
+  assert.notEqual(hung.code, 0);
+  assert.equal(hung.calls.length, 1);
+  assert.match(hung.stderr, /npx smoke timed out after 2 s/);
+  assert.ok(hung.ms < 8000, Math.round(hung.ms) + ' ms');
+
+  const hungAfterReply = await publishedSmoke(t, ['hang-after-reply'], { PACKAGE_SMOKE_WINDOW_MS: '1500' });
+  assert.equal(hungAfterReply.code, 1);
+  assert.match(hungAfterReply.stderr, /npx smoke timed out after 2 s/);
+  assert.doesNotMatch(hungAfterReply.stdout, /Published npx smoke/);
+  assert.ok(hungAfterReply.ms < 8000, Math.round(hungAfterReply.ms) + ' ms');
 });

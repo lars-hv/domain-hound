@@ -1,8 +1,9 @@
 # Publishes domain-hound to npm with Trusted Publishing (OIDC): no npm token is stored.
 # Active once the package exists on npm and this repository and workflow are registered as its trusted publisher.
-# After npm: wait until the npm CDN serves the new tarball, start that exact version through npx as a smoke test,
-# then publish server.json to the MCP Registry. Nobody should request the plain tarball URL before the
-# "Wait for the npm CDN" step reports it live: a 404 gets cached by the CDN.
+# After npm: wait until `npm view domain-hound@<version>` (fresh npm cache every try) lists the new version three times
+# in a row, start that exact version through npx as a smoke test (retried with fresh caches while npx still reports
+# ETARGET or E404), then publish server.json to the MCP Registry. Nothing here requests the plain tarball URL before npx
+# installs it: a 404 gets cached by the CDN.
 name: Publish to npm
 
 on:
@@ -60,7 +61,8 @@ jobs:
   smoke:
     needs: publish
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # 15 minutes of waiting plus 10 of smoke retries, with room for checkout and Node setup.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
@@ -71,41 +73,56 @@ jobs:
           node-version: '24'
           package-manager-cache: false
 
-      # Poll with a cache-busting query, so this step never asks for (and the CDN never caches) the plain URL early.
-      - name: Wait for the npm CDN to serve the new tarball
+      # npm view only reads package metadata. The smoke test also checks the metadata and tarball used by npx.
+      - name: Wait until npm lists the new version
+        timeout-minutes: 15
+        shell: bash
         env:
           VERSION: ${{ needs.publish.outputs.version }}
         run: |
-          url="https://registry.npmjs.org/domain-hound/-/domain-hound-${VERSION}.tgz"
-          deadline=$(( $(date +%s) + 900 ))
-          status=000
-          ready=false
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            remaining=$(( deadline - $(date +%s) ))
+          total="${READY_TIMEOUT_SECONDS:-900}"
+          per_try="${READY_ATTEMPT_SECONDS:-60}"
+          poll="${READY_POLL_SECONDS:-10}"
+          deadline=$(( SECONDS + total ))
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          streak=0
+          attempt=0
+          while :; do
+            remaining=$(( deadline - SECONDS ))
             if [ "$remaining" -le 0 ]; then break; fi
-            if [ "$status" != "200" ]; then
-              status=$(curl -sS --max-time "$(( remaining < 10 ? remaining : 10 ))" \
-                -o /dev/null -w '%{http_code}' "${url}?cachebust=$(date +%s%N)") || status=000
+            attempt=$(( attempt + 1 ))
+            cache="$work/npm-cache-$attempt"
+            mkdir "$cache"
+            limit=$(( remaining < per_try ? remaining : per_try ))
+            status=0
+            got="$(timeout -s KILL "$limit" npm view "domain-hound@${VERSION}" version \
+              --cache "$cache" --prefer-online --fetch-retries=0 --no-update-notifier 2>"$work/stderr")" || status=$?
+            rm -rf "$cache"
+            if [ "$status" -eq 0 ] && [ "$got" = "$VERSION" ]; then
+              streak=$(( streak + 1 ))
+              echo "Try ${attempt}: npm view lists ${VERSION} (${streak} of 3 in a row)."
+              if [ "$streak" -eq 3 ]; then exit 0; fi
+            else
+              streak=0
+              if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+                reason="npm view did not answer within ${limit} s"
+              elif [ "$status" -ne 0 ]; then
+                reason="npm view exit ${status}: $(head -n 2 "$work/stderr" | tr '\n' ' ')"
+              else
+                reason="npm view answered '${got}'"
+              fi
+              echo "Try ${attempt}: not listed yet (${reason})."
             fi
-            remaining=$(( deadline - $(date +%s) ))
+            remaining=$(( deadline - SECONDS ))
             if [ "$remaining" -le 0 ]; then break; fi
-            if [ "$status" = "200" ] && curl -fsS --compressed --max-time "$(( remaining < 10 ? remaining : 10 ))" \
-              -H 'Accept: application/vnd.npm.install-v1+json' https://registry.npmjs.org/domain-hound \
-              | node -e 'try { const doc = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit(Object.hasOwn(doc.versions ?? {}, process.argv[1]) ? 0 : 1); } catch { process.exit(1); }' "$VERSION"; then
-              ready=true
-              echo "domain-hound ${VERSION} is live on the npm CDN and listed in package metadata."
-              break
-            fi
-            remaining=$(( deadline - $(date +%s) ))
-            if [ "$remaining" -le 0 ]; then break; fi
-            sleep "$(( remaining < 20 ? remaining : 20 ))"
+            sleep "$(( remaining < poll ? remaining : poll ))"
           done
-          if [ "$ready" != "true" ]; then
-            echo "domain-hound ${VERSION} tarball or version metadata was not ready after 15 minutes (last tarball HTTP ${status})." >&2
-            exit 1
-          fi
+          echo "domain-hound ${VERSION} was not listed by npm view 3 times in a row within ${total} s (${attempt} tries)." >&2
+          exit 1
 
       - name: Start the published version through npx and list its tools
+        timeout-minutes: 12
         env:
           VERSION: ${{ needs.publish.outputs.version }}
         run: node scripts/package-smoke.mjs --published "$VERSION"
