@@ -1,4 +1,5 @@
 export const showAsIs = 'Show `display` to the person as is, then add your advice below it.';
+export const purchaseLine = 'Domain Hound cannot buy or complete checkout; use the link above.';
 
 export const googleSearchInstruction = 'Before answering, use your built-in web search for each name marked google.search (up to 3). '
   + 'Search "<name>" and "<name>" app once each. Review the first 10 returned results of each search, or all results if fewer are returned. Fill google.result and update the Google line using its search link. '
@@ -18,4 +19,5 @@ export const namingRecipe = (about = '') => 'Naming recipe (intermediate). Use t
   + '2. Generate about 30 words. Pair one with a familiar animal or object. Avoid category-generic names.\n'
   + '3. Check: call check_domains ONCE with seven bare names and shortlist: true (Quiet Otter → quietotter). No spaces or dots.\n'
   + '4. Triage: call triage_names ONCE on only the best FIVE with free endings, a short about and geo from memory. Follow its Google search instructions.\n'
-  + '5. Answer: copy the final table. Update only the Google result. Keep every row with all prices and links. Never buy.';
+  + '5. Answer: copy the entire triage display first. Keep all five candidates and every ending with its price and link. '
+  + 'Update only the Google result. Put any recommendation below the display.';

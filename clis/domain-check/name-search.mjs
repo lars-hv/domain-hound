@@ -1,7 +1,7 @@
 import { checkDomainSite } from './com-site.mjs';
-import { confirmingShops } from './confirm.mjs';
+import { cachedSignals, confirmingShops } from './confirm.mjs';
 import { bundledCatalog, datedListPrices, getNameCatalog, loadCachedCatalog, targetEndings } from './price-catalog.mjs';
-import { shopSearchUrl } from './prices.mjs';
+import { linkable, shopSearchUrl } from './prices.mjs';
 import { lookupRegistrations } from './registry.mjs';
 
 const checked = '2026-11-23';
@@ -86,7 +86,8 @@ export function termCosts(tld, price, renewal) {
 export function rankName(rows) {
   return rows.map(row => {
     const { tld, exact, status, price = null, renewal = null } = row;
-    const reason = status === 'premium' ? 'Premium price' : status === 'taken' ? 'Already registered'
+    const reason = status === 'premium' ? 'Premium price' : status === 'reserved' ? 'Not offered for registration'
+      : status === 'taken' ? 'Already registered'
       : status === 'check-at-shop' ? 'Check at shop'
       : exact ? 'Exact name' : 'Name variation';
     return { ...row, ...termCosts(tld, price, renewal), reason, terms: facts[tld] ?? null,
@@ -104,12 +105,14 @@ export function pickName(rows, eligible) {
 }
 
 export function registrationStatus(registry) {
-  if (registry.status === 'free') return 'probably-free';
+  if (registry.signal === 'reserved') return 'reserved';
+  if (registry.status === 'free') return registry.signal === 'premium' ? 'premium' : 'probably-free';
   return registry.status === 'taken' ? 'taken' : 'check-at-shop';
 }
 
 export function listQuote(catalog, { domain, tld }, now, bundled = bundledCatalog) {
-  const prices = datedListPrices(catalog, tld, now, bundled).sort((a, b) =>
+  // Data-only shops never become the listed pick or its checkout link.
+  const prices = datedListPrices(catalog, tld, now, bundled).filter(row => linkable(row.id)).sort((a, b) =>
     a.firstYear - b.firstYear || a.renewal - b.renewal);
   const best = prices[0];
   const confirmShop = prices.find(row => confirmingShops.includes(row.id))?.id ??
@@ -121,6 +124,20 @@ export function listQuote(catalog, { domain, tld }, now, bundled = bundledCatalo
   };
 }
 
+// A premium, reserved or possible-premium signal never leaves a list price on the row.
+export function withoutListPrice(row, status, reason) {
+  return { ...row, status, price: null, renewal: null, priceSource: null, priceCheckedAt: null,
+    ...(reason && { registryReason: reason }) };
+}
+
+// A quote above the same shop's list price without a standard-price marker may be premium.
+export function possiblePremium(row, quote) {
+  return quote?.status === 'confirmed' && quote.standard !== true && row?.shop != null && quote.shopName === row.shop
+    && row.price != null && money(quote.price) > row.price + 0.01;
+}
+
+const money = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+
 export function mergeQuote(row, quote) {
   if (!quote || quote.status === 'could-not-confirm' || quote.error) {
     return row;
@@ -129,9 +146,16 @@ export function mergeQuote(row, quote) {
     return { ...row, status: 'taken', price: null, renewal: null, shop: null, buyUrl: null,
       priceCheckedAt: null, checkedAt: quote.checkedAt ?? row.checkedAt, source: 'shop' };
   }
-  return { ...row, status: quote.status, price: quote.price, renewal: quote.renewal,
-    shop: quote.shopName, buyUrl: quote.buyUrl, priceCheckedAt: null,
-    checkedAt: quote.checkedAt ?? row.checkedAt, source: 'shop' };
+  if (quote.status === 'reserved') {
+    return { ...withoutListPrice(row, 'reserved', quote.reason ?? 'Not offered for registration'),
+      checkedAt: quote.checkedAt ?? row.checkedAt };
+  }
+  const premium = row.status === 'premium' && row.premium === true ? true
+    : quote.status === 'premium' ? quote.premium ?? true : possiblePremium(row, quote) ? 'possible' : false;
+  const price = money(quote.price) > 0 ? quote.price : null;
+  return { ...row, status: premium ? 'premium' : quote.status, price, renewal: price == null ? null : quote.renewal ?? null,
+    ...(premium && { premium }), shop: quote.shopName, buyUrl: quote.buyUrl, priceCheckedAt: null, priceSource: null,
+    quotedAt: quote.checkedAt ?? null, checkedAt: quote.checkedAt ?? row.checkedAt, source: 'shop' };
 }
 
 export async function searchCandidates(groups, options = {}) {
@@ -173,20 +197,30 @@ export async function searchCandidates(groups, options = {}) {
     clearTimeout(timer);
   }
   const checkedAt = (options.now ?? new Date()).toISOString();
+  // Premium and reserved answers from earlier shop checks also hold here, so a list price never covers them.
+  const signals = await cachedSignals([...candidates.keys()], { directory: options.directory, now });
   const results = groups.map(group => {
     const rows = rankName(group.candidates.map(row => {
       const lookup = lookedUp.get(row.domain);
-      if (!lookup) return { ...row, status: 'check-at-shop', registryReason: 'Registry lookup timed out',
-        ...listQuote(catalog, row, now, bundled) };
+      if (!lookup) {
+        const waiting = { ...row, status: 'check-at-shop', registryReason: 'Registry lookup timed out',
+          ...listQuote(catalog, row, now, bundled) };
+        const signal = signals.get(row.domain);
+        return ['premium', 'reserved'].includes(signal?.status) ? mergeQuote(waiting, signal) : waiting;
+      }
       const status = registrationStatus(lookup);
       const quote = listQuote(catalog, row, now, bundled);
       const listPrice = status === 'taken' && quote.price != null
         ? { shop: quote.shop, checkedAt: quote.priceCheckedAt, ...termCosts(row.tld, quote.price, quote.renewal),
           renewalJump: quote.renewal > 2 * quote.price }
         : null;
-      return { ...row, status, checkedAt: lookup.checkedAt ?? checkedAt, source: lookup.source, registryReason: lookup.reason,
+      const settled = { ...row, status, checkedAt: lookup.checkedAt ?? checkedAt, source: lookup.source, registryReason: lookup.reason,
         forSale: Boolean(lookup.forSale), ...(lookup.marketplace && { marketplace: lookup.marketplace }),
         ...(status !== 'taken' ? quote : listPrice && { listPrice }) };
+      if (status === 'premium') return { ...withoutListPrice(settled, 'premium'), premium: true };
+      if (status === 'reserved') return withoutListPrice(settled, 'reserved', lookup.reason);
+      const signal = status === 'taken' ? null : signals.get(row.domain);
+      return signal ? mergeQuote(settled, signal) : settled;
     }));
     const checkedSites = {};
     for (const row of rows) {

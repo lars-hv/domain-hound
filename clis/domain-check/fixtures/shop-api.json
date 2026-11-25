@@ -1,0 +1,49 @@
+{
+  "spaceshipAvailable": {
+    "domains": [
+      { "domain": "quietfern.com", "result": "available", "premiumPricing": [] },
+      { "domain": "quietfern.ai", "result": "available", "premiumPricing": [] },
+      { "domain": "quietfern.io", "result": "available", "premiumPricing": [{ "operation": "register", "price": 2499, "currency": "USD" }] },
+      { "domain": "quietfern.co", "result": "available" },
+      { "domain": "quietfern.me", "result": "unavailable", "premiumPricing": [] }
+    ]
+  },
+  "spaceshipPricing": {
+    "domains": [
+      {
+        "domain": "quietfern.com",
+        "priceClass": "standard",
+        "prices": {
+          "register": [{ "period": { "value": 1, "unit": "y" }, "priceInDefaultCurrency": { "finalPrice": { "amount": "9.48", "currency": "USD" }, "regularPrice": { "amount": "10.68", "currency": "USD" } } }],
+          "renew": [{ "period": { "value": 1, "unit": "y" }, "priceInDefaultCurrency": { "finalPrice": { "amount": "10.68", "currency": "USD" }, "regularPrice": { "amount": "10.68", "currency": "USD" } } }]
+        }
+      },
+      {
+        "domain": "quietfern.ai",
+        "priceClass": "standard",
+        "prices": {
+          "register": [{ "period": { "value": 2, "unit": "y" }, "priceInDefaultCurrency": { "finalPrice": { "amount": "159.96", "currency": "USD" }, "regularPrice": { "amount": "159.96", "currency": "USD" } } }],
+          "renew": [{ "period": { "value": 2, "unit": "y" }, "priceInDefaultCurrency": { "finalPrice": { "amount": "159.96", "currency": "USD" }, "regularPrice": { "amount": "159.96", "currency": "USD" } } }]
+        }
+      },
+      { "domain": "quietfern.co", "errorCode": "tldNotSupported" }
+    ]
+  },
+  "spaceshipPremiumPricing": {
+    "domains": [
+      {
+        "domain": "quietfern.com",
+        "priceClass": "premium",
+        "prices": {
+          "register": [{ "period": { "value": 1, "unit": "y" }, "priceInDefaultCurrency": { "finalPrice": { "amount": "999.99", "currency": "USD" }, "regularPrice": { "amount": "999.99", "currency": "USD" } } }],
+          "renew": [{ "period": { "value": 1, "unit": "y" }, "priceInDefaultCurrency": { "finalPrice": { "amount": "999.99", "currency": "USD" }, "regularPrice": { "amount": "999.99", "currency": "USD" } } }]
+        }
+      }
+    ]
+  },
+  "dynadotNotPremium": { "SearchResponse": { "ResponseCode": "0", "SearchResults": [{ "DomainName": "quietfern.com", "Available": "yes", "Price": "10.88 in USD and domain is not premium" }] } },
+  "dynadotPremium": { "SearchResponse": { "ResponseCode": "0", "SearchResults": [{ "DomainName": "quietfern.com", "Available": "yes", "Price": "1,250.00 in USD and domain is premium" }] } },
+  "dynadotNoMarker": { "SearchResponse": { "ResponseCode": "0", "SearchResults": [{ "DomainName": "quietfern.com", "Available": "yes", "Price": "10.88 in USD" }] } },
+  "dynadotTaken": { "SearchResponse": { "ResponseCode": "0", "SearchResults": [{ "DomainName": "quietfern.com", "Available": "no" }] } },
+  "dynadotError": { "SearchResponse": { "ResponseCode": "-1", "Error": "invalid key" } }
+}

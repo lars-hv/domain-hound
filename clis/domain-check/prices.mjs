@@ -11,7 +11,8 @@ export const shops = {
     url: 'https://www.cloudflare.com/domains/search/?q=',
     note: 'Must use Cloudflare DNS',
   },
-  porkbun: { name: 'Porkbun', url: 'https://porkbun.com/checkout/search?q=' },
+  // Porkbun's public price list is used as data only: never a recommended shop, a checkout link or a pick.
+  porkbun: { name: 'Porkbun', url: 'https://porkbun.com/checkout/search?q=', dataOnly: true },
   namecheap: { name: 'Namecheap', url: 'https://www.namecheap.com/domains/registration/results/?domain=' },
   dynadot: { name: 'Dynadot', url: 'https://www.dynadot.com/domain/search?domain=' },
   namesilo: { name: 'NameSilo', url: 'https://www.namesilo.com/domain/search-domains?query=' },
@@ -45,11 +46,16 @@ export function offer(shop, domain, details) {
       sources, checked, transferLockDays, payWithoutCard,
     },
     buyUrl: shopSearchUrl(shop, domain),
+    ...(shops[shop].dataOnly && { dataOnly: true }),
   };
 }
 
+export function linkable(shop) {
+  return Object.hasOwn(shops, shop) && !shops[shop].dataOnly;
+}
+
 export function shopSearchUrl(shop, domain) {
-  if (!Object.hasOwn(shops, shop)) return null;
+  if (!linkable(shop)) return null;
   const { url, suffix = '' } = shops[shop];
   return url + encodeURIComponent(domain) + suffix;
 }

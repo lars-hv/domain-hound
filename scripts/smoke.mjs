@@ -60,7 +60,7 @@ async function smokeMcp(label, command, args, options) {
     for (const ending of endings) {
       assert.ok(batch.listPrices?.[ending]?.now > 0, 'First call has no list price for .' + ending);
     }
-    assert.ok(batch.display.includes('list price from ' + batch.priceListDate), 'First call display has no price date');
+    assert.ok(batch.display.includes('list prices from ' + batch.priceListDate), 'First call display has no price date');
 
     const lookupStarted = performance.now();
     const result = await request(4, 'tools/call', { name: 'check_domains', arguments: { query } });

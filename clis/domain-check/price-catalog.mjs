@@ -13,6 +13,7 @@ const spaceshipEndings = targetEndings.filter(tld => !otherEndings.includes(tld)
 const filename = 'prices.json';
 const day = 86_400_000;
 const primaryShops = ['spaceship', 'porkbun', 'dynadot'];
+const automaticShops = ['porkbun', 'dynadot'];
 const refreshMarker = 'price-refresh.attempt';
 const pricingPage = 'https://www.spaceship.com/domain-search/pricing/';
 
@@ -121,7 +122,7 @@ export async function getNameCatalog({ directory = cacheDir, now = new Date(), s
   coldWaitMs = 1900 } = {}) {
   const saved = await loadCachedCatalog(directory);
   const sources = sourcesOf(saved);
-  const refresh = !saved || primaryShops.some(id => isCatalogStale(sources[id]?.checkedAt, now)) ||
+  const refresh = !saved || automaticShops.some(id => isCatalogStale(sources[id]?.checkedAt, now)) ||
     targetEndings.some(tld => !primaryShops.some(id => sources[id]?.prices[tld]) &&
       (!sources.gandi?.prices[tld] || isCatalogStale(sources.gandi.checkedAt, now)));
   if (directory && refresh) {
@@ -214,8 +215,8 @@ export function gandiPrice(html, tld) {
   return null;
 }
 
-async function loadGandiPrice(tld) {
-  const response = await fetch('https://www.gandi.net/en/domain/tld/' + tld + '?currency=USD', {
+async function loadGandiPrice(tld, fetcher) {
+  const response = await fetcher('https://www.gandi.net/en/domain/tld/' + tld + '?currency=USD', {
     signal: AbortSignal.timeout(5500),
   });
   return response.ok ? gandiPrice(await response.text(), tld) : null;
@@ -287,8 +288,9 @@ export async function loadDynadotPrices(fetcher = globalThis.fetch) {
 }
 
 export async function refreshPrices({
-  directory = cacheDir, now = new Date(), spaceship = loadSpaceshipPrices, gandi = loadGandiPrice,
-  porkbun = loadPorkbunPrices, dynadot = loadDynadotPrices,
+  directory = cacheDir, now = new Date(), fetcher = globalThis.fetch, browser = false,
+  spaceship = browser ? loadSpaceshipPrices : () => null, gandi = tld => loadGandiPrice(tld, fetcher),
+  porkbun = () => loadPorkbunPrices(fetcher), dynadot = () => loadDynadotPrices(fetcher),
 } = {}) {
   const checkedAt = now.toISOString();
   const results = await Promise.allSettled([spaceship, porkbun, dynadot].map(load => Promise.resolve().then(() => load())));

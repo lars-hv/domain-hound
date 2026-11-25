@@ -123,8 +123,19 @@ test('returns taken with expiration and no prices; unhandled RDAP statuses stay 
 
 test('only explicit successful registration checks can confirm an offer', async () => {
   const result = await checkDomain('example.me', mock({ confirm: available }));
-  assert.equal(result.verdict, 'confirmed');
+  // A premium answer is never shown at list price: no list offers, only "premium, price at shop".
+  assert.equal(result.verdict, 'premium');
   assert.deepEqual(result.confirmed, { by: 'Porkbun', price: 640.22, premium: true });
+  assert.deepEqual(result.offers, []);
+  assert.equal(result.best, null);
+  assert.ok(result.notes.includes('Premium, price at shop'));
+  assert.equal(result.buyUrl, 'https://www.spaceship.com/domain-search/?query=example.me');
+  // Porkbun's own standard-looking quote above its list price is a possible premium, never a list price.
+  const above = { ...available, response: { ...available.response, premium: 'no', price: '30.00' } };
+  const possible = await checkDomain('example.me', mock({ confirm: above }));
+  assert.equal(possible.verdict, 'premium');
+  assert.equal(possible.confirmed.possible, true);
+  assert.deepEqual(possible.offers, []);
   assert.equal((await checkDomain('example.me', mock({ confirm: { ...available, sandbox: true } }))).verdict, 'free');
   for (const fields of [{ avail: 'no' }, { avail: 'blocked' }, { price: '' }, { type: 'aftermarket' }]) {
     assert.equal(parseConfirmation({ ...available, response: { ...available.response, ...fields } }), null);
@@ -187,15 +198,21 @@ test('a plain domain check falls back to the dated bundled snapshot and live sho
 
 test('chooses the cheaper first payment even when its renewal costs more', async () => {
   const pricing = structuredClone(porkbun);
-  pricing.pricing.me.registration = '2.99';
+  pricing.pricing.me.registration = '1.99';
   pricing.pricing.me.renewal = '26.00';
   pricing.pricing.me.coupons.registration = null;
-  const result = await checkDomain('example.me', mock({ pricing }));
-  assert.equal(result.best.shop, 'Porkbun');
+  const result = await checkDomain('example.me', mock({ pricing, dynadot: dynadotHtml.replace('$9.16', '$2.99') }));
+  assert.equal(result.best.shop, 'Dynadot');
   assert.equal(result.best.firstYear, 2.99);
+  assert.ok(result.best.renewal > result.offers.find(row => row.shop === 'Spaceship').renewal);
   assert.equal(result.cheapestToday, null);
-  assert.equal(result.transfer.lockDays, 60);
-  assert.ok(result.transfer.savings >= 3);
+  // Porkbun's cheaper list price stays as data only: never the pick, a transfer route or a link.
+  const bun = result.offers.find(row => row.shop === 'Porkbun');
+  assert.equal(bun.firstYear, 1.99);
+  assert.equal(bun.dataOnly, true);
+  assert.equal(bun.buyUrl, null);
+  assert.notEqual(result.transfer?.from, 'Porkbun');
+  assert.notEqual(result.transfer?.to, 'Porkbun');
 });
 
 test('unverified coupon prices stay visible without changing the rank or today’s winner', async () => {
@@ -294,12 +311,16 @@ test('keeps the additional trusted registrar search links direct and allowlisted
 });
 
 test('every live and saved buy URL uses a direct, allowlisted shop page', async () => {
-  const hosts = new Set(['www.spaceship.com', 'www.cloudflare.com', 'porkbun.com', 'www.namecheap.com', 'www.dynadot.com', 'www.namesilo.com', 'www.ionos.com', 'shop.gandi.net', 'www.hover.com']);
+  const hosts = new Set(['www.spaceship.com', 'www.cloudflare.com', 'www.namecheap.com', 'www.dynadot.com', 'www.namesilo.com', 'www.ionos.com', 'shop.gandi.net', 'www.hover.com']);
   const entry = fileURLToPath(new URL('./index.mjs', import.meta.url));
   for (const options of [mock(), mock({ pricing: null, dynadot: null })]) {
     const { offers } = await checkDomain('example.me', options);
     assert.equal(offers.length, 9);
-    for (const { buyUrl } of offers) {
+    for (const { buyUrl, dataOnly } of offers) {
+      if (dataOnly) {
+        assert.equal(buyUrl, null);
+        continue;
+      }
       const url = new URL(buyUrl);
       assert.equal(url.protocol, 'https:');
       assert.ok(hosts.has(url.host), buyUrl);
@@ -336,14 +357,14 @@ test('drops an expired first-party code and uses the regular first-year price', 
 test('the open dry run accepts only the exact HTTPS shop authorities', () => {
   const entry = fileURLToPath(new URL('./index.mjs', import.meta.url));
   const run = (...args) => spawnSync(process.execPath, [entry, '--open', '--dry-run', ...args], { encoding: 'utf8' });
-  for (const host of ['spaceship.com', 'www.spaceship.com', 'porkbun.com', 'namecheap.com', 'www.namecheap.com',
+  for (const host of ['spaceship.com', 'www.spaceship.com', 'namecheap.com', 'www.namecheap.com',
     'dynadot.com', 'www.dynadot.com', 'domains.cloudflare.com', 'dash.cloudflare.com']) {
     const url = 'https://' + host + '/?query=example.me';
     const result = run(url);
     assert.equal(result.status, 0);
     assert.deepEqual(JSON.parse(result.stdout), { opened: false, url });
   }
-  for (const url of ['http://spaceship.com', 'https://spaceship.com.evil.test', 'https://www.porkbun.com',
+  for (const url of ['http://spaceship.com', 'https://spaceship.com.evil.test', 'https://www.porkbun.com', 'https://porkbun.com/?query=example.me',
     'https://spaceship.com@evil.test', 'https://evil.test@spaceship.com', 'https://@spaceship.com',
     'https://spaceship.com:444', 'https://%73paceship.com', 'https://spaceship.com\\@evil.test',
     'https://space\tship.com', 'https://www.cloudflare.com/redirect/?url=https://example.com', '--help']) {

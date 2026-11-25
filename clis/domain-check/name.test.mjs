@@ -277,7 +277,7 @@ test('agent returns partial rows at the registry deadline and preserves complete
 test('agent returns the registry result when the one live shop check runs out of time', async () => {
   const seen = [];
   const result = await agentResult(['example'], {
-    ...registryOptions, budgetMs: 1200,
+    ...registryOptions, budgetMs: 1200, browser: true,
     resolveNs: async domain => domain.endsWith('.me') ? [] : ['ns.example.net'],
     confirm: async (_shop, domain) => {
       seen.push(domain);
@@ -340,7 +340,7 @@ test('agent batch retries Google endings once and names an evidenced registry ra
 test('agent returns a confirmed row, single-query variants and exact-domain support', async () => {
   const checkedAt = '2026-11-24T10:00:00.000Z';
   const payload = await agentResult('Example', {
-    ...registryOptions, now: new Date(checkedAt),
+    ...registryOptions, now: new Date(checkedAt), browser: true,
     resolveNs: async domain => /\.(me|so)$/.test(domain) ? [] : ['ns.example.net'],
     confirm: async () => ({ status: 'confirmed', shopName: 'Spaceship', price: 8.701, renewal: 15.531, checkedAt }),
   });
@@ -350,16 +350,16 @@ test('agent returns a confirmed row, single-query variants and exact-domain supp
   assert.equal(json.priceListDate, undefined);
   assert.equal(json.results, undefined);
   assert.equal(json.options, undefined);
-  assert.equal(json.legend.nc, 'Free, not confirmed');
-  assert.equal(json.legend.ok, 'Free, confirmed by a shop');
+  assert.equal(json.legend.nc, 'Free at the registry; list price, not confirmed');
+  assert.equal(json.legend.ok, 'Free, price confirmed at the shop (at = quote time)');
   assert.deepEqual(json.best, {
-    domain: 'example.me', status: 'free-confirmed', priceNow: 8.7, renewal: 15.53, threeYear: 39.76, shop: 'Spaceship',
+    domain: 'example.me', status: 'free-confirmed', priceNow: 8.7, at: '10:00', renewal: 15.53, threeYear: 39.76, shop: 'Spaceship',
     buyUrl: 'https://www.spaceship.com/domain-search/?query=example.me',
   });
   assert.deepEqual(json.names, [{
     name: 'example',
     taken: ['com', 'ai', 'io', 'co', 'dev', 'app', 'si', 'no', 'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com'],
-    free: [{ d: 'me', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship' },
+    free: [{ d: 'me', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship', at: '10:00' },
       { d: 'so', s: 'nc', shop: 'Namecheap' }],
   }]);
   assert.equal(json.buyUrlTemplate.Spaceship.replace('{domain}', json.best.domain), json.best.buyUrl);
@@ -410,7 +410,7 @@ test('agent checks all ten endings for 20 names and keeps the priced output unde
   const started = [];
   const start = performance.now();
   const result = await agentResult(queries, {
-    ...registryOptions, directory, now, cachedOnly: true,
+    ...registryOptions, directory, now, cachedOnly: true, browser: true,
     comSite: async () => assert.fail('Batch mode checks registry and shops only'),
     resolveNs: async domain => {
       attempted.push(domain);
@@ -471,13 +471,14 @@ test('existing direct shop hosts remain exact HTTPS allowlist entries', () => {
     'https://www.ionos.com/domainshop/search?domains=example.me',
     'https://www.hostinger.com/domain-name-results?domain=example.me',
     'https://www.hover.com/domains/results?q=example.me',
-    'https://porkbun.com/checkout/search?q=example.me',
     'https://www.cloudflare.com/domains/search/?q=example.me',
   ]) {
     const url = new URL(link);
     assert.equal(run(link).status, 0, link);
     assert.equal(run(link.replace(url.host, url.host + '.example.test')).status, 1, link);
   }
+  // Porkbun prices are data only; Domain Hound never opens or links Porkbun.
+  assert.equal(run('https://porkbun.com/checkout/search?q=example.me').status, 1);
 });
 
 test('classifies taken .com pages as for sale, parked, live or no site', () => {

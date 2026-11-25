@@ -174,12 +174,12 @@ test('a fresh install with an empty cache shows a dated list price for all ten e
   for (const tld of targetEndings) {
     assert.ok(batch.listPrices[tld].now > 0 && batch.listPrices[tld].renew > 0, '.' + tld + ' has no list price');
   }
-  assert.match(checkDisplay(batch), new RegExp('list price from ' + date));
+  assert.match(checkDisplay(batch), new RegExp('list prices from ' + date));
   const exact = await agentResult('example.me', options);
   const me = exact.names[0].free?.find(row => row.d === 'me');
   assert.ok(me?.now > 0);
   assert.equal(exact.priceListDate, date);
-  assert.match(checkDisplay(exact), new RegExp('List price from ' + date));
+  assert.match(checkDisplay(exact), new RegExp('the price is a list price from ' + date + ', not a shop quote'));
   const unsettled = await agentResult('example.dev', {
     ...options, fetcher: async () => new Response(null, { status: 403 }),
   });
@@ -198,9 +198,9 @@ test('fresh cached prices win over the bundled snapshot, which fills in only as 
     porkbun: () => vendorPrices('Porkbun', { firstYear: 12, renewal: 11 }),
     dynadot: () => vendorPrices('Dynadot', { firstYear: 1, renewal: 25 }),
   });
-  const snapshot = at => ({ checkedAt: at, catalogs: { porkbun: { checkedAt: at, prices: {
-    com: { shop: 'Porkbun', firstYear: 5, renewal: 6 }, io: { shop: 'Porkbun', firstYear: 5, renewal: 6 },
-    me: { shop: 'Porkbun', firstYear: 5, renewal: 6 },
+  const snapshot = at => ({ checkedAt: at, catalogs: { dynadot: { checkedAt: at, prices: {
+    com: { shop: 'Dynadot', firstYear: 5, renewal: 6 }, io: { shop: 'Dynadot', firstYear: 5, renewal: 6 },
+    me: { shop: 'Dynadot', firstYear: 5, renewal: 6 },
   } } } });
   const older = snapshot(new Date(+now - 30 * day).toISOString());
   const newer = snapshot(new Date(+now + 2 * day).toISOString());
@@ -215,16 +215,21 @@ test('fresh cached prices win over the bundled snapshot, which fills in only as 
   assert.equal(listQuote(value, row, late, older).price, 1);
   // An ending the snapshot does not cover keeps the old rule: no stale number.
   assert.equal(listQuote(value, { tld: 'dev', domain: 'example.dev' }, late, newer).price, undefined);
-  // A shop-confirmed quote still replaces the list estimate.
+  // Porkbun is data only: its cheaper list price never becomes the pick or its link.
+  const porkbunOnly = { checkedAt, catalogs: { porkbun: { checkedAt, prices: { me: { shop: 'Porkbun', firstYear: 0.99, renewal: 6 } } },
+    dynadot: { checkedAt, prices: { me: { shop: 'Dynadot', firstYear: 4, renewal: 6 } } } } };
+  assert.equal(listQuote(porkbunOnly, row, now, null).shop, 'Dynadot');
+  assert.equal(listQuote(porkbunOnly, row, now, null).buyUrl, 'https://www.dynadot.com/domain/search?domain=example.me');
+  // An explicit browser check's shop quote still replaces the list estimate.
   const options = {
-    directory, now: late, cachedOnly: true, bundledCatalog: newer, skipComSite: true,
+    directory, now: late, cachedOnly: true, bundledCatalog: newer, skipComSite: true, browser: true,
     resolveNs: async domain => domain === row.domain ? [] : ['ns.example.net'],
     fetcher: async () => new Response(null, { status: 404 }),
     confirm: async () => ({ status: 'confirmed', shopName: 'Spaceship', price: 8.7, renewal: 15.53,
       buyUrl: 'https://www.spaceship.com/domain-search/?query=example.me', checkedAt: late.toISOString() }),
   };
   const confirmed = await agentResult(['example'], options);
-  assert.deepEqual(confirmed.names[0].free, [{ d: 'me', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship' }]);
+  assert.deepEqual(confirmed.names[0].free, [{ d: 'me', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship', at: '12:00' }]);
   assert.equal(confirmed.best.priceNow, 8.7);
 });
 

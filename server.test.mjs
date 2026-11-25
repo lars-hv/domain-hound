@@ -9,9 +9,10 @@ import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCache } from './clis/domain-check/cache.mjs';
 import { triageNames } from './clis/domain-check/triage.mjs';
-import { attribution, checkText, errorText as errorJson, md, neverBuys, safeLink, showAsIs, triageText } from './display.mjs';
+import { attribution, checkText, errorText as errorJson, md, neverBuys, purchaseLine, safeLink, triageText } from './display.mjs';
 
 const server = new URL('./server.mjs', import.meta.url);
+const { version } = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
 const capability = fileURLToPath(new URL('./fixtures/', import.meta.url));
 const request = (id, method, params) => ({ jsonrpc: '2.0', id, method, params });
 const handshake = (protocolVersion = '2025-11-25') => [
@@ -59,13 +60,17 @@ function callText(responses, id, isError = false) {
   return result.content[0].text;
 }
 
-// Every display ends with exactly one attribution line after a blank line. Returns the body before it.
+// Every display carries exactly one attribution line after a blank line; an exact lookup or a purchase request
+// ends with the literal purchase line after it. Returns the body before the attribution.
 function body(display) {
   assert.equal(typeof display, 'string');
+  const purchase = '\n\n' + purchaseLine;
+  const ending = display.endsWith(purchase) ? display.slice(0, -purchase.length) : display;
   const suffix = '\n\n' + attribution;
-  assert.ok(display.endsWith(suffix), 'display ends with the attribution line: ' + JSON.stringify(display.slice(-60)));
+  assert.ok(ending.endsWith(suffix), 'display ends with the attribution line: ' + JSON.stringify(display.slice(-60)));
   assert.equal(display.split(attribution).length - 1, 1, 'one attribution line');
-  return display.slice(0, -suffix.length);
+  assert.equal(display.split(purchaseLine).length - 1, display.endsWith(purchase) ? 1 : 0, 'purchase line only last');
+  return ending.slice(0, -suffix.length);
 }
 
 // Every tool result is JSON whose first field is the ready-to-copy display; tests compare the body before the attribution.
@@ -86,7 +91,7 @@ test('initializes with the client version, accepts notification and replies to p
   const responses = await exchange([...handshake('2024-11-05'), request('ping', 'ping')]);
   assert.deepEqual(responses.map(({ id }) => id), [1, 'ping']);
   assert.deepEqual(resultOf(responses, 1), {
-    protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: '0.1.1' },
+    protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'domain-hound', title: 'Domain Hound', version },
   });
   assert.deepEqual(resultOf(responses, 'ping'), {});
 });
@@ -102,29 +107,37 @@ test('advertises the three Domain Hound tools and the legacy alias', async () =>
   assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find']);
   const [{ description, inputSchema }, triage, naming, alias] = tools;
   assert.ok(tools.every(tool => tool.description.includes('Domain Hound')));
-  for (const tool of [tools[0], alias]) assert.ok(tool.description.includes(showAsIs), tool.name);
-  for (const tool of [triage, naming]) {
-    for (const instruction of ['google.search', '"<name>" and "<name>" app', 'first 10', 'Google: open',
-      'Google: crowded', 'Google: owned by <brand>', 'full reason, traction and dormant notes']) {
-      assert.ok(tool.description.includes(instruction), instruction);
-    }
+  // Short descriptions that put the verbatim display first.
+  for (const tool of [tools[0], triage, alias]) assert.match(tool.description, /^Show `display` first and verbatim/, tool.name);
+  assert.ok(description.length < 1100, String(description.length));
+  assert.ok(alias.description.length < 200, String(alias.description.length));
+  assert.ok(naming.description.length < 300, String(naming.description.length));
+  for (const phrase of ['each free domain on its own line', 'and the last line', 'Add advice only below it',
+    '{"query":"oakenroom.me"}', '{"names":["oakenroom","oakenroom.me"]}', 'including .ai',
+    'For any request to buy or register, pass purchase: true', 'cannot buy or complete checkout', 'even when the domain is taken',
+    'Set confirm true only when the person asks for a live shop check', 'list prices unless marked confirmed at a shop',
+    '"premium, price at shop"', 'naming_method first', 'triage_names', 'Quiet Otter becomes quietotter']) {
+    assert.ok(description.includes(phrase), phrase);
   }
-  assert.equal(showAsIs, 'Show `display` to the person as is, then add your advice below it.');
-  assert.match(naming.description, /final triage display; the recipe and the name batch are intermediate/);
+  for (const instruction of ['google.search', '"<name>" and "<name>" app', 'first 10', 'Google: open',
+    'Google: crowded', 'Google: owned by <brand>', 'full reason, traction and dormant notes']) {
+    assert.ok(triage.description.includes(instruction), instruction);
+  }
+  for (const phrase of ['every free ending on its own line with its price', 'verdicts and reasons exactly', 'existing name is safe',
+    'screen 1 to 20 product names', 'Google, App Store (iOS) and Google Play (Android)']) {
+    assert.ok(triage.description.includes(phrase), phrase);
+  }
+  assert.match(naming.description, /final triage display, shown verbatim; the recipe and the name batch are intermediate/);
   assert.equal(triage.inputSchema.properties.names.maxItems, 20);
   assert.deepEqual(triage.inputSchema.required, ['names']);
   assert.deepEqual(alias.inputSchema, inputSchema);
-  assert.match(description, /Never buys\. For naming help, call naming_method first when generating new names\./);
   assert.match(inputSchema.properties.endings.description, /\.ai.*by default/);
-  for (const tool of [tools[0], alias]) assert.match(tool.description, /Returns every option; let the person choose\./);
-  for (const field of ['display', 'best', 'names', 'taken', 'resale', 'free', 'shop_check', 'listPrices', 'legend', 'buyUrlTemplate']) {
-    assert.ok(description.includes(field), field);
-  }
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['ai', 'endings', 'eligible', 'query', 'names', 'shortlist']);
+  assert.deepEqual(Object.keys(inputSchema.properties), ['ai', 'endings', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
+  for (const flag of ['shortlist', 'purchase', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
+  assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
   assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no']);
   assert.deepEqual(triage.inputSchema.properties.eligible, inputSchema.properties.eligible);
-  assert.equal(inputSchema.properties.shortlist.type, 'boolean');
   assert.equal(inputSchema.type, 'object');
   assert.equal(inputSchema.additionalProperties, false);
   assert.deepEqual(inputSchema.oneOf, [{ required: ['query'] }, { required: ['names'] }]);
@@ -142,23 +155,24 @@ test('advertises the three Domain Hound tools and the legacy alias', async () =>
   assert.equal(pattern.test('example.'), false);
   assert.equal(pattern.test('example.x2'), false);
   assert.equal(pattern.test('example.XN--P1AI'), true);
-  // Both input forms and examples come first, so clients pick the right field.
-  assert.match(description, /^Use Domain Hound to check domains\. Two input forms: query .*"oakenroom\.me".*names .*\["oakenroom","quietbook","oakenroom\.me"\]/);
   assert.match(query.description, /^One name or exact domain, e\.g\. "oakenroom\.me"/);
   assert.match(names.description, /^1 to 20 bare names, exact domains or both, e\.g\./);
-  assert.match(triage.description, /existing name is safe.*triage_names directly once/);
-  assert.match(triage.description, /screen 1 to 20 product names, e\.g\. \{"names"/);
-  for (const phrase of ['accounts for every requested name', 'cannot buy domains',
-    'call once with query and answer from that result',
-    'only when an offer exists', 'Suggest free endings already in that result', 'shopCheckWhy']) {
-    assert.ok(description.includes(phrase), phrase);
-  }
-  for (const phrase of ['verdict and reason exactly', 'every free ending', "today's payment and renewal", 'Do not omit or paraphrase rows',
-    'buy (checkout link', 'prices holds']) {
-    assert.ok(triage.description.includes(phrase), phrase);
-  }
-  assert.equal(naming.inputSchema.properties.about.maxLength, 160);
+  assert.equal(naming.inputSchema.properties.about.maxLength, 512);
   assert.equal(naming.inputSchema.additionalProperties, false);
+});
+
+test('forwards purchase and the explicit browser confirm flag, and rejects non-boolean flags', async () => {
+  const responses = await exchange([...handshake(), call(2, { query: 'example.com', confirm: true }),
+    call(3, { names: ['oakenroom'], purchase: true }), call(4, { query: 'example.com', confirm: 'yes' }),
+    call(5, { names: ['oakenroom'], purchase: 1 }), call(6, { names: ['oakenroom'] })]);
+  assert.deepEqual(callData(responses, 2).flags, ['--confirm']);
+  const bought = JSON.parse(callText(responses, 3)).display;
+  assert.ok(bought.endsWith('\n\n' + attribution + '\n\n' + purchaseLine), bought.slice(-120));
+  assert.equal(callData(responses, 3).flags, undefined);
+  assert.match(errorText(responses, 4), /^confirm must be a boolean\.$/);
+  assert.match(errorText(responses, 5), /^purchase must be a boolean\.$/);
+  // Without a purchase request, a batch keeps the ordinary never-buys wording and no purchase line.
+  assert.ok(!JSON.parse(callText(responses, 6)).display.includes(purchaseLine));
 });
 
 test('passes a normalized query as a separate argument and returns compact JSON', async () => {
@@ -166,15 +180,16 @@ test('passes a normalized query as a separate argument and returns compact JSON'
   const result = callData(responses, 2);
   assert.deepEqual(Object.keys(result), ['display', 'complete', 'checkedAt', 'best', 'names', 'legend', 'buyUrlTemplate']);
   assert.equal(result.display, [
-    '**example.com is free.** Exact quote confirmed by Spaceship. Checked 2026-11-24 12:00 UTC.',
+    '**example.com is free.** Price confirmed at Spaceship. Checked 2026-11-24 12:00 UTC.',
     '',
     '| Domain | Today | Renewal | 3 years | Checkout |',
     '|---|---|---|---|---|',
     '| example.com | $9.48 | $10.68/yr | $30.84 | [example.com](https://www.spaceship.com/domain-search/?query=example.com) at Spaceship |',
     '',
     'USD ex. VAT.',
-    neverBuys,
   ].join('\n'));
+  // The exact lookup always ends with the literal purchase line.
+  assert.ok(JSON.parse(callText(responses, 2)).display.endsWith('\n\n' + purchaseLine));
   assert.equal(result.complete, true);
   assert.equal(result.checkedAt, '2026-11-24T12:00:00.000Z');
   assert.deepEqual(result.names, [{ name: 'example.com',
@@ -184,14 +199,14 @@ test('passes a normalized query as a separate argument and returns compact JSON'
   assert.equal(result.legend.ok, 'Free, confirmed by a shop');
 });
 
-test('a taken exact domain shows no price or link and still says Domain Hound never buys', async () => {
+test('a taken exact domain shows no price or link and still ends with the purchase line', async () => {
   const responses = await exchange([...handshake(), call(2, { query: 'taken.me' })]);
   const result = callData(responses, 2);
   assert.deepEqual(result.names, [{ name: 'taken.me', taken: ['me'] }]);
   assert.ok(result.purchaseAdvice);
   const lines = result.display.split('\n');
   assert.match(lines[0], /^\*\*taken\.me is taken\.\*\* It is already registered\./);
-  assert.ok(lines.includes(neverBuys), 'standalone never-buys line');
+  assert.equal(JSON.parse(callText(responses, 2)).display.split('\n').at(-1), purchaseLine);
   assert.doesNotMatch(result.display, /\$|https?:/);
 });
 
@@ -199,14 +214,16 @@ test('passes 20 names to one native batch invocation and preserves partial compa
   const names = Array.from({ length: 20 }, (_, i) => `Example-${i}`);
   const responses = await exchange([...handshake(), call(2, { names })]);
   const result = callData(responses, 2);
-  // Identical outcomes share one table row that still names every input.
+  // An identical result shares one price row, with every name listed.
+  const group = names.map(name => name.toLowerCase()).join(', ');
   assert.equal(result.display, [
-    '**Domain check, 20 names** (USD ex. VAT, today/renewal; estimates unless ✓ shop-confirmed; list price from 2026-11-24; 2y = two-year payments)',
+    '**Domain check, 20 names** (USD ex. VAT, today/renewal; list prices from 2026-11-24 unless ✓ confirmed at a shop; 2y = two-year payments)',
     '',
-    '| Names | Free | Taken | Check at shop |',
-    '|---|---|---|---|',
-    '| ' + names.map(name => name.toLowerCase()).join(', ') + ' | .com $9.48/$10.68 | — | .so |',
+    '**Free domains, one ending per line**',
+    group + ':',
+    '- .com $9.48/$10.68',
     '',
+    'Check at shop: ' + group + ' .so',
     'Some checks did not finish in time; check those at a shop.',
   ].join('\n'));
   assert.ok(Buffer.byteLength(callText(responses, 2)) < 8000);
@@ -224,7 +241,10 @@ test('passes bare names and exact domains together in one native batch invocatio
   const responses = await exchange([...handshake(), call(2, { names: ['Oakenroom', 'oakenroom.me', 'QuietBook.AI'] })]);
   const result = callData(responses, 2);
   assert.deepEqual(result.names.map(row => row.name), ['oakenroom', 'oakenroom.me', 'quietbook.ai']);
-  assert.match(result.display, /^\| oakenroom, oakenroom\.me, quietbook\.ai \| \.com \$9\.48\/\$10\.68 \|/m);
+  assert.match(result.display, /^- oakenroom\.com \$9\.48\/\$10\.68 list price$/m);
+  // An exact domain in a batch is listed as itself.
+  assert.match(result.display, /^- oakenroom\.me \$9\.48\/\$10\.68 list price$/m);
+  assert.match(result.display, /^- quietbook\.ai \$9\.48\/\$10\.68 list price$/m);
 });
 
 test('accepts broker_find and forwards an explicit .ai request', async () => {
@@ -254,7 +274,8 @@ test('naming_method returns the compact recipe as display with an optional descr
   assert.ok(Buffer.byteLength(text) < 800, String(Buffer.byteLength(text)));
   for (const phrase of ['intermediate', 'final triage display', 'about 30', 'familiar animal', 'category-generic',
     'shortlist: true', 'Quiet Otter → quietotter', 'No spaces or dots', 'Follow its Google search instructions',
-    'copy the final table', 'Keep every row with all prices and links', 'Never buy.']) {
+    'copy the entire triage display first', 'Keep all five candidates and every ending with its price and link',
+    'Put any recommendation below the display.']) {
     assert.ok(recipe.includes(phrase), phrase);
   }
   // Brief, generate, one bare-name batch, triage of the best five only, then the answer.
@@ -262,6 +283,15 @@ test('naming_method returns the compact recipe as display with an optional descr
     'triage_names ONCE on only the best FIVE', '5. Answer'].map(phrase => recipe.indexOf(phrase));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
+});
+
+test('naming_method accepts a detailed brief and keeps the recipe concise', async () => {
+  const about = 'Schedule quiet training rooms and reserve equipment for staff. '.repeat(5).trim();
+  const responses = await exchange([...handshake(), call(2, { about }, 'naming_method')]);
+  const { display } = callData(responses, 2);
+  assert.match(display, /^Naming recipe/);
+  assert.ok(display.includes(about.slice(0, 100)));
+  assert.ok(Buffer.byteLength(display) < 1000);
 });
 
 test('prints the MCP naming recipe in the CLI and points spaced names to it', async () => {
@@ -337,12 +367,12 @@ test('forwards triage with twenty-name validation, descriptions and requested en
   assert.deepEqual(one.names[0].notes, ['iOS app: Example One (Example Inc., 12 ratings)']);
   assert.ok(one.names[0].memorable);
   assert.equal(one.display, [
-    '**Name screen** (USD ex. VAT; list estimates, the shop shows the final price; 2y = each payment covers two years)',
+    '**Name screen** (USD ex. VAT; list prices, the shop shows the final price; 2y = each payment covers two years)',
     '',
-    '| Name | Verdict and reason | Free endings, today/renewal, cheapest first | Checkout | Search checks |',
+    '| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |',
     '|---|---|---|---|---|',
     '| Example One | Check first: An exact-name app already exists \\| see \\[x\\](https:\\/\\/example.com) | '
-      + '.co $3.11/$31.05, .app $8.28/$14.49, .ai $160.02/$160.02 2y, check at shop: .dev | '
+      + '.co $3.11/$31.05<br>.app $8.28/$14.49<br>.ai $160.02/$160.02 2y<br>check at shop: .dev | '
       + '[exampleone.co](https://www.spaceship.com/domain-search/?query=exampleone.co) | '
       + 'Google: not checked · [search](https://www.google.com/search?q=%22Example+One%22)<br>'
       + 'App Store (iOS): not checked · [search](https://apps.apple.com/us/iphone/search?term=Example+One)<br>'
@@ -454,14 +484,25 @@ test('keeps all three naming calls under 8 KB and each listed tool text under it
   assert.ok(one.names[0].memorable && one.names[0].buy);
 });
 
+test('triage keeps the price of an ending that became available after the shortlist', () => {
+  const prior = batchPayload(seven);
+  prior.names[0].free = prior.names[0].free.filter(option => option.d !== 'app');
+  const payload = triagePayload(five);
+  const before = JSON.parse(triageText(payload, batchPayload(seven)));
+  const after = JSON.parse(triageText(payload, prior));
+  assert.equal(before.prices.app, undefined);
+  assert.equal(after.prices.app.now, payload.prices.app.now);
+  assert.ok(after.names[0].free.includes('app'));
+});
+
 test('renders the triage shortlist as one priced, linked row per candidate', () => {
   const display = body(JSON.parse(triageText(triagePayload(five))).display);
   const lines = display.split('\n');
-  assert.equal(lines[2], '| Name | Verdict and reason | Free endings, today/renewal, cheapest first | Checkout | Search checks |');
+  assert.equal(lines[2], '| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |');
   const rows = lines.filter(line => /^\| (?!Name|---)/.test(line));
   assert.deepEqual(rows.map(line => line.split(' | ')[0].slice(2)), five);
-  assert.ok(rows[1].startsWith('| Hush Room | Check first: Several public sources show same-name use | .me $2.50/$20.00, .co $3.11/$31.05, '
-    + '.dev $7.24/$13.45, .app $8.28/$14.49, .si $12.50/$12.50, .no $13.90/$13.90, .so $24.99/$49.99, check at shop: .so | '
+  assert.ok(rows[1].startsWith('| Hush Room | Check first: Several public sources show same-name use | .me $2.50/$20.00<br>.co $3.11/$31.05<br>'
+    + '.dev $7.24/$13.45<br>.app $8.28/$14.49<br>.si $12.50/$12.50<br>.no $13.90/$13.90<br>.so $24.99/$49.99<br>check at shop: .so | '
     + '[hushroom.me](https://www.spaceship.com/domain-search/?query=hushroom.me) |'));
   for (const row of rows) {
     assert.match(row, /Google: not checked · .*google\.com\/search\?q=/);
@@ -489,22 +530,22 @@ test('keeps heavy five-name traction screens inside the existing MCP size limit'
   assert.match(packed.display, /David vs Goliath/);
 });
 
-test('puts ranked picks first and shows all sources for twenty names', async () => {
+test('puts display first with ranked picks and shows all sources for twenty names', async () => {
   const names = Array.from({ length: 20 }, (_, index) => 'Candidate ' + index);
   const responses = await exchange([...handshake(), call(2, { names }, 'triage_names')]);
   const forwarded = callData(responses, 2);
   assert.deepEqual(forwarded.names.map(row => row.name), names);
-  assert.ok(size(callText(responses, 2)) < 12_000, String(size(callText(responses, 2))));
+  assert.ok(size(callText(responses, 2)) < 8000, String(size(callText(responses, 2))));
   const sample = triagePayload(twenty);
   sample.top = [{ name: twenty[1], verdict: 'Check first', reason: reasons[1], domain: twenty[1] + '.co', ending: 'co', now: 3.11, renew: 31.05 }];
   const text = triageText(sample);
-  assert.ok(size(text) < 12_000, String(size(text)));
+  assert.ok(size(text) < 8000, String(size(text)));
   const result = JSON.parse(text);
-  assert.equal(Object.keys(result)[0], 'top');
+  assert.equal(Object.keys(result)[0], 'display');
   assert.match(result.display, /^\*\*Top picks\*\*\n- .*Check first.*\$3\.11\/\$31\.05/);
   assert.equal(result.names.length, 20);
-  for (const host of ['www.google.com/search', 'apps.apple.com/us/iphone/search', 'play.google.com/store/search']) {
-    assert.equal(result.display.split(host).length - 1, 20, host);
+  for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+    assert.ok(result.display.includes(source), source);
   }
 });
 
@@ -558,14 +599,14 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   }
   assert.ok(size(JSON.stringify(report)) < 13_000, String(size(JSON.stringify(report))));
   const text = triageText(report);
-  assert.ok(size(text) < 21_000, String(size(text)));
+  assert.ok(size(text) < 8000, String(size(text)));
   const parsed = JSON.parse(text);
-  assert.deepEqual(Object.keys(parsed)[0], 'top');
+  assert.deepEqual(Object.keys(parsed)[0], 'display');
   assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com $6.00 now, $10.00 renewal'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
-  assert.ok(parsed.names.every(row => typeof row.google.link === 'string' && Array.isArray(row.free)));
-  for (const host of ['www.google.com/search', 'apps.apple.com/us/iphone/search', 'play.google.com/store/search']) {
-    assert.equal(parsed.display.split(host).length - 1, 20, host);
+  assert.ok(parsed.names.every(row => row.free.length === 10));
+  for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+    assert.ok(parsed.display.includes(source), source);
   }
 });
 
@@ -588,17 +629,51 @@ test('shares prices and preserves the three source lines in dense triage', () =>
   }
 });
 
-test('renders a batch with shared prices, grouped outcomes and one confirmed link', () => {
+test('renders a batch with shared prices, one line per free domain and one confirmed link', () => {
   const display = body(JSON.parse(checkText(batchPayload(twenty, 8))).display);
   const lines = display.split('\n');
   assert.equal(lines[1], 'Standard prices: .me $2.99/$19.99 · .co $3.11/$31.05 · .dev $7.24/$13.45 · .app $8.28/$14.49 · .si $12.50/$12.50 · '
     + '.no $13.90/$13.90 · .so $24.99/$49.99 · .ai $160.02/$160.02 2y');
-  assert.ok(lines.includes('| ' + twenty.slice(0, 8).join(', ') + ' | — | .me .co .dev .app .com .si .no .so .io .ai | — |'));
+  assert.ok(lines.includes('Taken: ' + twenty.slice(0, 8).join(', ') + ' .me .co .dev .app .com .si .no .so .io .ai'
+    + ' · ' + twenty.slice(8).join(', ') + ' .com .io'));
   for (const name of twenty) assert.ok(display.includes(name), name);
-  assert.match(display, /\| \.me \.co \$3\.11\/\$31\.05 ✓ \.dev/);
+  // Every free ending of each name has a line under its matching group.
+  const payload = batchPayload(twenty, 8);
+  for (const row of payload.names) {
+    if (!row.free?.length) continue;
+    const start = lines.findIndex(line => line.endsWith(':') && line.slice(0, -1).split(', ').includes(row.name));
+    assert.ok(start >= 0, row.name);
+    for (const { d } of row.free ?? []) {
+      assert.ok(lines.slice(start + 1, start + 1 + row.free.length)
+        .some(line => line === '- .' + d || line.startsWith('- .' + d + ' ')), row.name + '.' + d);
+    }
+  }
+  assert.ok(lines.includes('- .co $3.11/$31.05 ✓ confirmed at Spaceship'));
+  // A batch this large leaves standard prices to the shared line; a confirmed quote keeps its own price and label.
+  assert.ok(lines.includes('- .me'));
   assert.equal((display.match(/https:/g) ?? []).length, 1);
-  assert.ok(lines.includes('Confirmed: [examplesolace19.co](https://www.spaceship.com/domain-search/?query=examplesolace19.co) $3.11/$31.05 at Spaceship.'));
+  assert.ok(lines.includes('Confirmed at Spaceship: [examplesolace19.co](https://www.spaceship.com/domain-search/?query=examplesolace19.co) $3.11/$31.05.'));
   assert.equal(lines.at(-1), neverBuys);
+});
+
+test('dense batches keep one line per free domain under 8 KB', () => {
+  const long = Array.from({ length: 20 }, (_, i) => 'qzxw' + 'abcdefghijklmnopqrst'[i] + 'v'.repeat(40));
+  const allFree = { ...batchPayload(long), best: undefined,
+    names: long.map(name => ({ name, free: endingOrder.map(d => ({ d, s: 'nc' })) })) };
+  const text = checkText(allFree);
+  assert.ok(size(text) < 8000, String(size(text)));
+  const { display, names } = JSON.parse(text);
+  const lines = body(display).split('\n');
+  const start = lines.indexOf(long.join(', ') + ':');
+  assert.ok(start >= 0);
+  assert.deepEqual(lines.slice(start + 1, start + 11), endingOrder.map(d => '- .' + d));
+  // The structured rows still list every ending.
+  assert.ok(names.every(row => row.free.length === 10 && row.free.every(option => option.d)));
+  // Twenty names with seven free endings each name each name once above its own ending lines.
+  const twentyLines = body(JSON.parse(checkText(batchPayload(twenty))).display).split('\n');
+  const amber = twentyLines.findIndex(line => line.startsWith('exampleamber0, '));
+  assert.deepEqual(twentyLines.slice(amber + 1, amber + 7), ['- .me', '- .co', '- .dev', '- .app', '- .si', '- .no']);
+  assert.ok(twentyLines.includes('- .co $3.11/$31.05 ✓ confirmed at Spaceship'));
 });
 
 test('escapes untrusted text and links only to known HTTPS registrars for that domain', () => {
@@ -684,10 +759,11 @@ test('ends every MCP display, including errors, with one attribution line and ke
   const long = triagePayload(Array.from({ length: 5 }, (_, index) => 'synthetic-' + 'x'.repeat(90) + index));
   for (const row of long.names) row.reason = 'Example evidence. '.repeat(40);
   texts.push(triageText(long, prior));
-  for (const text of texts) {
+  for (const [index, text] of texts.entries()) {
     const { display } = JSON.parse(text);
     assert.equal(attributionCount(display), 1, display.slice(-80));
-    assert.ok(display.endsWith('\n\n' + attribution));
+    // The exact lookup ends with the purchase line right after the attribution.
+    assert.ok(display.endsWith('\n\n' + attribution + (index === 0 ? '\n\n' + purchaseLine : '')), display.slice(-80));
   }
   assert.ok(size(checkText(batchPayload(twenty))) < 8000);
   assert.ok(size(triageText(triagePayload(five), prior)) < 6000);
@@ -707,21 +783,21 @@ const exactLive = {
 test('without Playwright an unconfirmed free domain says check at shop with a link and keeps its list price', () => {
   const display = body(JSON.parse(checkText(exactLive)).display);
   const lines = display.split('\n');
-  assert.match(lines[0], /^\*\*quietotter\.me is free\.\*\* The registry shows it free; prices are list estimates until checkout\./);
+  assert.match(lines[0], /^\*\*quietotter\.me is free\.\*\* The registry shows it free; the price is a list price, not a shop quote\./);
   assert.ok(lines.includes('| quietotter.me | $2.99 | $19.99/yr | $42.97 | '
     + '[quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me) at Spaceship |'), display);
   assert.ok(lines.includes('Check at shop: [quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me). '
     + 'Live shop check unavailable (Playwright is not installed). Any prices shown are list estimates.'), display);
   assert.ok(lines.includes('USD ex. VAT. Estimate: the shop shows the final price.'));
-  assert.doesNotMatch(display, /confirmed by|^Confirmed:|✓(?! shop-confirmed)/m);
-  assert.equal(lines.at(-1), neverBuys);
+  assert.doesNotMatch(display, /confirmed at|^Confirmed|✓/m);
+  assert.equal(lines.at(-1), 'USD ex. VAT. Estimate: the shop shows the final price.');
 
   // An unsettled registry row keeps its single shop link and only adds why no live price exists.
   const unsettled = { ...exactLive, names: [{ name: 'quietotter.me', shop_check: ['me'] }],
     shopCheckWhy: { me: 'Registry did not answer in time' } };
   const pending = body(JSON.parse(checkText(unsettled)).display);
   assert.match(pending, /^\*\*quietotter\.me: not settled\.\*\* .*Check at shop: \[quietotter\.me\]\(https:\/\/www\.spaceship\.com\/domain-search\/\?query=quietotter\.me\)\. No price yet\./);
-  assert.match(pending, /\nLive shop check unavailable \(Playwright is not installed\)\. Any prices shown are list estimates\.\n/);
+  assert.match(pending, /\nLive shop check unavailable \(Playwright is not installed\)\. Any prices shown are list estimates\.$/);
   assert.equal(pending.split('](https://').length - 1, 1);
 
   // A taken domain stays taken; the fallback never adds a link or price.
@@ -739,10 +815,10 @@ test('without Playwright an unconfirmed free domain says check at shop with a li
   const text = checkText(batch);
   const shown = body(JSON.parse(text).display);
   assert.match(shown, /^Standard prices: \.me \$2\.99\/\$19\.99/m);
-  assert.match(shown, /\| \.com \.io \|/);
+  assert.match(shown, /^Taken: quietotter \.com \.io · /m);
   assert.ok(shown.endsWith('Check at shop: [quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me). '
     + 'Live shop check unavailable (Playwright is not installed). Any prices shown are list estimates.\n' + neverBuys), shown);
-  assert.doesNotMatch(shown, /^Confirmed:|✓(?! shop-confirmed)/m);
+  assert.doesNotMatch(shown, /^Confirmed|^- .*✓/m);
   assert.deepEqual(JSON.parse(text).liveCheck, batch.liveCheck);
   // The preliminary shortlist keeps the same check line.
   const preliminary = body(JSON.parse(checkText(batch, true)).display);
@@ -768,7 +844,7 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
     for (const entry of [bin, server]) {
       const responses = await runServer([fileURLToPath(entry)],
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
-      assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version: '0.1.1' });
+      assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
       assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }

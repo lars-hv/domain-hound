@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { attribution, checkText, neverBuys } from '../../display.mjs';
+import { attribution, checkText, purchaseLine } from '../../display.mjs';
 import { cacheDir, userCacheDir, writeCache } from './cache.mjs';
 import { confirmDomain } from './confirm.mjs';
 import { agentResult, liveCheckFor } from './index.mjs';
@@ -57,9 +57,27 @@ function withoutPlaywright(t) {
   });
 }
 
-test('without Playwright an exact free domain keeps registry and list-price evidence and asks for a shop check', async t => {
+test('by default an exact free domain needs no browser and labels its list price', async t => {
   withoutPlaywright(t);
   const options = await pricedRegistry(t);
+  const started = performance.now();
+  const result = await agentResult('example.me', { ...options, env: {} });
+  assert.ok(performance.now() - started < 2000);
+  assert.equal(result.complete, true);
+  assert.equal(result.best, undefined);
+  assert.equal(result.liveCheck, undefined);
+  assert.deepEqual(result.names, [{ name: 'example.me',
+    free: [{ d: 'me', s: 'nc', now: 3.5, renew: 6, y3: 15.5, shop: 'Dynadot' }] }]);
+  const lines = JSON.parse(checkText(result)).display.split('\n');
+  assert.equal(lines[0], '**example.me is free.** The registry shows it free; the price is a list price from 2026-11-24, not a shop quote.'
+    + ' Checked 2026-11-24 12:00 UTC.');
+  assert.ok(!lines.some(line => /Live shop check|Playwright/.test(line)));
+  assert.deepEqual(lines.slice(-3), [attribution, '', purchaseLine]);
+});
+
+test('with the explicit confirm flag and no Playwright, an exact free domain keeps its list price and asks for a shop check', async t => {
+  withoutPlaywright(t);
+  const options = { ...await pricedRegistry(t), browser: true };
   const started = performance.now();
   const result = await agentResult('example.me', options);
   assert.ok(performance.now() - started < 5000);
@@ -71,18 +89,18 @@ test('without Playwright an exact free domain keeps registry and list-price evid
     checkUrl: 'https://www.dynadot.com/domain/search?domain=example.me' });
   const { display } = JSON.parse(checkText(result));
   const lines = display.split('\n');
-  assert.match(lines[0], /^\*\*example\.me is free\.\*\* The registry shows it free; prices are list estimates until checkout\./);
+  assert.match(lines[0], /^\*\*example\.me is free\.\*\* The registry shows it free; the price is a list price from 2026-11-24, not a shop quote\./);
   assert.ok(lines.includes('| example.me | $3.50 | $6.00/yr | $15.50 | '
     + '[example.me](https://www.dynadot.com/domain/search?domain=example.me) at Dynadot |'), display);
   assert.ok(lines.includes('Check at shop: [example.me](https://www.dynadot.com/domain/search?domain=example.me). '
     + 'Live shop check unavailable (Playwright is not installed). Any prices shown are list estimates.'), display);
-  assert.doesNotMatch(display, /confirmed by|^Confirmed:|✓(?! shop-confirmed)/m);
-  assert.deepEqual(lines.slice(-3), [neverBuys, '', attribution]);
+  assert.doesNotMatch(display, /confirmed at|^Confirmed|✓/m);
+  assert.deepEqual(lines.slice(-3), [attribution, '', purchaseLine]);
 });
 
-test('without Playwright a batch keeps taken rows and list prices and links the cheapest free domain to check', async t => {
+test('with the explicit confirm flag and no Playwright, a batch keeps taken rows and list prices and links the domain to check', async t => {
   withoutPlaywright(t);
-  const options = { ...await pricedRegistry(t), endings: ['com', 'me', 'io'] };
+  const options = { ...await pricedRegistry(t), endings: ['com', 'me', 'io'], browser: true };
   const result = await agentResult(['example'], options);
   assert.equal(result.best, undefined);
   assert.deepEqual(result.names, [{ name: 'example', taken: ['com'], free: [{ d: 'me', s: 'nc' }, { d: 'io', s: 'nc' }] }]);
@@ -92,14 +110,20 @@ test('without Playwright a batch keeps taken rows and list prices and links the 
   assert.equal(result.liveCheck.reason, 'Playwright is not installed');
   const { display } = JSON.parse(checkText(result));
   assert.match(display, /^Standard prices: \.me \$3\.50\/\$6\.00 · \.io \$30\.00\/\$50\.00$/m);
-  assert.match(display, /^\| example \| \.me \.io \| \.com \| — \|$/m);
+  assert.match(display, /^- example\.me \$3\.50\/\$6\.00 list price\n- example\.io \$30\.00\/\$50\.00 list price$/m);
+  assert.match(display, /^Taken: example \.com$/m);
   assert.match(display, /\nCheck at shop: \[example\.me\]\(https:\/\/www\.dynadot\.com\/domain\/search\?domain=example\.me\)\. Live shop check unavailable/);
-  assert.doesNotMatch(display, /^Confirmed:|✓(?! shop-confirmed)/m);
+  assert.doesNotMatch(display, /^Confirmed|^- .*✓/m);
   assert.ok(display.endsWith('\n\n' + attribution));
+  // Without the flag the browser never starts and no shop-check notice appears.
+  const plain = await agentResult(['example'], { ...options, browser: false, env: {},
+    confirm: async () => assert.fail('The browser runs only on the explicit confirm flag') });
+  assert.equal(plain.liveCheck, undefined);
+  assert.deepEqual(plain.names, result.names);
 });
 
 test('a browser that cannot start is named, while other inconclusive shop checks keep the earlier result', async t => {
-  const options = { ...await pricedRegistry(t), endings: ['com', 'me'] };
+  const options = { ...await pricedRegistry(t), endings: ['com', 'me'], browser: true };
   const noBrowser = await agentResult(['example'], { ...options,
     confirm: (shop, domain, settings) => confirmDomain(shop, domain, { ...settings, launch: async () => { throw new Error('no browser'); } }) });
   assert.equal(noBrowser.liveCheck.reason, 'the Playwright browser could not start');

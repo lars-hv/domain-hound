@@ -1,13 +1,16 @@
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { isSearchLink, nameCheckLines } from './clis/domain-check/google-search.mjs';
 import { canRecommend } from './clis/domain-check/name-search.mjs';
+import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
-export { showAsIs } from './clis/domain-check/naming-method.mjs';
+export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
 export const neverBuys = 'Domain Hound never buys; open the link to buy.';
 export const attribution = 'via domainhound.dev';
 
-// Every MCP display ends with one attribution line. The blank line keeps it out of a preceding table or list.
-export const attributed = display => String(display ?? '').trimEnd() + '\n\n' + attribution;
+// Every MCP display carries one attribution line. The blank line keeps it out of a preceding table or list.
+// An exact lookup, or a request that mentions buying, ends with the literal purchase line after it.
+export const attributed = (display, purchase = false) => String(display ?? '').trimEnd() + '\n\n' + attribution
+  + (purchase ? '\n\n' + purchaseLine : '');
 
 const registrarIds = Object.keys(shops);
 const compactTriageLegend = 'USD ex. VAT. prices by ending, own by name. term is years per payment.';
@@ -58,26 +61,18 @@ function priced(ending, price) {
   return ending + ' ' + money(price.now) + renew + (price.term > 1 ? ' ' + price.term + 'y' : '');
 }
 
-function checkRow(row) {
-  const name = row.name;
-  const ending = d => d.includes('.') ? d : '.' + d;
-  const free = (row.free ?? []).map(option => {
-    const own = option.now != null;
-    const mark = option.s === 'ok' ? ' ✓' : '';
-    return own ? priced(ending(option.d), option) + mark : ending(option.d) + mark;
-  });
-  const usesStandard = (row.free ?? []).filter(option => option.now == null).map(option => option.d);
-  return {
-    name, usesStandard,
-    free: free.join(' '),
-    taken: [...(row.taken ?? []).map(ending), ...(row.resale ?? []).map(d => ending(d) + ' (resale)')].join(' '),
-    check: (row.shop_check ?? []).map(ending).join(' '),
-  };
-}
-
 // The date of the oldest list price shown, e.g. "list price from 2026-11-25".
 function listDate(result) {
   return /^\d{4}-\d{2}-\d{2}$/.test(result.priceListDate ?? '') ? result.priceListDate : null;
+}
+
+const clock = value => /^\d{2}:\d{2}$/.test(value ?? '') ? ' ' + value + ' UTC' : '';
+
+// "confirmed at Spaceship 12:04 UTC" for a shop quote; "list price" otherwise.
+function priceLabel(option, shop) {
+  if (option?.s !== 'ok') return 'list price';
+  const premium = option.prem === 'possible' ? 'possible premium, ' : option.prem ? 'premium, ' : '';
+  return premium + 'confirmed at ' + md(shop ?? 'the shop') + clock(option.at);
 }
 
 function exactDisplay(result) {
@@ -86,25 +81,33 @@ function exactDisplay(result) {
   const ending = domain.split('.').at(-1);
   const checked = result.checkedAt ? ' Checked ' + String(result.checkedAt).slice(0, 16).replace('T', ' ') + ' UTC.' : '';
   if (row.resale?.includes(ending)) {
-    return ['**' + domain + ' is taken.** The owner may list it for resale.' + checked,
-      '', 'For domains with a checkout link:', neverBuys].join('\n');
+    return '**' + domain + ' is taken.** The owner may list it for resale.' + checked;
   }
   if (row.taken?.includes(ending)) {
-    return ['**' + domain + ' is taken.** It is already registered.' + checked,
-      '', 'For domains with a checkout link:', neverBuys].join('\n');
+    return '**' + domain + ' is taken.** It is already registered.' + checked;
   }
   const free = row.free?.find(option => option.d === ending);
+  if (free?.s === 'prem') {
+    const shop = free.shop ?? Object.keys(result.buyUrlTemplate ?? {})[0];
+    const link = templateLink(result.buyUrlTemplate, shop, domain);
+    return ['**' + domain + ' is free at the registry, but premium.** Premium, price at shop' + (link ? ': ' + link : '') + '.'
+      + ' No list price applies.' + checked, ...(result.eligibility ? [eligibilityLine(result)] : [])].join('\n');
+  }
   if (free) {
-    const offer = { ...result.listPrices?.[ending], ...free };
+    const confirmed = free.s === 'ok';
+    // A shop quote never falls back to the list price.
+    const offer = confirmed ? free : { ...result.listPrices?.[ending], ...free };
     const best = result.best?.domain === domain ? result.best : null;
     const shop = offer.shop ?? best?.shop;
     const link = safeLink(best?.buyUrl, domain) ?? templateLink(result.buyUrlTemplate, shop, domain);
-    const confirmed = offer.s === 'ok';
     const term = offer.term > 1 ? ' for ' + offer.term + ' years' : '';
     const live = !confirmed && result.liveCheck?.domain === domain ? liveCheckLine(result) : '';
+    const date = listDate(result);
     const lines = [
-      '**' + domain + ' is free.** ' + (confirmed ? 'Exact quote confirmed by ' + (shop ?? 'the shop') + '.'
-        : 'The registry shows it free; prices are list estimates until checkout.') + checked,
+      '**' + domain + (free.prem ? ' is free, at a premium price.** ' : ' is free.** ')
+        + (confirmed ? 'Price ' + priceLabel(free, shop) + '.'
+          : 'The registry shows it free; the price is a list price' + (offer.now != null && date ? ' from ' + date : '')
+            + ', not a shop quote.') + checked,
       '',
       '| Domain | Today | Renewal | 3 years | Checkout |',
       '|---|---|---|---|---|',
@@ -113,16 +116,18 @@ function exactDisplay(result) {
         + ' | ' + (offer.y3 != null ? money(offer.y3) : '—') + ' | ' + (link ? link + (shop ? ' at ' + md(shop) : '') : '—') + ' |',
       '',
       ...(live ? [live] : []),
-      'USD ex. VAT.' + (confirmed ? '' : (offer.now != null && listDate(result) ? ' List price from ' + listDate(result) + '.' : '')
-        + ' Estimate: the shop shows the final price.'),
+      'USD ex. VAT.' + (confirmed ? '' : ' Estimate: the shop shows the final price.'),
       ...(result.eligibility ? [eligibilityLine(result)] : []),
-      neverBuys,
     ];
     return lines.join('\n');
   }
-  const why = result.shopCheckWhy?.[ending];
+  const why = result.shopCheckWhy?.[domain] ?? result.shopCheckWhy?.[ending];
   const shop = Object.keys(result.buyUrlTemplate ?? {})[0];
   const link = templateLink(result.buyUrlTemplate, shop, domain);
+  if (result.shopCheckWhy?.[domain]) {
+    // Reserved or not offered: no list price applies.
+    return '**' + domain + ': not offered for registration.** ' + md(why) + '. Check at shop' + (link ? ': ' + link : '') + '.' + checked;
+  }
   const live = result.liveCheck?.domain === domain ? liveCheckLine(result, !link) : '';
   const estimate = result.listPrices?.[ending];
   const date = listDate(result);
@@ -133,39 +138,74 @@ function exactDisplay(result) {
       priced('.' + ending, estimate) + ' at ' + md(estimate.shop) + ' (USD ex. VAT, list price from ' + date + ').',
       ...(result.eligibility ? [eligibilityLine(result)] : []),
     ] : []),
-    ...(live ? [live] : []),
-    '', 'For domains with a checkout link:', neverBuys].join('\n');
+    ...(live ? [live] : [])].join('\n');
 }
 
-export function checkDisplay(result) {
+// One line per free domain, so a copied answer cannot merge or drop an ending.
+// Level 1 drops the "list price" word (the header says it); level 2 leaves standard prices to the shared line;
+// level 3, for the densest batches, names each name once above its own ending lines.
+function freeLines(row, listPrices, level) {
+  const lines = (row.free ?? []).map(option => {
+    const domain = level >= 3 && !option.d.includes('.') && !row.name.includes('.') ? '.' + option.d
+      : option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
+    if (option.s === 'prem') return '- ' + domain + ' premium, price at shop';
+    const own = option.now != null;
+    if (!own && level >= 2) return '- ' + domain;
+    const quote = own ? option : listPrices[option.d];
+    const price = quote?.now == null ? ' price at shop'
+      : ' ' + money(quote.now) + (quote.renew != null ? '/' + money(quote.renew) : '') + (quote.term > 1 ? ' ' + quote.term + 'y' : '');
+    const label = option.s === 'ok' ? ' ✓ ' + priceLabel(option, option.shop) : level >= 1 || quote?.now == null ? '' : ' list price';
+    return '- ' + domain + price + label;
+  });
+  return lines;
+}
+
+function groupRows(rows, linesFor) {
+  const groups = new Map();
+  for (const row of rows) {
+    const lines = linesFor(row);
+    if (!lines.length) continue;
+    const key = lines.join('\n');
+    if (!groups.has(key)) groups.set(key, { names: [], lines });
+    groups.get(key).names.push(md(row.name));
+  }
+  return [...groups.values()];
+}
+
+export function checkDisplay(result, level = 0, purchase = false) {
   const rows = (result.names ?? []).filter(Boolean);
   if (rows.length === 1 && rows[0].name?.includes('.')) return exactDisplay(result);
   const listPrices = result.listPrices ?? {};
-  const groups = new Map();
   const standard = new Set();
   for (const row of rows) {
-    const cells = checkRow(row);
-    cells.usesStandard.forEach(d => standard.add(d));
+    for (const option of row.free ?? []) if (option.now == null && option.s !== 'prem') standard.add(option.d);
     for (const d of row.shop_check ?? []) if (listPrices[d]?.now != null) standard.add(d);
-    const key = JSON.stringify([cells.free, cells.taken, cells.check]);
-    if (!groups.has(key)) groups.set(key, { names: [], ...cells });
-    groups.get(key).names.push(cells.name);
   }
-  const shared = [...standard].filter(d => !d.includes('.'))
+  const shared = [...standard].filter(d => !d.includes('.') && listPrices[d])
     .map(d => priced('.' + d, listPrices[d])).join(' · ');
   const lines = [
     '**Domain check, ' + rows.length + (rows.length === 1 ? ' name' : ' names') + '** (USD ex. VAT, today/renewal; '
-      + 'estimates unless ✓ shop-confirmed' + (listDate(result) ? '; list price from ' + listDate(result) : '')
+      + 'list prices' + (listDate(result) ? ' from ' + listDate(result) : '') + ' unless ✓ confirmed at a shop'
       + '; 2y = two-year payments)',
   ];
   if (shared) lines.push('Standard prices: ' + shared);
   if (result.eligibility) lines.push(eligibilityLine(result));
-  lines.push('', '| Names | Free | Taken | Check at shop |', '|---|---|---|---|');
-  for (const group of groups.values()) {
-    lines.push('| ' + group.names.join(', ') + ' | ' + (group.free || '—') + ' | ' + (group.taken || '—') + ' | '
-      + (group.check || '—') + ' |');
-  }
-  lines.push('');
+  const free = level >= 3
+    ? groupRows(rows, row => freeLines(row, listPrices, level))
+      .flatMap(group => [group.names.join(', ') + ':', ...group.lines])
+    : rows.flatMap(row => freeLines(row, listPrices, level));
+  lines.push('', '**Free domains, one ending per line**' + (free.length ? '' : ': none found'), ...free, '');
+  const endingsOf = (row, key) => (row[key] ?? []).map(d => d.includes('.') ? d : '.' + d);
+  const statusLines = project => level >= 3
+    ? groupRows(rows, project).map(group => group.names.join(', ') + ' ' + group.lines.join(' '))
+    : rows.flatMap(row => {
+      const endings = project(row);
+      return endings.length ? [md(row.name) + ' ' + endings.join(' ')] : [];
+    });
+  const taken = statusLines(row => [...endingsOf(row, 'taken'), ...endingsOf(row, 'resale').map(d => d + ' (resale)')]);
+  const check = statusLines(row => endingsOf(row, 'shop_check'));
+  if (taken.length) lines.push('Taken: ' + taken.join(' · '));
+  if (check.length) lines.push('Check at shop: ' + check.join(' · '));
   const reasons = new Map();
   for (const [ending, reason] of Object.entries(result.shopCheckWhy ?? {})) {
     if (!reasons.has(reason)) reasons.set(reason, []);
@@ -176,13 +216,23 @@ export function checkDisplay(result) {
   const best = result.best;
   const link = best && safeLink(best.buyUrl, best.domain);
   if (link) {
-    lines.push('Confirmed: ' + link + ' ' + (best.priceNow != null ? money(best.priceNow) : 'price at shop')
-      + (best.renewal != null ? '/' + money(best.renewal) : '') + (best.term > 1 ? ' ' + best.term + 'y' : '')
-      + (best.shop ? ' at ' + md(best.shop) : '') + '.');
+    lines.push('Confirmed at ' + md(best.shop ?? 'the shop') + clock(best.at) + ': ' + link + ' '
+      + (best.priceNow != null ? money(best.priceNow) : 'price at shop')
+      + (best.renewal != null ? '/' + money(best.renewal) : '') + (best.term > 1 ? ' ' + best.term + 'y' : '') + '.');
     lines.push(neverBuys);
   } else if (result.liveCheck) {
     const live = liveCheckLine(result);
     if (live) lines.push(live, neverBuys);
+  } else if (rows.length === 1 || purchase) {
+    const available = rows.flatMap(row => (row.free ?? []).flatMap(option => {
+      const domain = option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
+      if (!canRecommend(domain.split('.').at(-1))) return [];
+      const price = option.prem || option.s === 'prem' ? option : { ...listPrices[option.d], ...option };
+      const link = templateLink(result.buyUrlTemplate, price.shop, domain);
+      return link ? [{ link, price: price.now ?? Infinity }] : [];
+    }));
+    const cheapest = available.sort((a, b) => a.price - b.price)[0];
+    if (cheapest) lines.push('Check at shop: ' + cheapest.link);
   }
   return lines.join('\n').trim();
 }
@@ -245,14 +295,14 @@ export function triageDisplay(result, prior, sharePrices = false, short = false)
   const lines = [];
   if (result.top?.length) lines.push(...topLines(result, !prior, !prior), '');
   lines.push(prior ? '**Name screen** (USD ex. VAT, estimates)' :
-    '**Name screen** (USD ex. VAT; list estimates, the shop shows the final price; 2y = each payment covers two years)');
+    '**Name screen** (USD ex. VAT; list prices, the shop shows the final price; 2y = each payment covers two years)');
   if (result.eligibility) lines.push(eligibilityLine(result));
   if (sharePrices) {
     const standard = Object.entries(prices).map(([ending, price]) => priced('.' + ending, price));
     if (standard.length) lines.push('Standard today/renewal: ' + standard.join(', '));
   }
   const checkoutHeading = prior ? 'Cheapest eligible / checkout' : 'Checkout';
-  lines.push('', '| Name | Verdict and reason | Free endings, today/renewal, cheapest first | ' + checkoutHeading + ' | Search checks |',
+  lines.push('', '| Name | Verdict and reason | Free endings, one per line, today/renewal | ' + checkoutHeading + ' | Search checks |',
     '|---|---|---|---|---|');
   for (const row of rows) {
     const base = label(row.name);
@@ -265,17 +315,26 @@ export function triageDisplay(result, prior, sharePrices = false, short = false)
       });
     const link = first && base ? safeLink(row.buy, fullDomain(base, first)) : null;
     const checkoutPrice = prior && link && (row.own?.[first] ?? prices[first]);
+    const earlier = earlierRows.get(base) ?? [];
+    // An earlier premium answer, or a shop quote above the list price, replaces the list price for that ending.
+    const premiumQuote = ending => earlier.find(option => option.d === ending && (option.s === 'prem' || option.prem ||
+      (option.s === 'ok' && option.now != null && option.now > ((row.own?.[ending] ?? prices[ending])?.now ?? Infinity) + 0.01)));
     const cell = free.map(ending => {
       const own = row.own?.[ending];
+      const premium = premiumQuote(ending);
+      if (premium) {
+        return premium.s === 'prem' || premium.now == null ? '.' + ending + ' premium, price at shop'
+          : priced('.' + ending, premium) + (premium.prem === true ? ' premium' : ' possible premium') + ' shop quote';
+      }
       return sharePrices && !own && prices[ending] && (ending !== cheapestYear || (checkoutPrice && ending === first))
         ? '.' + ending : priced('.' + ending, own ?? prices[ending]);
     });
-    const earlier = earlierRows.get(base) ?? [];
     const previous = option => priced('.' + option.d, option.now != null ? option : prior.listPrices?.[option.d]);
     const recheck = earlier.filter(option => row.shop_check?.includes(option.d));
     const taken = earlier.filter(option => row.taken?.includes(option.d));
-    const exact = earlier.filter(option => option.s === 'ok' && free.includes(option.d) &&
+    const exact = earlier.filter(option => option.s === 'ok' && free.includes(option.d) && !premiumQuote(option.d) &&
       option.now !== (row.own?.[option.d] ?? prices[option.d])?.now);
+    if (row.premium?.length) cell.push('premium, price at shop: ' + row.premium.map(ending => '.' + ending).join(' '));
     if (row.shop_check?.length) cell.push('check at shop: ' + row.shop_check.map(ending => '.' + ending).join(' '));
     if (recheck.length) cell.push('earlier price, recheck: ' + recheck.map(previous).join(', '));
     if (taken.length) cell.push('earlier price, now taken: ' + taken.map(previous).join(', '));
@@ -283,7 +342,7 @@ export function triageDisplay(result, prior, sharePrices = false, short = false)
     const checkout = checkoutPrice ? priced(link, checkoutPrice) : link ?? '—';
     const value = rowBestValue(row, prices);
     lines.push('| ' + md(row.name) + ' | ' + md(row.verdict) + ': ' + md(row.reason) + tractionLine(row, Boolean(prior) || short) + ' | '
-      + (cell.join(', ') || 'none free') + (value ? '<br>' + value : '') + ' | ' + checkout + ' | '
+      + (cell.join('<br>') || 'none free') + (value ? '<br>' + value : '') + ' | ' + checkout + ' | '
       + checkLines(row, short).join('<br>') + ' |');
   }
   if (!prior) lines.push('', 'Choose a favorite, if you want, and ask for its exact quote.');
@@ -292,10 +351,19 @@ export function triageDisplay(result, prior, sharePrices = false, short = false)
 
 const shorten = (value, length) => value.length > length ? value.slice(0, length - 1).trimEnd() + '…' : value;
 
-function denseDisplay(result, short = false) {
+function denseDisplay(result, short = false, links = true) {
   const heading = result.top?.length ? topLines(result, false).join('\n') : '**Name screen**';
-  const rows = (result.names ?? []).filter(Boolean).map(row => '- **' + md(row.name) + '** — ' + md(row.verdict)
-    + '  \n  ' + checkLines(row, short).join('  \n  '));
+  const results = (result.names ?? []).filter(Boolean);
+  const checksFor = row => checkLines(row, short).map(line =>
+    links ? line : line.replace(/\[([^\]]+)\]\(https:\/\/[^)]+\)/g, '$1'));
+  const names = results.map(row => '- **' + md(row.name) + '** — ' + md(row.verdict));
+  const individual = names.map((name, index) => name + '  \n  ' + checksFor(results[index]).join('  \n  '));
+  const groups = links ? [] : groupRows(results, checksFor);
+  const shared = groups.flatMap(({ names, lines }) => [
+    names.length === results.length ? '**Search checks for every name**' : names.join(', '), ...lines,
+  ]);
+  const rows = shared.length && bytes([...names, ...shared].join('\n')) < bytes(individual.join('\n'))
+    ? [...names, '', ...shared] : individual;
   const eligibility = result.eligibility ? [eligibilityLine(result)] : [];
   return [heading, '', ...eligibility, '**Every name** (reasons and prices are in the results below)', ...rows].join('\n');
 }
@@ -312,9 +380,13 @@ const withDisplay = (display, { display: ignored, ...data } = {}) => JSON.string
 
 export const errorText = message => withDisplay(attributed(message));
 
-export function checkText(result, shortlist = false) {
-  const shown = checkDisplay(result);
-  const display = attributed(shown);
+export function checkText(result, shortlist = false, { purchase = false } = {}) {
+  const initialLevel = (result.names?.length ?? 0) >= 10 ? 3 : 0;
+  const shown = checkDisplay(result, initialLevel, purchase);
+  const exact = (result.names ?? []).length === 1 && String(result.names[0]?.name ?? '').includes('.');
+  // An exact lookup always ends with the purchase line; so does any request that mentions buying.
+  const ending = exact || purchase;
+  let display = attributed(shown, ending);
   const data = { ...result };
   if (shortlist) {
     // The preliminary batch keeps statuses and payments. The display has the confirmed link.
@@ -333,22 +405,31 @@ export function checkText(result, shortlist = false) {
     }
     const groups = new Map();
     for (const row of data.names) {
-      const available = (row?.free ?? []).map(option => '.' + option.d).join(' ') || 'none found';
+      const available = (row?.free ?? []).map(option => '.' + option.d
+        + (option.s === 'prem' || option.prem ? ' (premium)' : '')).join(' ') || 'none found';
       if (!groups.has(available)) groups.set(available, []);
       groups.get(available).push(md(row?.name));
     }
     const lines = ['**Preliminary domain screen** (free endings)', ...[...groups].map(([available, names]) =>
       names.join(', ') + ' — ' + available)];
     if (result.eligibility) lines.push(eligibilityLine(result));
-    const confirmed = shown.split('\n').filter(line => line.startsWith('Confirmed: ') || line.startsWith('Check at shop: '));
+    const confirmed = shown.split('\n').filter(line => line.startsWith('Confirmed at ') || line.startsWith('Check at shop: ['));
     if (confirmed.length) lines.push(...confirmed);
-    return withDisplay(attributed(lines.join('\n')), data);
+    return withDisplay(attributed(lines.join('\n'), purchase), data);
   }
   const limit = 7900;
+  let level = initialLevel;
+  const compactDisplay = next => () => {
+    if (next <= level) return;
+    level = next;
+    display = attributed(checkDisplay(result, level, purchase), ending);
+  };
   const steps = [
-    // Drop inline prices from unconfirmed rows; the shared list price stays.
+    // Drop inline prices from unconfirmed rows; the display and the shared list price keep them.
     () => { data.names = data.names.map(row => row?.free
       ? { ...row, free: row.free.map(({ d, s, ...price }) => s === 'nc' ? { d, s } : { d, s, ...price }) } : row); },
+    // The display header already says prices are list prices unless confirmed.
+    compactDisplay(1),
     // Keep standard prices only for endings that some row could still buy.
     () => {
       const open = new Set(data.names.flatMap(row => [...(row?.free ?? []).map(option => option.d), ...(row?.shop_check ?? [])]));
@@ -357,11 +438,18 @@ export function checkText(result, shortlist = false) {
     () => { data.listPrices = Object.fromEntries(Object.entries(data.listPrices).map(([d, { y3, ...price }]) => [d, price])); },
     // The display header carries the currency and confirmation key.
     () => { delete data.legend; },
+    // A dense batch keeps one line per free domain; standard prices stay on the shared line.
+    compactDisplay(2),
+    // Unconfirmed is the default status of a free ending.
+    () => { data.names = data.names.map(row => row?.free
+      ? { ...row, free: row.free.map(({ s, ...option }) => s === 'nc' ? option : { ...option, s }) } : row); },
+    compactDisplay(3),
   ];
+  const needsPrices = steps.slice(2, 4);
   let text = withDisplay(display, data);
   for (const step of steps) {
     if (bytes(text) <= limit) break;
-    if (step !== steps[0] && step !== steps.at(-1) && !data.listPrices) continue;
+    if (needsPrices.includes(step) && !data.listPrices) continue;
     step();
     text = withDisplay(display, data);
   }
@@ -369,11 +457,11 @@ export function checkText(result, shortlist = false) {
 }
 
 // Keep structured evidence keys in the MCP response when secondary details need to fit a shortlist.
-export function triageText(result, prior) {
+export function triageText(result, prior, { purchase = false } = {}) {
   let shared = false;
   let dense = false;
   let short = false;
-  const render = () => attributed(dense ? denseDisplay(result, short) : triageDisplay(result, prior, shared, short));
+  const render = () => attributed(dense ? denseDisplay(result, short) : triageDisplay(result, prior, shared, short), purchase);
   let display = render();
   const count = result.names?.length ?? 0;
   const data = structuredClone(result);
@@ -381,8 +469,8 @@ export function triageText(result, prior) {
   // The display carries the three check lines; google stays for the client to fill.
   for (const row of data.names ?? []) delete row.checks;
   let { top, ...fields } = data;
-  const serialize = () => JSON.stringify({ ...(top && { top }), display, ...fields });
-  const limit = count <= 1 ? 5900 : count <= 5 ? (prior ? 3800 : 5900) : 9900;
+  const serialize = () => JSON.stringify({ display, ...(top && { top }), ...fields });
+  const limit = count <= 1 ? 5900 : count <= 5 ? (prior ? 3800 : 5900) : 7800;
   let text = serialize();
   for (const trim of [
     row => { if (row.notes) row.notes = row.notes.slice(0, 1); },
@@ -414,14 +502,17 @@ export function triageText(result, prior) {
   }
   if (prior && count <= 5 && bytes(text) > limit) {
     for (const row of fields.names) row.reason = row.reason?.split(' · ', 1)[0];
+    const earlier = new Map(prior.names?.map(row => [row.name, new Set((row.free ?? []).map(option => option.d))]));
+    const newlyFree = new Set(fields.names.flatMap(row => (Array.isArray(row.free) ? row.free : [])
+      .filter(ending => !earlier.get(label(row.name))?.has(ending))));
     fields.prices = Object.fromEntries(Object.entries(fields.prices ?? {}).filter(([ending, quote]) => {
-      const earlier = prior.listPrices?.[ending];
-      return !earlier || quote.now !== earlier.now || quote.renew !== earlier.renew ||
-        (quote.term ?? 1) !== (earlier.term ?? 1) || Boolean(quote.jump) !== Boolean(earlier.jump);
+      const listed = prior.listPrices?.[ending];
+      return newlyFree.has(ending) || !listed || quote.now !== listed.now || quote.renew !== listed.renew ||
+        (quote.term ?? 1) !== (listed.term ?? 1) || Boolean(quote.jump) !== Boolean(listed.jump);
     }));
     text = serialize();
   }
-  const maxBytes = count <= 5 ? (prior ? 5200 : 6000) : 10_000;
+  const maxBytes = count <= 5 ? (prior ? 5200 : 6000) : 8000;
   const step = change => {
     if (count <= 1 || bytes(text) < maxBytes) return;
     change();
@@ -475,7 +566,31 @@ export function triageText(result, prior) {
     delete fields.sources;
     for (const row of fields.names) if (row.google && !row.google.search) delete row.google.link;
   });
-  if (count <= 1 || count > 5 || bytes(text) < maxBytes) return text;
+  if (bytes(text) < maxBytes || count <= 1) return text;
+  if (count > 5) {
+    const names = result.names.map(({ name, verdict, reason, free, own, taken, shop_check, premium, bestValue, google }) => ({
+      name, verdict, reason: shorten(reason?.split(' · ', 1)[0] ?? '', 60), free,
+      ...(Object.keys(own ?? {}).length && { own }),
+      ...(taken?.length && { taken }),
+      ...(shop_check?.length && { shop_check }),
+      ...(premium?.length && { premium }),
+      ...(bestValue && { bestValue }),
+      ...(google?.search && { google }),
+    }));
+    const renderWith = (links, repeatMetadata = true) => withDisplay(attributed(denseDisplay(result, true, links), purchase), {
+      names, prices: result.prices, ...(repeatMetadata && top && { top }),
+      ...(repeatMetadata && result.eligibility && { eligibility: result.eligibility }),
+    });
+    const linked = renderWith(true);
+    if (bytes(linked) < maxBytes) return linked;
+    const unlinked = renderWith(false);
+    if (bytes(unlinked) < maxBytes) return unlinked;
+    for (const row of names) {
+      row.reason = shorten(row.reason, 24);
+      if (row.google) row.google = { result: row.google.result, search: true };
+    }
+    return renderWith(false, false);
+  }
 
   // Long labels and their repeated search URLs can exhaust even the dense format.
   // Keep every verdict, domain option and price, then add the source links where they fit.
@@ -494,7 +609,7 @@ export function triageText(result, prior) {
     + (row.reason ? ': ' + md(shorten(row.reason, 200)) : ''));
   const header = ['**Name screen** (prices and reasons in the results)', ...(result.eligibility ? [eligibilityLine(result)] : [])];
   const dataOnly = { names, prices: result.prices };
-  const fit = lines => JSON.stringify({ display: attributed([...header, ...lines].join('\n')), ...dataOnly });
+  const fit = lines => JSON.stringify({ display: attributed([...header, ...lines].join('\n'), purchase), ...dataOnly });
   const links = fit(summary.map((line, index) => line + '  \n  ' + checkLines(result.names[index], true).join('  \n  ')));
   return bytes(links) < maxBytes ? links : fit(summary);
 }

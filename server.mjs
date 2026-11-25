@@ -1,4 +1,4 @@
-import { geoInstruction, googleSearchInstruction, namingRecipe, showAsIs } from './clis/domain-check/naming-method.mjs';
+import { geoInstruction, googleSearchInstruction, namingRecipe } from './clis/domain-check/naming-method.mjs';
 import { normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -31,10 +31,12 @@ const lookupProperties = {
 };
 const checkTool = {
   name: 'check_domains',
-  description: 'Use Domain Hound to check domains. Two input forms: query for one name or exact domain, e.g. {"query":"oakenroom.me"} or {"query":"oakenroom"}; names for a batch of up to 20 bare names, exact domains or both, e.g. {"names":["oakenroom","quietbook","oakenroom.me"]}. A dot means an exact domain; a bare name checks all ten endings, including .ai. For a single exact-domain question, call once with query and answer from that result. For a list, make one names call and report the results as returned. An unconfirmed result is enough for an availability answer. An exact quote for a favorite is a separate request. '
-    + 'Returns display (ready-to-copy Markdown that accounts for every requested name), then complete, shared checkedAt and priceListDate, optional best (confirmed, with buyUrl), and per name taken, resale, free (cheapest first) and shop_check. Read first payment, minimum term and renewal inline or in listPrices keyed by ending; shopCheckWhy gives the reason an ending needs a shop check. The legend and shop buyUrlTemplate values explain the fields and links. '
-    + showAsIs + ' For an exact lookup, copy the entire display including the purchase line. If asked to buy or register, explicitly say you cannot buy domains or complete checkout, including when the domain is taken. Give the price and checkout link only when an offer exists. If a domain is taken, say it is taken. Suggest free endings already in that result. Look up alternatives only if the person asks for alternatives. '
-    + 'Returns every option; let the person choose. Never buys. For naming help, call naming_method first when generating new names. Use triage_names alone to screen an existing name for conflicts. When shortlist is true, pass a single DNS label per name (Quiet Otter becomes quietotter).',
+  description: 'Show `display` first and verbatim: every line, each free domain on its own line, and the last line. Add advice only below it. '
+    + 'For any request to buy or register, pass purchase: true and explicitly say “Domain Hound cannot buy or complete checkout,” even when the domain is taken. '
+    + 'Input: query for one name or exact domain ({"query":"oakenroom.me"}), or names for 1 to 20 names in one call ({"names":["oakenroom","oakenroom.me"]}). A bare name checks ten endings, including .ai. '
+    + 'For a batch, make one call and report check-at-shop endings as returned. Recheck only when the person asks. '
+    + 'Set confirm true only when the person asks for a live shop check (slower). '
+    + 'Prices are list prices unless marked confirmed at a shop; premium names show the shop price or "premium, price at shop". Look up alternatives only if asked. For new names, call naming_method first; to screen an existing name, use triage_names. With shortlist true, pass one DNS label per name (Quiet Otter becomes quietotter).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -45,6 +47,8 @@ const checkTool = {
         items: nameSchema,
         description: '1 to 20 bare names, exact domains or both, e.g. ["oakenroom","quietbook","oakenroom.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
       shortlist: { type: 'boolean', description: 'Use true for the preliminary bare-name batch specified by naming_method.' },
+      purchase: { type: 'boolean', description: 'Pass true when asked to buy or register, even for an exact domain that may be taken. State the checkout limitation from the display in the answer.' },
+      confirm: { type: 'boolean', description: 'True only when the person explicitly asks for a live shop check. Uses an optional headless browser and is slower.' },
     },
     additionalProperties: false,
     oneOf: [{ required: ['query'] }, { required: ['names'] }],
@@ -52,21 +56,21 @@ const checkTool = {
 };
 
 const legacyTool = { ...checkTool, name: 'broker_find',
-  description: 'Legacy alias for the Domain Hound check_domains tool. Same input forms: {"query":"oakenroom.me"} or {"names":["oakenroom","oakenroom.me"]}. ' + showAsIs + ' Returns every option; let the person choose.' };
+  description: 'Show `display` first and verbatim, including the last line. Legacy alias for Domain Hound check_domains, same input. Never buys.' };
 
 const triageTool = {
   name: 'triage_names',
-  description: 'If asked whether an existing name is safe, call Domain Hound triage_names directly once with that bare name. Use this tool to screen 1 to 20 product names, e.g. {"names":["Quiet Otter","Hush Room"],"about":"book quiet meeting rooms"}. Checks same-name competitors, live US marks, iOS and Android apps, handles, memorability and every domain ending, including .ai. '
-    + 'Returns top (up to three ranked names), sources (coverage) and display (ready-to-copy Markdown with the top picks first and one row per name with its verdict and reason exactly, every free ending with today\'s payment and renewal, and a checkout link for the cheapest), then per name verdict, reason, free (endings free at the registry, cheapest first), own (this name\'s prices where they differ), taken, shop_check, buy (checkout link for the cheapest free ending) and competition evidence; prices holds the standard price per ending (now = payment today for term years, renew = renewal). '
-    + 'Show the cheapest eligible one-year price in each candidate row. Restricted endings such as .no remain listed with their eligibility note and are excluded from cheapest and Best value unless the buyer qualifies. Best value requires a known renewal at most twice the first payment. '
-    + 'Verdicts weigh each same-name rival by its SEO and GEO traction: a strong rival (David vs Goliath) or a same-business rival with traction means Avoid, another business with some traction means Check first, and small or dormant same-name uses are notes after the reason that never lower the verdict. '
-    + 'Fill geo for every name from your own memory before calling. ' + googleSearchInstruction + ' Copy the full display in the answer. Update only the Google result. Keep the verdict, reason, same-name notes, and each source on its own line with its direct link. Keep the cheapest eligible payment in every row even when prices match. Use the exact labels Google, App Store (iOS), and Google Play (Android). Do not omit or paraphrase rows. In a dense batch, account for every name in the structured results. Let the person choose.',
+  description: 'Show `display` first and verbatim: every row, every free ending on its own line with its price, verdicts and reasons exactly. Show every candidate before recommending a favorite. '
+    + 'Use to screen 1 to 20 product names, or once with a bare name when asked whether an existing name is safe: {"names":["Quiet Otter","Hush Room"],"about":"book quiet meeting rooms"}. Checks same-name rivals and their traction, live US marks, iOS and Android apps, handles and every domain ending, including .ai. '
+    + 'Verdicts weigh each same-name rival by its traction: a strong rival (David vs Goliath) or a same-business rival with traction means Avoid; small or dormant same-name uses are notes that never lower the verdict. '
+    + 'Fill geo for every name from your own memory before calling. ' + googleSearchInstruction + ' Update only the Google line, with the exact labels Google, App Store (iOS) and Google Play (Android). Never buys; let the person choose.',
   inputSchema: {
     type: 'object',
     properties: {
       ...lookupProperties,
       names: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 },
         description: '1 to 20 bare names without endings, e.g. ["Quiet Otter","Hush Room"].' },
+      purchase: { type: 'boolean', description: 'True when the person asks to buy or register a domain.' },
       category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for relevant trademark classes and competitors. Use travel, software, finance, retail, health, education, food or media.' },
       about: { type: 'string', minLength: 1, maxLength: 160, description: 'A short description of what your product does, to identify overlapping sites and apps.' },
       geo: { type: 'object', maxProperties: 20,
@@ -80,10 +84,9 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_method',
-  description: 'Get the Domain Hound naming recipe when asked to generate new product name ideas. For an existing name, use triage_names directly. Start with the final triage display; the recipe and the name batch are intermediate. '
-    + googleSearchInstruction,
+  description: 'Get the Domain Hound naming recipe when asked for new product name ideas. For an existing name, use triage_names. The answer starts with the final triage display, shown verbatim; the recipe and the name batch are intermediate.',
   inputSchema: { type: 'object', properties: {
-    about: { type: 'string', minLength: 1, maxLength: 160, description: 'An optional brief product description.' },
+    about: { type: 'string', minLength: 1, maxLength: 512, description: 'An optional one-sentence product description.' },
   }, additionalProperties: false },
 };
 
@@ -129,6 +132,11 @@ function lookupFlags(args) {
   }
   if (Object.hasOwn(args, 'ai') && typeof args.ai !== 'boolean') throw new Error('ai must be a boolean.');
   if (args.ai) flags.push('--ai');
+  for (const flag of ['purchase', 'confirm']) {
+    if (Object.hasOwn(args, flag) && typeof args[flag] !== 'boolean') throw new Error(flag + ' must be a boolean.');
+  }
+  // The headless browser runs only on this explicit request.
+  if (args.confirm === true) flags.push('--confirm');
   if (Object.hasOwn(args, 'endings')) {
     const endings = args.endings;
     if (!Array.isArray(endings) || endings.length < 1 || endings.length > 10 ||
@@ -282,20 +290,21 @@ export async function serve({ input = process.stdin, output = process.stdout, cw
     const { name, arguments: args } = params ?? {};
     if (name === namingTool.name) {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
-        (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() || args.about.length > 160)))) {
-        return reply(errorResult('naming_method accepts only an optional about description of up to 160 characters.'));
+        (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() ||
+          args.about.length > namingTool.inputSchema.properties.about.maxLength)))) {
+        return reply(errorResult('naming_method accepts an optional about description of up to 512 characters.'));
       }
       shortlist = undefined;
-      return reply(textResult(JSON.stringify({ display: attributed(namingRecipe(args?.about)) })));
+      return reply(textResult(JSON.stringify({ display: attributed(namingRecipe(args?.about?.slice(0, 160))) })));
     }
     if (name === triageTool.name) {
       const prior = shortlist && Date.now() - shortlist.at < 120_000 ? shortlist.data : undefined;
-      return reply(await runLookup(args, cwd, timeout, triageArguments, data => triageText(data, prior)));
+      return reply(await runLookup(args, cwd, timeout, triageArguments, data => triageText(data, prior, { purchase: args.purchase === true })));
     }
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
     return reply(await runLookup(args, cwd, timeout, cliArguments, data => {
       if (args.shortlist) shortlist = { at: Date.now(), data };
-      return checkText(data, args.shortlist);
+      return checkText(data, args.shortlist, { purchase: args.purchase === true });
     }));
   }
 
