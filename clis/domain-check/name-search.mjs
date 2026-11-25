@@ -1,8 +1,10 @@
+import { domainToASCII, domainToUnicode } from 'node:url';
 import { checkDomainSite } from './com-site.mjs';
 import { cachedSignals, confirmingShops } from './confirm.mjs';
 import { bundledCatalog, datedListPrices, getNameCatalog, loadCachedCatalog, targetEndings } from './price-catalog.mjs';
 import { linkable, shopSearchUrl } from './prices.mjs';
 import { lookupRegistrations } from './registry.mjs';
+import { foldLatin } from './triage-sources.mjs';
 
 const checked = '2026-11-23';
 const facts = {
@@ -11,6 +13,7 @@ const facts = {
     source: 'https://www.namecheap.com/domains/registration/cctld/ai/', checked,
   },
   no: {
+    need: 'Norwegian org/ID',
     note: 'Norwegian address plus organization number or personal ID required',
     eligibility: 'Norwegian organization or eligible individual, with a Norwegian postal address',
     source: 'https://www.norid.no/en/om-domenenavn/regelverk-for-no/', checked,
@@ -43,6 +46,11 @@ export function canRecommend(tld, eligible = []) {
   return !facts[tld]?.eligibility || eligible.includes(tld);
 }
 
+// What a buyer needs for a restricted ending, in a few words: "Norwegian org/ID".
+export function eligibilityNeed(tld) {
+  return facts[tld]?.eligibility ? facts[tld].need ?? 'eligibility' : null;
+}
+
 export function eligibilityNotes(endings) {
   const notes = Object.fromEntries(restrictedEndings.filter(tld => endings.includes(tld))
     .map(tld => [tld, facts[tld].note]));
@@ -54,16 +62,65 @@ export function validEndings(endings) {
     && endings.every(ending => targetEndings.includes(ending));
 }
 
+// One DNS label for a name. Spaces and punctuation go; letters never do. A name with non-ASCII letters (æ, ø, å, é)
+// becomes its punycode label (xn--...), the form registries and shops use for that exact spelling.
 export function normalizeName(input) {
   if (typeof input !== 'string' || /[./\\]/.test(input)) return null;
-  const name = input.normalize('NFKD').toLowerCase().replace(/[^a-z0-9-]/g, '');
-  return label.test(name) ? name : null;
+  const name = input.normalize('NFC').toLowerCase().replace(/[^\p{L}\p{N}\p{M}-]/gu, '');
+  if (/^[a-z0-9-]*$/.test(name)) return label.test(name) ? name : null;
+  const ascii = domainToASCII(name);
+  return label.test(ascii) ? ascii : null;
+}
+
+// An exact domain in its DNS form: a Unicode domain becomes its punycode form; anything else returns null.
+export function asciiDomain(input) {
+  if (typeof input !== 'string') return null;
+  const value = input.normalize('NFC').toLowerCase();
+  if (!/^[\p{L}\p{N}\p{M}.-]+$/u.test(value)) return null;
+  return /^[\x00-\x7f]+$/.test(value) ? value : domainToASCII(value) || null;
+}
+
+// The Unicode spelling of an ASCII label or domain, or null when it has no punycode part.
+export function unicodeName(value) {
+  if (typeof value !== 'string' || !/(?:^|\.)xn--/.test(value)) return null;
+  const shown = domainToUnicode(value);
+  return shown && shown !== value ? shown : null;
+}
+
+// A Latin-letter key for name matching in rival, app, mark and handle sources: Grønnstue -> gronnstue.
+// ASCII names keep their DNS label as the key.
+export function searchKey(input) {
+  const dns = normalizeName(input);
+  if (!dns?.startsWith('xn--')) return dns;
+  const key = foldLatin(input).replace(/[^a-z0-9-]/g, '');
+  return label.test(key) ? key : dns;
+}
+
+// Short labels (four characters or fewer, counted in Unicode) are often premium at the registry or the shop.
+// Their list price is withheld until a shop quote settles it.
+export const premiumRiskLength = 4;
+export function premiumRisk(domain) {
+  const first = String(domain ?? '').split('.')[0];
+  if (!first) return false;
+  return [...(unicodeName(first) ?? first)].length <= premiumRiskLength;
+}
+
+// A free row for a short label: the registry says free, but the price may be premium. No list price stays on it.
+export function withPremiumRisk(row) {
+  if (!row || row.status !== 'probably-free' || !premiumRisk(row.domain)) {
+    if (row?.status === 'check-at-shop' && premiumRisk(row.domain) && row.price != null) {
+      return { ...withoutListPrice(row, 'check-at-shop'), premiumRisk: true };
+    }
+    return row;
+  }
+  return { ...withoutListPrice(row, 'premium'), premium: 'risk' };
 }
 
 export function nameCandidates(name, { variants: includeVariants = true, endings = defaultEndings } = {}) {
   const selected = endings;
   const exact = [...new Set(selected)].map(tld => ({ domain: name + '.' + tld, tld, exact: true }));
-  if (!includeVariants || !selected.includes('com')) return exact;
+  // A punycode label takes no prefix or suffix: "get" + "xn--..." is not that spelling.
+  if (!includeVariants || !selected.includes('com') || name.startsWith('xn--')) return exact;
   const variants = ['get' + name, 'try' + name, 'use' + name, name + 'hq'];
   return [...exact, ...variants.filter(value => label.test(value)).map(value => ({
     domain: value + '.com', tld: 'com', exact: false,
@@ -86,7 +143,7 @@ export function termCosts(tld, price, renewal) {
 export function rankName(rows) {
   return rows.map(row => {
     const { tld, exact, status, price = null, renewal = null } = row;
-    const reason = status === 'premium' ? 'Premium price' : status === 'reserved' ? 'Not offered for registration'
+    const reason = status === 'premium' ? row.premium === 'risk' ? 'May be premium' : 'Premium price' : status === 'reserved' ? 'Not offered for registration'
       : status === 'taken' ? 'Already registered'
       : status === 'check-at-shop' ? 'Check at shop'
       : exact ? 'Exact name' : 'Name variation';
@@ -98,7 +155,7 @@ export function rankName(rows) {
 
 export function pickName(rows, eligible) {
   return rows.reduce((best, row) => {
-    if (!canRecommend(row.tld, eligible) || !['probably-free', 'confirmed'].includes(row.status)) return best;
+    if (!canRecommend(row.tld, eligible) || premiumRisk(row.domain) || !['probably-free', 'confirmed'].includes(row.status)) return best;
     return !best || firstCost(row) < firstCost(best) ||
       (firstCost(row) === firstCost(best) && row.exact && !best.exact) ? row : best;
   }, undefined);
@@ -150,8 +207,10 @@ export function mergeQuote(row, quote) {
     return { ...withoutListPrice(row, 'reserved', quote.reason ?? 'Not offered for registration'),
       checkedAt: quote.checkedAt ?? row.checkedAt };
   }
+  // A short name stays a possible premium unless the shop marks its quote as standard.
   const premium = row.status === 'premium' && row.premium === true ? true
-    : quote.status === 'premium' ? quote.premium ?? true : possiblePremium(row, quote) ? 'possible' : false;
+    : quote.status === 'premium' ? quote.premium ?? true : possiblePremium(row, quote) ? 'possible'
+      : (row.premium === 'risk' || row.premiumRisk) && quote.standard !== true ? 'possible' : false;
   const price = money(quote.price) > 0 ? quote.price : null;
   return { ...row, status: premium ? 'premium' : quote.status, price, renewal: price == null ? null : quote.renewal ?? null,
     ...(premium && { premium }), shop: quote.shopName, buyUrl: quote.buyUrl, priceCheckedAt: null, priceSource: null,
@@ -175,7 +234,8 @@ export async function searchCandidates(groups, options = {}) {
   const onResult = ({ domain, tld, exact }, registry) => {
     if (timeLeft() <= 0) return;
     lookedUp.set(domain, registry);
-    options.onProgress?.({ domain, status: registrationStatus(registry) });
+    const status = registrationStatus(registry);
+    options.onProgress?.({ domain, status: status === 'probably-free' && premiumRisk(domain) ? 'premium' : status });
     if (registry.status !== 'taken' || !exact || !siteEndings.includes(tld)) return;
     const timeout = Math.min(options.siteTimeout ?? 1200, timeLeft());
     sites.set(domain, { pending: (options.comSite ?? checkDomainSite)(domain, timeout, options.siteDetails).then(site => {
@@ -204,8 +264,8 @@ export async function searchCandidates(groups, options = {}) {
     const rows = rankName(group.candidates.map(row => {
       const lookup = lookedUp.get(row.domain);
       if (!lookup) {
-        const waiting = { ...row, status: 'check-at-shop', registryReason: 'Registry lookup timed out',
-          ...listQuote(catalog, row, now, bundled) };
+        const waiting = withPremiumRisk({ ...row, status: 'check-at-shop', registryReason: 'Registry lookup timed out',
+          ...listQuote(catalog, row, now, bundled) });
         const signal = signals.get(row.domain);
         return ['premium', 'reserved'].includes(signal?.status) ? mergeQuote(waiting, signal) : waiting;
       }
@@ -215,9 +275,10 @@ export async function searchCandidates(groups, options = {}) {
         ? { shop: quote.shop, checkedAt: quote.priceCheckedAt, ...termCosts(row.tld, quote.price, quote.renewal),
           renewalJump: quote.renewal > 2 * quote.price }
         : null;
-      const settled = { ...row, status, checkedAt: lookup.checkedAt ?? checkedAt, source: lookup.source, registryReason: lookup.reason,
-        forSale: Boolean(lookup.forSale), ...(lookup.marketplace && { marketplace: lookup.marketplace }),
-        ...(status !== 'taken' ? quote : listPrice && { listPrice }) };
+      const settled = withPremiumRisk({ ...row, status, checkedAt: lookup.checkedAt ?? checkedAt, source: lookup.source,
+        registryReason: lookup.reason, forSale: Boolean(lookup.forSale), ...(lookup.marketplace && { marketplace: lookup.marketplace }),
+        ...(status === 'check-at-shop' && lookup.likely && { likely: lookup.likely }),
+        ...(status !== 'taken' ? quote : listPrice && { listPrice }) });
       if (status === 'premium') return { ...withoutListPrice(settled, 'premium'), premium: true };
       if (status === 'reserved') return withoutListPrice(settled, 'reserved', lookup.reason);
       const signal = status === 'taken' ? null : signals.get(row.domain);

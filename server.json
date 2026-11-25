@@ -4,21 +4,21 @@
   "title": "Domain Hound",
   "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "transport": {
         "type": "stdio"
       }
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/lars-hv/domain-hound/releases/download/v0.1.2/domain-hound-0.1.2.mcpb",
-      "version": "0.1.2",
-      "fileSha256": "3545b3607c1ed95f4fd6cbcc0edf247dc987933b93274b197a70e5de07499cf9",
+      "identifier": "https://github.com/lars-hv/domain-hound/releases/download/v0.1.3/domain-hound-0.1.3.mcpb",
+      "version": "0.1.3",
+      "fileSha256": "617cb6fe1778259d6c7359227b3ccc7e6f0922581f2cc651ea70d2984a2c688e",
       "transport": {
         "type": "stdio"
       }

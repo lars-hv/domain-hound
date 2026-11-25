@@ -30,7 +30,14 @@ export const handleSearches = {
   YouTube: 'https://www.youtube.com/@{name}',
 };
 
-export const letters = value => String(value ?? '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]/g, '');
+// Latin letters for name matching: accents drop, and letters without a decomposition fold too (ø -> o, æ -> ae).
+const folds = [[/æ/g, 'ae'], [/ø/g, 'o'], [/œ/g, 'oe'], [/ß/g, 'ss'], [/[đð]/g, 'd'], [/þ/g, 'th'], [/ł/g, 'l'], [/ı/g, 'i']];
+export function foldLatin(value) {
+  let text = String(value ?? '').normalize('NFC').toLowerCase();
+  for (const [pattern, replacement] of folds) text = text.replace(pattern, replacement);
+  return text.normalize('NFKD').replace(/\p{M}/gu, '');
+}
+export const letters = value => foldLatin(value).replace(/[^a-z0-9]/g, '');
 export const compactText = (value, limit) => String(value ?? '')
   .replace(/[\p{Cc}\p{Cf}\s]+/gu, ' ').trim().slice(0, limit);
 

@@ -22,7 +22,9 @@ const domains = nameCandidates('example').map(row => row.domain);
 
 test('normalizes a name into a valid single label', () => {
   assert.equal(normalizeName(' Oaken Room '), 'oakenroom');
-  assert.equal(normalizeName('  CAFÉ-Room 2 '), 'cafe-room2');
+  // Letters are never stripped: a name with non-ASCII letters becomes its punycode label.
+  assert.equal(normalizeName('  CAFÉ-Room 2 '), 'xn--caf-room2-d4a');
+  assert.equal(normalizeName('Fjord Grønnstue'), 'xn--fjordgrnnstue-hnb');
   for (const value of ['...', 'example.com', 'https://example', ' - ', 'ending-', 'a'.repeat(64), undefined]) {
     assert.equal(normalizeName(value), null);
   }

@@ -4,8 +4,9 @@ import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { canRecommend, eligibilityNotes, mergeQuote, nameCandidates, normalizeName, pickName, rankName, registrationStatus,
-  searchCandidates, searchName, termCosts, validEligibility, validEndings, withoutListPrice } from './name-search.mjs';
+import { asciiDomain, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
+  premiumRisk, rankName, registrationStatus, searchCandidates, searchName, termCosts, unicodeName, validEligibility, validEndings,
+  withPremiumRisk, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
 import { lookupRegistrations } from './registry.mjs';
 import { namingRecipe, purchaseLine } from './naming-method.mjs';
@@ -65,10 +66,12 @@ async function openShop(args) {
 }
 
 export function normalize(input) {
-  const domain = typeof input === 'string' ? input.trim().toLowerCase()
+  const typed = typeof input === 'string' ? input.trim().toLowerCase()
     .replace(/^[a-z][a-z\d+.-]*:\/\//, '')
     .split(/[/?#]/, 1)[0]
     .replace(/^www\.(?=[^.]+\.)/, '') : '';
+  // A Unicode domain is checked as its punycode form, never with letters removed.
+  const domain = asciiDomain(typed) ?? '';
   const labels = domain.split('.');
   const label = /^[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?$/;
   const tld = /^(?:[a-z]{2,63}|xn--[a-z\d](?:[a-z\d-]{0,57}[a-z\d])?)$/;
@@ -192,7 +195,9 @@ export async function checkDomain(input, {
   // Porkbun's own quote above its list price, without a premium flag, may still be premium.
   const porkbunList = pricing?.pricing?.[tld] ? catalogPrice(pricing.pricing[tld].registration) : null;
   const porkbunPremium = confirmed && (confirmed.premium || (porkbunList != null && confirmed.price > porkbunList + 0.01));
-  const premium = registry.signal === 'premium' || shopQuote?.status === 'premium' || porkbunPremium;
+  // A short name may be premium: no list price unless a shop marks its quote as standard.
+  const risk = registry.status === 'free' && premiumRisk(domain) && shopQuote?.standard !== true && !porkbunPremium;
+  const premium = registry.signal === 'premium' || shopQuote?.status === 'premium' || porkbunPremium || risk;
   const reserved = registry.signal === 'reserved' || shopQuote?.status === 'reserved';
   const verdict = shopQuote?.status === 'taken' || registry.status === 'taken' ? 'taken'
     : reserved ? 'reserved' : premium ? 'premium' : confirmed || shopQuote?.status === 'confirmed' ? 'confirmed' : registry.status;
@@ -209,8 +214,9 @@ export async function checkDomain(input, {
       confirmed: confirmed ? { ...confirmed, ...(!confirmed.premium && { possible: true }) } : null,
       ...(shopQuote && { shopQuote }), best, cheapestToday: null, offers: best ? [best] : [], stale: false,
       priceDate: null, nok, vatNorway,
+      ...(risk && !quoted && { premiumRisk: true }),
       notes: [registry.reason, reserved ? 'Not offered for registration; check at the shop'
-        : best ? null : 'Premium, price at shop'].filter(Boolean),
+        : best ? null : risk && !registry.signal ? 'May be premium, price at shop' : 'Premium, price at shop'].filter(Boolean),
       buyUrl: shopSearchUrl(shopId, domain),
     };
   }
@@ -282,6 +288,9 @@ const agentLegend = {
   y3: 'Payments due in three years, USD ex. VAT',
   term: 'Years per payment when more than one',
   jump: 'Renewal over twice the first annual price',
+  risk: 'Short name: may be premium, price at the shop',
+  likely_free: 'Registry silent, DNS has no delegation: likely free, confirm at a shop',
+  likely_taken: 'Registry silent, DNS has a delegation: likely taken',
 };
 const googleEndings = new Set(['app', 'dev']);
 // Playwright is optional. Without it (or its browser) the live shop check cannot run at all.
@@ -315,7 +324,8 @@ function agentPrice({ firstPayment: now, renewalPayment: renew, threeYear: y3, m
 // The shop quote time as HH:MM UTC.
 const quoteClock = value => typeof value === 'string' ? value.match(/T(\d{2}:\d{2})/)?.[1] ?? null : null;
 
-function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimited = false, liveCheck = null) {
+function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimited = false, liveCheck = null,
+  { eligible, otherEndings } = {}) {
   const buyUrlTemplate = {};
   const shopCheckWhy = {};
   const listPrices = {};
@@ -324,7 +334,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   let priceListDate;
   let best;
   for (const { name, results } of groups) {
-    const taken = [], resale = [], free = [], shop_check = [];
+    const taken = [], resale = [], free = [], shop_check = [], likelyFree = [], likelyTaken = [];
     for (const row of results) {
       checkedEndings.add(row.tld);
       const d = row.exact ? row.tld : row.domain;
@@ -332,11 +342,13 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       const premium = row.status === 'premium';
       const confirmed = row.status === 'confirmed' || (premium && row.price != null && row.source === 'shop');
       const price = agentPrice({ ...row, shop });
-      if (batch && !confirmed && !premium && row.status !== 'reserved' && listPrices[d]?.now == null) {
+      // A taken exact domain keeps its ending's standard list price as a benchmark.
+      const benchmark = !batch && row.exact && row.status === 'taken' && row.listPrice && !premiumRisk(row.domain);
+      if ((batch || benchmark) && !confirmed && !premium && row.status !== 'reserved' && listPrices[d]?.now == null) {
         const listed = row.listPrice ? agentPrice(row.listPrice) : price;
         if (Object.keys(listed).length) listPrices[d] = listed;
       }
-      const date = (row.priceCheckedAt ?? (batch ? row.listPrice?.checkedAt : null))?.slice(0, 10);
+      const date = (row.priceCheckedAt ?? (batch || benchmark ? row.listPrice?.checkedAt : null))?.slice(0, 10);
       // Use the oldest list date among the displayed estimates.
       if (date && (priceListDate === undefined || date < priceListDate)) priceListDate = date;
       if (row.status === 'taken') {
@@ -349,8 +361,8 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
         buyUrlTemplate[shop] = url + '{domain}' + suffix;
       }
       if (premium && !confirmed) {
-        // Premium without a price: free to register, but only the shop shows the price.
-        free.push({ d, s: 'prem', ...(shop && { shop }) });
+        // Premium without a price: free to register, but only the shop shows the price. A short name may be premium.
+        free.push({ d, s: 'prem', ...(shop && { shop }), ...(row.premium === 'risk' && { risk: true }) });
         continue;
       }
       if (row.status === 'reserved') {
@@ -362,6 +374,8 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
         if (!batch && row.status === 'check-at-shop' && price.now != null) listPrices[d] = price;
         shop_check.push(d);
         shopCheckWhy[d] ??= shopCheckReason(row, rateLimited);
+        if (row.likely === 'free') likelyFree.push(d);
+        if (row.likely === 'taken') likelyTaken.push(d);
         continue;
       }
       // A batch row repeats its ending's standard price only when it differs.
@@ -369,7 +383,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       const at = confirmed ? quoteClock(row.quotedAt ?? row.checkedAt) : null;
       free.push({ d, s: confirmed ? 'ok' : 'nc', ...(!standard && price), ...(premium && { prem: row.premium ?? true }),
         ...(at && { at }) });
-      if (confirmed && !premium) {
+      if (confirmed && !premium && canRecommend(row.tld, eligible) && !premiumRisk(row.domain)) {
         const { now, renew, y3, term, jump } = price;
         const buyUrl = row.buyUrl ?? shopSearchUrl(shopId, row.domain);
         // The cheapest confirmed quote is the pick; rows are already sorted by first payment within a name.
@@ -381,8 +395,11 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
           ...(shop && { shop }), ...(buyUrl && { buyUrl }) };
       }
     }
-    byName.set(name, { name, ...(taken.length && { taken }), ...(resale.length && { resale }),
-      ...(free.length && { free }), ...(shop_check.length && { shop_check }) });
+    const unicode = unicodeName(name);
+    byName.set(name, { name, ...(unicode && { unicode }), ...(taken.length && { taken }), ...(resale.length && { resale }),
+      ...(free.length && { free }), ...(shop_check.length && { shop_check }),
+      // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
+      ...(likelyFree.length && { likely_free: likelyFree }), ...(likelyTaken.length && { likely_taken: likelyTaken }) });
   }
   const result = {
     ...(!batch && names[0].includes('.') && {
@@ -390,12 +407,14 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
     }),
     complete, checkedAt, ...(priceListDate && { priceListDate }), ...(best && { best }),
     eligibility: eligibilityNotes([...checkedEndings]),
+    ...(eligible?.length && { eligible }),
     names: names.map(name => byName.get(name)),
     legend: agentLegend,
     ...(Object.keys(buyUrlTemplate).length && { buyUrlTemplate }),
     ...(Object.keys(shopCheckWhy).length && { shopCheckWhy }),
     // The registry and list-price evidence above stays; this only says the shop quote could not be checked.
     ...(liveCheck && !best && { liveCheck }),
+    ...(otherEndings && Object.keys(otherEndings).length && { otherEndings }),
   };
   if (Object.keys(listPrices).length) {
     result.listPrices = listPrices;
@@ -446,7 +465,8 @@ export async function agentResult(input, options = {}) {
     googleEndings.has(row.tld) && /HTTP 429/.test(row.registryReason ?? '')));
   if (batch) rateLimited = await retryGoogle(fast, remaining, options) || rateLimited;
   const rows = fast.groups.flatMap(group => group.results);
-  const targets = domain ? rows.filter(row => ['probably-free', 'check-at-shop', 'premium'].includes(row.status))
+  const targets = domain ? rows.filter(row => canRecommend(row.tld, options.eligible)
+    && ['probably-free', 'check-at-shop', 'premium'].includes(row.status))
     : lightTargets(rows, options.eligible);
   const [candidate] = targets;
   // A Google retry can settle every row that the first pass left waiting.
@@ -492,8 +512,29 @@ export async function agentResult(input, options = {}) {
   const apply = row => quotes.has(row.domain) ? mergeQuote(row, quotes.get(row.domain)) : row;
   const rankedGroups = fast.groups.map(({ name, results }) => ({ name, results: rankName(results.map(apply)) }));
   const checkedAt = options.now?.toISOString() ?? new Date().toISOString();
+  // An exact .com gets the standard list prices of the other endings as one benchmark line, with no extra lookups.
+  const exactCom = names.length === 1 && names[0].endsWith('.com') ? names[0] : null;
+  const otherEndings = exactCom ? await endingBenchmarks(exactCom, options) : null;
   return compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
-    options.browser ? liveCheckFor(candidate, quote) : null);
+    options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings });
+}
+
+// The cheapest standard list price of each other ending for this label, from the saved or bundled price list.
+// A short label may be premium, so it gets no benchmark.
+async function endingBenchmarks(domain, options) {
+  const label = domain.slice(0, domain.indexOf('.'));
+  if (premiumRisk(label)) return null;
+  const now = options.now ?? new Date();
+  const bundled = options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog;
+  const catalog = await loadCachedCatalog(options.directory).catch(() => null);
+  const prices = {};
+  for (const tld of defaultEndings.filter(ending => ending !== 'com' && canRecommend(ending, options.eligible))) {
+    const quote = listQuote(catalog, { domain: label + '.' + tld, tld }, now, bundled);
+    if (quote.price == null) continue;
+    const costs = termCosts(tld, quote.price, quote.renewal);
+    prices[tld] = agentPrice({ ...costs, renewalJump: quote.renewal > 2 * quote.price, shop: quote.shop });
+  }
+  return prices;
 }
 
 // Give unresolved .app and .dev rows one bounded registry retry with the batch time that is left.
@@ -528,13 +569,14 @@ async function retryGoogle(fast, remaining, options) {
       const status = registrationStatus(answer);
       if (status === 'check-at-shop') {
         if (/HTTP 429/.test(answer.reason ?? '')) limited = true;
-        return { ...row, registryReason: answer.reason ?? row.registryReason };
+        return { ...row, registryReason: answer.reason ?? row.registryReason, ...(answer.likely && { likely: answer.likely }) };
       }
-      const settled = { ...row, status, source: answer.source, registryReason: undefined, forSale: Boolean(answer.forSale),
+      const { likely, ...open } = row;
+      const settled = { ...open, status, source: answer.source, registryReason: undefined, forSale: Boolean(answer.forSale),
         checkedAt: answer.checkedAt ?? (options.now ?? new Date()).toISOString() };
       if (status === 'premium') return { ...withoutListPrice(settled, status), premium: true };
       if (status === 'reserved') return withoutListPrice(settled, status, answer.reason);
-      if (status !== 'taken') return settled;
+      if (status !== 'taken') return withPremiumRisk(settled);
       const { price, renewal, shop, priceCheckedAt } = row;
       for (const key of ['price', 'renewal', 'shop', 'priceSource', 'priceCheckedAt', 'buyUrl']) delete settled[key];
       return price == null ? settled : { ...settled, listPrice: { shop, checkedAt: priceCheckedAt,

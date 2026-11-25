@@ -7,8 +7,8 @@ import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
 import { bootstrapUrl, rdapBase, rdapDomainUrl } from './registry.mjs';
 import { compactText, day, letters, readJson, request } from './triage-sources.mjs';
 
-// Every traction threshold lives in this table. Tuned with the Notion (strong), RouteMender AI (none)
-// and OakenRoom home-improvement site (some) fixtures in traction.test.mjs.
+// Every traction threshold lives in this table. Tuned with the strong, no-traction and some-traction
+// fixtures in traction.test.mjs.
 // strong: a Goliath. Any one signal is enough.
 // some: real but small use. Domain age counts only with a live, current site.
 // dormant: parked or for-sale pages, or stale live sites with a tiny crawl and no Tranco rank.

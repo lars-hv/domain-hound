@@ -123,7 +123,7 @@ test('advertises the three Domain Hound tools and the legacy alias', async () =>
   assert.ok(description.length < 1100, String(description.length));
   assert.ok(alias.description.length < 200, String(alias.description.length));
   assert.ok(naming.description.length < 300, String(naming.description.length));
-  for (const phrase of ['{"query":"oakenroom.me"}', '{"names":["oakenroom","oakenroom.me"]}', 'including .ai',
+  for (const phrase of ['{"query":"lanternbay.me"}', '{"names":["lanternbay","lanternbay.me"]}', 'including .ai',
     'For any request to buy or register, pass purchase: true', 'cannot buy or complete checkout', 'even when the domain is taken',
     'Set confirm true only when the person asks for a live shop check', 'list prices unless marked confirmed at a shop',
     '"premium, price at shop"', 'naming_method first', 'triage_names', 'Quiet Otter becomes quietotter']) {
@@ -165,7 +165,10 @@ test('advertises the three Domain Hound tools and the legacy alias', async () =>
   assert.equal(pattern.test('example.'), false);
   assert.equal(pattern.test('example.x2'), false);
   assert.equal(pattern.test('example.XN--P1AI'), true);
-  assert.match(query.description, /^One name or exact domain, e\.g\. "oakenroom\.me"/);
+  // Names and domains with non-ASCII letters pass the schema; the server checks them as punycode.
+  for (const value of ['Grønnstue', 'grønnstue.com', 'xn--grnnstue-64a.no', 'Café-Ø']) assert.equal(pattern.test(value), true, value);
+  for (const value of ['grøn stue', 'grøn—stue', 'a.b.com']) assert.equal(pattern.test(value), false, value);
+  assert.match(query.description, /^One name or exact domain, e\.g\. "lanternbay\.me"/);
   assert.match(names.description, /^1 to 20 bare names, exact domains or both, e\.g\./);
   assert.equal(naming.inputSchema.properties.about.maxLength, 512);
   assert.equal(naming.inputSchema.additionalProperties, false);
@@ -283,7 +286,9 @@ test('checks every default ending and shows preferences first for both tools', a
   assert.deepEqual(checked.names[0].free.map(option => option.d), choices);
   assert.deepEqual(triaged.names[0].free, choices);
   for (const [display, marker] of [[checked.display, 'endingsample.'], [triaged.display, '.']]) {
-    const positions = choices.map(ending => display.indexOf(marker + ending + ' $8.00/$12.50'));
+    // .no is listed in its place without a price: the buyer has not said they qualify.
+    const positions = choices.map(ending => display.indexOf(marker + ending
+      + (ending === 'no' ? ' not eligible: needs Norwegian org/ID' : ' $8.00/$12.50')));
     assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])), display);
   }
   assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), ['com']);
@@ -541,7 +546,7 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
     '| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |',
     '|---|---|---|---|---|',
     '| Example One | Check first: An exact-name app already exists \\| see \\[x\\](https:\\/\\/example.com) | '
-      + '.co $3.11/$31.05<br>.app $8.28/$14.49<br>.ai $160.02/$160.02 2y<br>taken: .com<br>check at shop: .dev | '
+      + '.co $3.11, then $31.05/yr, 10x jump<br>.app $8.28/$14.49<br>.ai $160.02/$160.02 2y<br>taken: .com<br>check at shop: .dev | '
       + '[exampleone.co](https://www.spaceship.com/domain-search/?query=exampleone.co) | '
       + 'Google: not checked · [search](https://www.google.com/search?q=%22Example+One%22)<br>'
       + 'App Store (iOS): not checked · [search](https://apps.apple.com/us/iphone/search?term=Example+One)<br>'
@@ -640,7 +645,9 @@ test('keeps all three naming calls under 8 KB and each listed tool text under it
   assert.deepEqual(Object.keys(shortlist), ['display', 'prices', 'names', 'legend']);
   assert.equal(shortlist.names[1].own.me.now, 2.5);
   assert.match(shortlist.display, /Cheapest eligible \/ checkout/);
-  assert.match(shortlist.display, /\[hushroom\.me\]\(https:\/\/www\.spaceship\.com\/domain-search\/\?query=hushroom\.me\) \$2\.50\/\$20\.00/);
+  // The checkout cell links the shop; the price stays once, on the ending's own line.
+  assert.match(shortlist.display, /\[hushroom\.me\]\(https:\/\/www\.spaceship\.com\/domain-search\/\?query=hushroom\.me\) \|/);
+  assert.match(shortlist.display, /\| Hush Room \| .*\.me \$2\.50, then \$20\.00\/yr, 8x jump<br>/);
   assert.ok(shortlist.names[1].free.includes('co'));
   const checked = JSON.parse(batch);
   assert.equal(Object.keys(checked)[0], 'display');
@@ -669,12 +676,13 @@ test('renders the triage shortlist as one priced, linked row per candidate', () 
   const lines = display.split('\n');
   assert.equal(lines[0], '**Top picks**');
   assert.equal(lines[4], '');
-  for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, [a-z]+\.[a-z]+ \$[\d.]+\/\$[\d.]+/);
+  for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, cheapest now [a-z]+\.[a-z]+ \$[\d.]+(?:\/\$[\d.]+|, then \$[\d.]+\/yr, \d+x jump)/);
   assert.ok(lines.includes('| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |'));
   const rows = lines.filter(line => /^\| (?!Name|---)/.test(line));
   assert.deepEqual(rows.map(line => line.split(' | ')[0].slice(2)), five);
-  assert.ok(rows[1].startsWith('| Hush Room | Check first: Several public sources show same-name use | .me $2.50/$20.00<br>.co $3.11/$31.05<br>'
-    + '.dev $7.24/$13.45<br>.app $8.28/$14.49<br>.si $12.50/$12.50<br>.no $13.90/$13.90<br>.so $24.99/$49.99<br>taken: .com .io<br>check at shop: .so | '
+  assert.ok(rows[1].startsWith('| Hush Room | Check first: Several public sources show same-name use | .me $2.50, then $20.00/yr, 8x jump<br>.co $3.11, then $31.05/yr, 10x jump<br>'
+    + '.dev $7.24/$13.45<br>.app $8.28/$14.49<br>.si $12.50/$12.50<br>.no not eligible: needs Norwegian org/ID<br>'
+    + '.so $24.99, then $49.99/yr, 2x jump<br>taken: .com .io<br>check at shop: .so | '
     + '[hushroom.me](https://www.spaceship.com/domain-search/?query=hushroom.me) |'));
   for (const row of rows) {
     assert.match(row, /Google: not checked · .*google\.com\/search\?q=/);
@@ -714,7 +722,7 @@ test('puts display first with ranked picks and shows all sources for twenty name
   assert.ok(size(text) < 8000, String(size(text)));
   const result = JSON.parse(text);
   assert.equal(Object.keys(result)[0], 'display');
-  assert.match(result.display, /^\*\*Top picks\*\*\n- .*Check first.*\$3\.11\/\$31\.05/);
+  assert.match(result.display, /^\*\*Top picks\*\*\n- .*Check first.*\$3\.11, then \$31\.05\/yr, 10x jump/);
   assert.equal(result.names.length, 20);
   for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
     assert.ok(result.display.includes(source), source);
@@ -727,8 +735,9 @@ test('shows best value beside the cheapest offer in the top picks and name row',
   sample.top = [{ name: 'Quiet Otter', verdict: 'Check first', domain: 'quietotter.co', ending: 'co', now: 3.11,
     renew: 31.05, bestValue: { domain: 'quietotter.dev', now: 7.24, renew: 13.45, term: 1 } }];
   const { display } = JSON.parse(triageText(sample));
-  assert.match(display, /quietotter\.co \$3\.11\/\$31\.05.*\n  Best value: quietotter\.dev \$7\.24 now, \$13\.45 renewal/);
-  assert.match(display, /^\| Quiet Otter .*<br>Best value: quietotter\.dev \$7\.24 now, \$13\.45 renewal \|/m);
+  // Cheapest now carries the jump in plain words; best value is the lowest three-year total.
+  assert.match(display, /cheapest now quietotter\.co \$3\.11, then \$31\.05\/yr, 10x jump.*\n  Best value: quietotter\.dev, \$34\.14 over 3 years/);
+  assert.match(display, /^\| Quiet Otter .*<br>Best value: quietotter\.dev, \$34\.14 over 3 years \|/m);
 });
 
 test('fits a fully priced twenty-name batch with maximum-length labels and multibyte owners', async t => {
@@ -774,7 +783,7 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   assert.ok(size(text) < 8000, String(size(text)));
   const parsed = JSON.parse(text);
   assert.deepEqual(Object.keys(parsed)[0], 'display');
-  assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com $6.00 now, $10.00 renewal'));
+  assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
   assert.ok(parsed.names.every(row => row.free.length === 10));
   for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
@@ -800,7 +809,12 @@ test('preserves each price in dense five-name triage and the three source lines 
       assert.equal(rows.length, count);
       for (const row of rows) for (const ending of endingOrder) {
         const quote = prices[ending];
-        assert.ok(row.includes(`.${ending} $${quote.now.toFixed(2)}/$${quote.renew.toFixed(2)}`), row);
+        const money = value => '$' + value.toFixed(2);
+        const expected = ending === 'no' ? '.no not eligible: needs Norwegian org/ID'
+          : quote.renew > 2 * quote.now ? '.' + ending + ' ' + money(quote.now) + ', then ' + money(quote.renew) + '/yr, '
+            + Math.round(quote.renew / quote.now) + 'x jump'
+            : '.' + ending + ' ' + money(quote.now) + '/' + money(quote.renew);
+        assert.ok(row.includes(expected), row);
       }
     }
     for (const label of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
@@ -813,8 +827,9 @@ test('preserves each price in dense five-name triage and the three source lines 
 test('renders a batch with shared prices, one line per free domain and one confirmed link', () => {
   const display = body(JSON.parse(checkText(batchPayload(twenty, 8))).display);
   const lines = display.split('\n');
-  assert.equal(lines[1], 'Standard prices: .me $2.99/$19.99 · .co $3.11/$31.05 · .dev $7.24/$13.45 · .app $8.28/$14.49 · .si $12.50/$12.50 · '
-    + '.no $13.90/$13.90 · .so $24.99/$49.99 · .ai $160.02/$160.02 2y');
+  // .no is not offered at a price to a buyer who has not said they qualify.
+  assert.equal(lines[1], 'Standard prices: .me $2.99, then $19.99/yr, 7x jump · .co $3.11, then $31.05/yr, 10x jump · .dev $7.24/$13.45 · .app $8.28/$14.49 · '
+    + '.si $12.50/$12.50 · .so $24.99, then $49.99/yr, 2x jump · .ai $160.02/$160.02 2y');
   assert.ok(lines.includes('Taken: ' + twenty.slice(0, 8).join(', ') + ' .me .co .dev .app .com .si .no .so .io .ai'
     + ' · ' + twenty.slice(8).join(', ') + ' .com .io'));
   for (const name of twenty) assert.ok(display.includes(name), name);
@@ -829,11 +844,11 @@ test('renders a batch with shared prices, one line per free domain and one confi
         .some(line => line === '- .' + d || line.startsWith('- .' + d + ' ')), row.name + '.' + d);
     }
   }
-  assert.ok(lines.includes('- .co $3.11/$31.05 ✓ confirmed at Spaceship'));
+  assert.ok(lines.includes('- .co $3.11, then $31.05/yr, 10x jump ✓ confirmed at Spaceship'));
   // A batch this large leaves standard prices to the shared line; a confirmed quote keeps its own price and label.
   assert.ok(lines.includes('- .me'));
   assert.equal((display.match(/https:/g) ?? []).length, 1);
-  assert.ok(lines.includes('Confirmed at Spaceship: [examplesolace19.co](https://www.spaceship.com/domain-search/?query=examplesolace19.co) $3.11/$31.05.'));
+  assert.ok(lines.includes('Confirmed at Spaceship: [examplesolace19.co](https://www.spaceship.com/domain-search/?query=examplesolace19.co) $3.11, then $31.05/yr, 10x jump.'));
   assert.equal(lines.at(-1), neverBuys);
 });
 
@@ -847,14 +862,15 @@ test('dense batches keep one line per free domain under 8 KB', () => {
   const lines = body(display).split('\n');
   const start = lines.indexOf(long.join(', ') + ':');
   assert.ok(start >= 0);
-  assert.deepEqual(lines.slice(start + 1, start + 11), endingOrder.map(d => '- .' + d));
+  assert.deepEqual(lines.slice(start + 1, start + 11), endingOrder.map(d => '- .' + d
+    + (d === 'no' ? ' not eligible: needs Norwegian org/ID' : '')));
   // The structured rows still list every ending.
   assert.ok(names.every(row => row.free.length === 10 && row.free.every(option => option.d)));
   // Twenty names with seven free endings each name each name once above its own ending lines.
   const twentyLines = body(JSON.parse(checkText(batchPayload(twenty))).display).split('\n');
   const amber = twentyLines.findIndex(line => line.startsWith('exampleamber0, '));
-  assert.deepEqual(twentyLines.slice(amber + 1, amber + 7), ['- .me', '- .co', '- .dev', '- .app', '- .si', '- .no']);
-  assert.ok(twentyLines.includes('- .co $3.11/$31.05 ✓ confirmed at Spaceship'));
+  assert.deepEqual(twentyLines.slice(amber + 1, amber + 7), ['- .me', '- .co', '- .dev', '- .app', '- .si', '- .no not eligible: needs Norwegian org/ID']);
+  assert.ok(twentyLines.includes('- .co $3.11, then $31.05/yr, 10x jump ✓ confirmed at Spaceship'));
 });
 
 test('escapes untrusted text and links only to known HTTPS registrars for that domain', () => {
@@ -871,7 +887,9 @@ test('escapes untrusted text and links only to known HTTPS registrars for that d
   payload.names[0].name = 'Quiet | Otter';
   const { display } = JSON.parse(triageText(payload));
   assert.doesNotMatch(display, /evil/);
-  assert.match(display, /^\| Quiet \\\| Otter \| Avoid: .* \| — \| Google:/m);
+  // An untrusted buy link is replaced by the trusted shop search for the same domain, never an empty link.
+  assert.match(display, /^\| Quiet \\\| Otter \| Avoid: .* \| \[quietotter\.me\]\(https:\/\/www\.spaceship\.com\/domain-search\/\?query=quietotter\.me\) \| Google:/m);
+  assert.doesNotMatch(display, /\]\((?:null|undefined)?\)/);
 });
 
 test('forwards per-name GEO from the client memory and rejects anything else', async () => {
@@ -965,7 +983,7 @@ test('without Playwright an unconfirmed free domain says check at shop with a li
   const display = body(JSON.parse(checkText(exactLive)).display);
   const lines = display.split('\n');
   assert.match(lines[0], /^\*\*quietotter\.me is free\.\*\* The registry shows it free; the price is a list price, not a shop quote\./);
-  assert.ok(lines.includes('| quietotter.me | $2.99 | $19.99/yr | $42.97 | '
+  assert.ok(lines.includes('| quietotter.me | $2.99 | $19.99/yr, 7x jump | $42.97 | '
     + '[quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me) at Spaceship |'), display);
   assert.ok(lines.includes('Check at shop: [quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me). '
     + 'Live shop check unavailable (Playwright is not installed). Any prices shown are list estimates.'), display);
@@ -995,7 +1013,8 @@ test('without Playwright an unconfirmed free domain says check at shop with a li
     checkUrl: 'https://www.spaceship.com/domain-search/?query=quietotter.me' };
   const text = checkText(batch);
   const shown = body(JSON.parse(text).display);
-  assert.match(shown, /^Standard prices: \.me \$2\.99\/\$19\.99/m);
+  assert.match(shown, /^Standard prices: \.so \$24\.99, then \$49\.99\/yr, 2x jump$/m);
+  assert.match(shown, /^- quietotter\.me \$2\.99, then \$19\.99\/yr, 7x jump \(list price\)$/m);
   assert.match(shown, /^Taken: quietotter \.com \.io · /m);
   assert.ok(shown.endsWith('Check at shop: [quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me). '
     + 'Live shop check unavailable (Playwright is not installed). Any prices shown are list estimates.\n' + neverBuys), shown);

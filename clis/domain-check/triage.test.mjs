@@ -207,7 +207,8 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   };
   await writeCache(directory, 'prices.json', catalog);
   const options = {
-    directory, now, env: {}, cachedOnly: true, about: 'find and buy domains for AI builders',
+    // This catalog lists only some endings; the bundled snapshot stays out so the others have no price.
+    directory, now, env: {}, cachedOnly: true, bundledCatalog: null, about: 'find and buy domains for AI builders',
     launch: playBrowser([]),
     resolveNs: async domain => (/\.(com|io|app)$/.test(domain) || domain === 'domainsparrow.dev') ? ['ns.example.test'] : [],
     comSite: async domain => domain === 'domainsparrow.dev'
@@ -250,15 +251,17 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.equal(clear.details.appName, 'App name: free on iOS, free on Android');
   assert.equal(clear.free[0], 'co');
   assert.match(report.eligibility.no, /Norwegian/);
-  assert.equal(clear.bestValue, 'dev');
+  // Best value is the lowest three-year total: .me $9 + 2 × $15 = $39 beats .dev $8 + 2 × $16 = $40 and .co $64.
+  assert.equal(clear.bestValue, 'me');
   assert.equal(rival.bestValue, 'me');
   assert.deepEqual(report.top[0], { name: 'DappleBear', verdict: 'No conflict found', reason: clear.reason,
     domain: 'dapplebear.co', ending: 'co', now: 4, renew: 30, term: 1,
-    bestValue: { domain: 'dapplebear.dev', now: 8, renew: 16, term: 1 } });
-  for (const endings of [['co', 'si'], ['dev', 'me']]) {
+    bestValue: { domain: 'dapplebear.me', now: 9, renew: 15, term: 1, y3: 39 } });
+  // Best value is always named, also when it is the cheapest ending itself.
+  for (const [endings, value] of [[['co', 'si'], 'co'], [['dev', 'me'], 'me']]) {
     const single = await triageNames(['DappleBear'], { ...options, endings });
-    assert.equal(single.names[0].bestValue, null);
-    assert.equal(single.top[0].bestValue, undefined);
+    assert.equal(single.names[0].bestValue, value);
+    assert.equal(single.top[0].bestValue.domain, 'dapplebear.' + value);
   }
   assert.equal(report.top[1].verdict, 'Check first');
   const withNorway = structuredClone(catalog);
@@ -267,10 +270,10 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   const defaultBuyer = await triageNames(['DappleBear'], options);
   assert.equal(defaultBuyer.names[0].free[0], 'no');
   assert.equal(defaultBuyer.top[0].domain, 'dapplebear.co');
-  assert.equal(defaultBuyer.names[0].bestValue, 'dev');
+  assert.equal(defaultBuyer.names[0].bestValue, 'me');
   const eligible = await triageNames(['DappleBear'], { ...options, eligible: ['no'] });
   assert.equal(eligible.top[0].domain, 'dapplebear.no');
-  assert.equal(eligible.names[0].bestValue, null);
+  assert.equal(eligible.names[0].bestValue, 'no');
   await writeCache(directory, 'prices.json', catalog);
   const withGoogle = await triageNames(['Domain Sparrow', 'Cloud Otter', 'DappleBear'], {
     ...options,
@@ -592,6 +595,8 @@ test('reuses only recent conclusive registration evidence for the rate-limited e
   assert.deepEqual(cached, { status: 'free', source: 'rdap', checkedAt: now.toISOString() });
   assert.equal(calls, 1);
   assert.equal((await lookupRegistrations(names, { ...options, dnsFirst: false }))[0].status, 'taken');
-  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 301_000) }))[0].status, 'taken');
+  // A free answer is reused for an hour; then the registry is asked again.
+  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 3_000_000) }))[0].status, 'free');
+  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 3_601_000) }))[0].status, 'taken');
   assert.equal(calls, 3);
 });

@@ -1,5 +1,5 @@
 import { geoInstruction, googleSearchInstruction, namingRecipe, showAsIs } from './clis/domain-check/naming-method.mjs';
-import { defaultEndings, normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
+import { asciiDomain, defaultEndings, normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -20,7 +20,11 @@ const maxLookupMs = 120_000;
 const keepFinishedMs = 120_000;
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 
-const entryPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.(?:[A-Za-z]{2,63}|[xX][nN]--[A-Za-z0-9](?:[A-Za-z0-9-]{0,57}[A-Za-z0-9])?))?$/;
+// Letters may be non-ASCII (æøå, é): such a name or domain is checked as its punycode form. The ranges skip
+// spaces, punctuation and symbols without needing a Unicode-aware regular expression in the client.
+const letter = 'A-Za-z0-9\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u1FFF\\u3040-\\uD7FF\\uF900-\\uFDCF';
+const entryPattern = new RegExp('^[' + letter + '](?:[' + letter + '-]{0,61}[' + letter + '])?'
+  + '(?:\\.(?:[A-Za-z]{2,63}|[xX][nN]--[A-Za-z0-9](?:[A-Za-z0-9-]{0,57}[A-Za-z0-9])?))?$');
 const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entryPattern.source };
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: 10, uniqueItems: true,
@@ -37,19 +41,20 @@ const checkTool = {
   name: 'check_domains',
   description: showAsIs + ' '
     + 'For any request to buy or register, pass purchase: true and explicitly say “Domain Hound cannot buy or complete checkout,” even when the domain is taken. '
-    + 'Input: query for one name or exact domain ({"query":"oakenroom.me"}), or names for 1 to 20 names in one call ({"names":["oakenroom","oakenroom.me"]}). A bare name checks ten endings, including .ai. '
+    + 'Input: query for one name or exact domain ({"query":"lanternbay.me"}), or names for 1 to 20 names in one call ({"names":["lanternbay","lanternbay.me"]}). A bare name checks ten endings, including .ai. '
+    + 'For a bare name, put any ending preference in endings. Use exact lookup for a full domain. '
     + 'For a batch, make one call and report check-at-shop endings as returned. Recheck only when the person asks. '
     + 'Set confirm true only when the person asks for a live shop check (slower). '
-    + 'Prices are list prices unless marked confirmed at a shop; premium names show the shop price or "premium, price at shop". Look up alternatives only if asked. For new names, call naming_method first; to screen an existing name, use triage_names. With shortlist true, pass one DNS label per name (Quiet Otter becomes quietotter).',
+    + 'Prices are list prices unless marked confirmed at a shop; premium names show the shop price or "premium, price at shop". For new names, call naming_method first; to screen an existing name, use triage_names. With shortlist true, pass one DNS label per name (Quiet Otter becomes quietotter).',
   inputSchema: {
     type: 'object',
     properties: {
       ...lookupProperties,
       query: { ...nameSchema,
-        description: 'One name or exact domain, e.g. "oakenroom.me" or "oakenroom". Supply either query or names.' },
+        description: 'One name or exact domain, e.g. "lanternbay.me" or "lanternbay". Supply either query or names.' },
       names: { type: 'array', minItems: 1, maxItems: 20,
         items: nameSchema,
-        description: '1 to 20 bare names, exact domains or both, e.g. ["oakenroom","quietbook","oakenroom.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
+        description: '1 to 20 bare names, exact domains or both, e.g. ["lanternbay","quietbook","lanternbay.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
       shortlist: { type: 'boolean', description: 'Use true for the preliminary bare-name batch specified by naming_method.' },
       purchase: { type: 'boolean', description: 'Pass true when asked to buy or register, even for an exact domain that may be taken. State the checkout limitation from the display in the answer.' },
       confirm: { type: 'boolean', description: 'True only when the person explicitly asks for a live shop check. Uses an optional headless browser and is slower.' },
@@ -104,13 +109,16 @@ const errorResult = message => toolResult(errorText(message), true);
 
 const showValue = value => JSON.stringify(String(value).slice(0, 40));
 
+// The DNS form of a valid entry: a bare name as one label, an exact domain as itself, both in punycode when needed.
+const dnsForm = value => value.includes('.') ? asciiDomain(value) : normalizeName(value);
+
 function queryValue(value) {
   if (typeof value !== 'string' || !value.trim()) {
-    throw new Error('query is empty. Enter one name or exact domain in query, such as oakenroom or oakenroom.me.');
+    throw new Error('query is empty. Enter one name or exact domain in query, such as lanternbay or lanternbay.me.');
   }
   const query = value.toLowerCase();
-  if (!entryPattern.test(query)) {
-    throw new Error('query ' + showValue(value) + ' is not valid. Give a name like oakenroom or a domain like oakenroom.me in query.');
+  if (!entryPattern.test(query) || !dnsForm(query)) {
+    throw new Error('query ' + showValue(value) + ' is not valid. Give a name like lanternbay or a domain like lanternbay.me in query.');
   }
   return query;
 }
@@ -122,11 +130,11 @@ function batchNames(names) {
   }
   return names.map((value, index) => {
     if (typeof value !== 'string' || !value.trim()) {
-      throw new Error('names[' + index + '] is empty. Use a bare name such as oakenroom or an exact domain such as oakenroom.me.');
+      throw new Error('names[' + index + '] is empty. Use a bare name such as lanternbay or an exact domain such as lanternbay.me.');
     }
     const name = value.toLowerCase();
-    if (!entryPattern.test(name)) {
-      throw new Error('names[' + index + '] ' + showValue(value) + ' is not valid. Give a name like oakenroom or a domain like oakenroom.me in names.');
+    if (!entryPattern.test(name) || !dnsForm(name)) {
+      throw new Error('names[' + index + '] ' + showValue(value) + ' is not valid. Give a name like lanternbay or a domain like lanternbay.me in names.');
     }
     return name;
   });
@@ -175,7 +183,7 @@ function cliArguments(args) {
 
 // The rows a progress answer lists, in input order: a bare name with every requested ending, an exact domain as itself.
 function checkRows(args) {
-  const names = Object.hasOwn(args, 'query') ? [queryValue(args.query)] : batchNames(args.names);
+  const names = (Object.hasOwn(args, 'query') ? [queryValue(args.query)] : batchNames(args.names)).map(dnsForm);
   const endings = [...new Set([...(args.endings ?? []), ...defaultEndings])];
   return [...new Set(names)].map(name => name.includes('.')
     ? { name, domains: [name] } : { name, domains: endings.map(ending => name + '.' + ending) });
