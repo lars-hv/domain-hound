@@ -430,7 +430,7 @@ test('explicit domains confirm the list, a call without input reuses it, and rem
   assert.match(html, /--gold: #f4c64f/, 'receipt style');
   assert.match(html, /<code>soon\.com<\/code>/);
   assert.match(html, /An unknown result means the source did not answer/);
-  assert.equal((await stat(options.file)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await stat(options.file)).mode & 0o777, 0o600);
 
   checked.length = 0;
   const again = await call({});
