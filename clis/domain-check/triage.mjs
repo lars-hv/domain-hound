@@ -217,12 +217,14 @@ export async function namePresence(input, options = {}) {
 // Same-name rivals with measured traction follow the traction rules first; evidence whose traction could not be
 // measured keeps the earlier same-name checks. Trademark and availability guardrails stay in place.
 function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, mark, site, best, available, marks, apps, android,
-  androidAnswered = android, com, premium = [] }) {
+  androidAnswered = android, company, premium = [] }) {
   if (rival?.[0] === 'Avoid') return rival;
   if (overlap) return ['Avoid', overlap.domain + ' is a live business in the same category'];
   if (activeApp) return ['Avoid', activeApp.name + ' is an app in the same category with ' + activeApp.ratings + ' ' + activeApp.store + ' ratings'];
   if (mark?.relevant && mark.tier !== 'Fuzzy') return ['Avoid', trademarkReason(mark)];
   if (rival) return rival;
+  if (company) return ['Check first', company.name + ' is an active same-name company' +
+    (company.employees > 0 ? ' with ' + company.employees + ' employees' : '')];
   if (brand) return ['Check first', brand.name + ' is an existing company or product in Wikidata'];
   if (mark) return ['Check first', trademarkReason(mark)];
   if (sameName.level !== 'few') return ['Check first', 'Several public sources show same-name use'];
@@ -231,12 +233,11 @@ function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, 
   if (site) return ['Check first', site.domain + ' has a live site under this name'];
   if (entity) return ['Check first', 'An exact-name Wikidata entity already exists'];
   if (!marks || !apps || !androidAnswered || sameName.unchecked?.length) return ['Check first', 'A competition source did not answer'];
-  if (com?.status === 'check-at-shop') return ['Check first', 'The .com registry status is unresolved'];
   if (!best) {
     return ['Check first', available.length ? 'The free endings require buyer eligibility'
       : premium.length ? 'The free endings may be premium, price at shop' : 'No domain was found free at the registry'];
   }
-  return ['No conflict found', 'No close US mark, app or site overlap'];
+  return ['No conflict found', 'No US mark, same-name app or active company found in the sources checked'];
 }
 
 export async function triageNames(inputs, options = {}) {
@@ -383,6 +384,8 @@ export async function triageNames(inputs, options = {}) {
       const site = unmeasured[0];
       const overlap = unmeasured.find(row => row.sameBusiness && /\.(com|ai)$/.test(row.domain));
       const us = matchEdgarCompanies(key, edgar);
+      const company = norway?.matches.find(row => row.employees > 0 && row.match === 'exact')
+        ?? us?.matches.find(row => row.match === 'exact');
       const sameName = sameNameEvidence({ name: key, live, norway, us, entities, entity, github, handles });
       const otherEntities = entities?.filter(row => !explained.has(row));
       const legacy = sameNameEvidence({ name: key, live: unmeasured, norway, us, entities: otherEntities, entity, github, handles });
@@ -392,7 +395,7 @@ export async function triageNames(inputs, options = {}) {
         rival: tractionVerdict(judged), overlap, sameName: legacy, activeApp,
         brand: otherEntity?.brand ? otherEntity : undefined, app: apps?.find(row => !explained.has(row)), entity: otherEntity,
         mark, otherMark, site, silent, best, available, marks, apps, premium: results.filter(row => row.status === 'premium'),
-        android: android?.filter(row => !explained.has(row)), androidAnswered: android, com: results.find(row => row.tld === 'com'),
+        android: android?.filter(row => !explained.has(row)), androidAnswered: android, company,
       });
       const googleExplained = explainedGoogle(key, googleByName[index].raw, judged, entities);
       const summary = tractionSummary(judged);
@@ -420,6 +423,8 @@ export async function triageNames(inputs, options = {}) {
         google: { ...(google.google ?? { result: 'not checked', why: google.unchecked }), link: googleSearchLink(names.get(name)) },
         taken: requested.filter(row => row.status === 'taken').map(row => row.tld),
         shop_check: requested.filter(row => ['check-at-shop', 'reserved'].includes(row.status)).map(row => row.tld),
+        ...(requested.some(row => row.status === 'reserved') && {
+          reserved: requested.filter(row => row.status === 'reserved').map(row => row.tld) }),
         // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
         ...likelyEndings(requested),
         // Premium endings never carry a list price; the shop shows their price. A short name may be premium.
@@ -427,6 +432,9 @@ export async function triageNames(inputs, options = {}) {
           premium: requested.filter(row => row.status === 'premium').map(row => row.tld) }),
         // The checkout is the listed shop's search, or the confirming shop's search when no list price is known.
         competition, buy: best ? best.buyUrl ?? shopSearchUrl(best.confirmShop, best.domain) : null,
+        ...(options.receipt && { _receiptEndings: requested.map(row => ({ domain: row.domain, source: row.source,
+          checkedAt: row.checkedAt, priceAt: row.priceCheckedAt, shop: row.shop, checkout: row.buyUrl,
+          site: sites[row.tld], risk: row.premium === 'risk' || row.premiumRisk })) }),
         details: {
           memorable: memorability(key, names.get(name)),
           presence: Object.fromEntries(Object.entries(handles).map(([service, status]) =>
@@ -445,7 +453,15 @@ export async function triageNames(inputs, options = {}) {
   for (const row of googleCandidates(rows)) row.google.search = true;
   const sourcesSummary = Object.fromEntries(Object.entries(counts).map(([source, answered]) =>
     [source, Math.round(100 * answered / names.size)]));
-  return packTriage(rows, sourcesSummary, options.compact, endings, options.eligible);
+  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, _receiptEndings }) =>
+    ({ competition, details, traction, google, reason, endings: _receiptEndings }))) : null;
+  const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible);
+  if (options.receipt) {
+    result.checkedAt = (options.now ?? new Date()).toISOString();
+    result.priceListDate = domains.priceDate?.slice(0, 10);
+    result.receiptDetails = receiptDetails;
+  }
+  return result;
 }
 
 // The first three ranked names, filled from the screened names in input order when fewer than three rank.
@@ -502,7 +518,7 @@ function topChoices(rows) {
 function packTriage(rows, sources, compact, endings, eligible) {
   const prices = {};
   const top = topChoices(rows);
-  const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, ...row }) => {
+  const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, _receiptEndings, ...row }) => {
     const own = {};
     for (const option of _free) {
       const entry = priceEntry(option);

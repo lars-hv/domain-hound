@@ -7,5 +7,7 @@ import { join } from 'node:path';
 if (!process.env.DOMAIN_HOUND_CACHE_DIR) {
   const directory = mkdtempSync(join(tmpdir(), 'domain-hound-test-cache-'));
   process.env.DOMAIN_HOUND_CACHE_DIR = directory;
+  process.env.DOMAIN_HOUND_RESULTS_DIR ??= join(directory, 'results');
+  process.env.DOMAIN_HOUND_OPEN ??= 'off';
   process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
 }

@@ -12,18 +12,20 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain'];
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 // npm and npx are .cmd files on Windows and need a shell there.
 const npm = (args, options) => exec(windows ? 'npm.cmd' : 'npm', args, { ...options, shell: windows });
 
 const temp = await mkdtemp(join(tmpdir(), 'domain-hound-smoke-'));
 try {
-  const env = { ...process.env, npm_config_cache: join(temp, 'npm-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, 'lookup-cache') };
+  const env = { ...process.env, npm_config_cache: join(temp, 'npm-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, 'lookup-cache'),
+    DOMAIN_HOUND_RESULTS_DIR: join(temp, 'results'), DOMAIN_HOUND_OPEN: 'off' };
   const { stdout } = await npm(['pack', '--json', '--pack-destination', temp], { cwd: root, env });
   const [{ filename, files }] = JSON.parse(stdout);
   const paths = files.map(file => file.path);
-  for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'clis/domain-check/index.mjs',
+  for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
+    'watch.mjs', 'clis/domain-check/index.mjs',
     'clis/domain-check/price-snapshot.json']) {
     assert.ok(paths.includes(file), 'Tarball lacks ' + file);
   }
@@ -56,7 +58,7 @@ try {
     assert.equal(names[0].name, 'example.com');
     assert.deepEqual(names[0].taken, ['com'], JSON.stringify(names[0]));
     assert.ok(display.includes('example.com'));
-    assert.equal(display.split('\n').at(-1), 'via domainhound.dev');
+    assert.match(display.split('\n').at(-1), /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/);
     console.log(`Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken, `
       + `${Math.round(performance.now() - started)} ms`);
   } finally {

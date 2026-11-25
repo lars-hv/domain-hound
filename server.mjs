@@ -1,11 +1,13 @@
-import { geoInstruction, googleSearchInstruction, namingRecipe, showAsIs } from './clis/domain-check/naming-method.mjs';
+import { geoInstruction, namingRecipe } from './clis/domain-check/naming-method.mjs';
 import { asciiDomain, defaultEndings, normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { progressPrefix } from './clis/domain-check/progress.mjs';
-import { attributed, checkText, errorText, progressText, triageText } from './display.mjs';
+import { attributed, errorText, progressText } from './display.mjs';
+import { resultPages } from './results.mjs';
+import { watchDomain, watchTool } from './watch.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -16,7 +18,7 @@ const serverVersion = JSON.parse(readFileSync(new URL('./package.json', import.m
 const timeoutMs = 14_000;
 // A lookup still running after this long is stopped.
 const maxLookupMs = 120_000;
-// A finished lookup whose caller already had a progress answer waits this long for the repeated call.
+// Keep completed evidence stable for repeated calls during a short naming session.
 const keepFinishedMs = 120_000;
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -29,17 +31,20 @@ const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entr
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: 10, uniqueItems: true,
   items: { type: 'string', enum: defaultEndings },
-  description: 'Optional preferences in display order. Bare names always check and show all ten default endings, including .ai. Omit when no preference was given.',
+  description: 'Endings to consider for the recommendation, in preference order. For .com only use ["com"]. The page still shows all ten endings for bare names.',
 };
 const lookupProperties = {
   ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
   endings: endingsSchema,
+  budget: { type: 'number', minimum: 0, maximum: 1000000,
+    description: 'Maximum upfront price in USD when the person gave a cap. Carry it from the registry screen into triage.' },
   eligible: { type: 'array', uniqueItems: true, items: { type: 'string', enum: restrictedEndings },
     description: 'Restricted endings the buyer qualifies to register. Pass ["no"] only when the buyer qualifies for .no.' },
 };
+const relay = 'Relay `say` as written. You may add advice, but no domain, price or verdict that is not in it. Keep advice consistent with the tool verdict. The complete local results page has all checked endings.';
 const checkTool = {
   name: 'check_domains',
-  description: showAsIs + ' '
+  description: relay + ' '
     + 'For any request to buy or register, pass purchase: true and explicitly say “Domain Hound cannot buy or complete checkout,” even when the domain is taken. '
     + 'Input: query for one name or exact domain ({"query":"lanternbay.me"}), or names for 1 to 20 names in one call ({"names":["lanternbay","lanternbay.me"]}). A bare name checks ten endings, including .ai. '
     + 'For a bare name, put any ending preference in endings. Use exact lookup for a full domain. '
@@ -65,14 +70,15 @@ const checkTool = {
 };
 
 const legacyTool = { ...checkTool, name: 'broker_find',
-  description: showAsIs + ' Legacy alias for Domain Hound check_domains, same input. Never buys.' };
+  description: relay + ' Legacy alias for Domain Hound check_domains, same input. Never buys.' };
 
 const triageTool = {
   name: 'triage_names',
-  description: showAsIs + ' '
+  description: relay + ' '
     + 'Use to screen 1 to 20 product names, or once with a bare name when asked whether an existing name is safe: {"names":["Quiet Otter","Hush Room"],"about":"book quiet meeting rooms"}. Checks same-name rivals and their traction, live US marks, iOS and Android apps, handles and every domain ending, including .ai. '
     + 'Verdicts weigh each same-name rival by its traction: a strong rival (David vs Goliath) or a same-business rival with traction means Avoid; small or dormant same-name uses are notes that never lower the verdict. '
-    + 'Fill geo for every name from your own memory before calling. ' + googleSearchInstruction + ' Let the person choose.',
+    + 'Put the name the person came with first. Fill geo for each name from memory, never from search. '
+    + 'The tool checks Google itself. If you check a gap using built-in search, use it for context and keep the evidence-backed results unchanged. Let the person choose.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -93,7 +99,7 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_method',
-  description: 'Get the Domain Hound naming recipe for new names. For an existing name, use triage_names. The recipe and preliminary check are intermediate. For the final triage result, copy the tool display as written.',
+  description: 'Get the Domain Hound naming recipe for new names. For an existing name, use triage_names. The recipe and preliminary check are intermediate. For the final triage result, relay say as written.',
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'An optional one-sentence product description.' },
   }, additionalProperties: false },
@@ -117,6 +123,7 @@ function queryValue(value) {
     throw new Error('query is empty. Enter one name or exact domain in query, such as lanternbay or lanternbay.me.');
   }
   const query = value.toLowerCase();
+  if (query.split('.')[0].length > 63) throw new Error('This name is too long. A DNS label can have up to 63 characters.');
   if (!entryPattern.test(query) || !dnsForm(query)) {
     throw new Error('query ' + showValue(value) + ' is not valid. Give a name like lanternbay or a domain like lanternbay.me in query.');
   }
@@ -133,6 +140,7 @@ function batchNames(names) {
       throw new Error('names[' + index + '] is empty. Use a bare name such as lanternbay or an exact domain such as lanternbay.me.');
     }
     const name = value.toLowerCase();
+    if (name.split('.')[0].length > 63) throw new Error('names[' + index + '] is too long. A DNS label can have up to 63 characters.');
     if (!entryPattern.test(name) || !dnsForm(name)) {
       throw new Error('names[' + index + '] ' + showValue(value) + ' is not valid. Give a name like lanternbay or a domain like lanternbay.me in names.');
     }
@@ -142,6 +150,9 @@ function batchNames(names) {
 
 function lookupFlags(args) {
   const flags = [];
+  if (Object.hasOwn(args, 'budget') && (!Number.isFinite(args.budget) || args.budget < 0 || args.budget > 1_000_000)) {
+    throw new Error('The upfront budget must be a dollar amount between 0 and 1,000,000.');
+  }
   if (Object.hasOwn(args, 'eligible')) {
     if (!validEligibility(args.eligible)) throw new Error('Eligible endings must list supported restricted endings, such as no.');
     if (args.eligible.length) flags.push('--eligible', args.eligible.join(','));
@@ -177,8 +188,8 @@ function cliArguments(args) {
   if (args.shortlist && (hasQuery || names.some(name => name.includes('.')))) {
     throw new Error('Use shortlist only with bare names in names.');
   }
-  if (hasQuery) return ['--agent', queryValue(args.query), ...flags];
-  return ['--agent', '--names', names.join(','), ...flags];
+  if (hasQuery) return ['--agent', queryValue(args.query), '--receipt', ...flags];
+  return ['--agent', '--names', names.join(','), '--receipt', ...flags];
 }
 
 // The rows a progress answer lists, in input order: a bare name with every requested ending, an exact domain as itself.
@@ -237,7 +248,7 @@ function triageArguments(args) {
     flags.push('--about', args.about);
   }
   if (Object.hasOwn(args, 'geo')) flags.push('--geo', JSON.stringify(geoValue(args.geo, args.names)));
-  return ['--triage', args.names.join(','), '--compact', ...flags];
+  return ['--triage', args.names.join(','), '--compact', '--receipt', ...flags];
 }
 
 // The capability prints one JSON object on stdout.
@@ -326,6 +337,7 @@ async function within(lookup, budget) {
 
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
+  pages = resultPages(), watch = watchDomain,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -351,8 +363,7 @@ export async function serve({
       lookups.set(key, lookup);
       lookup.done.then(() => {
         if (lookups.get(key) !== lookup) return;
-        // A result nobody was told to collect is delivered by the calls already waiting on it.
-        if (!lookup.collect) {
+        if (lookup.outcome.error && !lookup.collect) {
           lookups.delete(key);
           return;
         }
@@ -368,16 +379,16 @@ export async function serve({
         return errorResult('Domain Hound could not format the progress.');
       }
     }
-    // The repeated call collected the finished result; the next call starts a fresh lookup.
-    if (lookups.get(key) === lookup) lookups.delete(key);
-    if (lookup.outcome.error) return errorResult(lookup.outcome.error);
+    if (lookup.outcome.error) {
+      if (lookups.get(key) === lookup) lookups.delete(key);
+      return errorResult(lookup.outcome.error);
+    }
     try {
-      return toolResult(render(lookup.outcome.data));
+      return toolResult(JSON.stringify(await render(lookup.outcome.data)));
     } catch {
       return errorResult('Domain Hound could not format the result.');
     }
   }
-  let shortlist;
   let initialized = false;
   let negotiated = false;
 
@@ -412,7 +423,7 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: [checkTool, triageTool, namingTool, legacyTool] });
+    if (method === 'tools/list') return reply({ tools: [checkTool, triageTool, namingTool, legacyTool, watchTool] });
     const { name, arguments: args } = params ?? {};
     if (name === namingTool.name) {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
@@ -420,22 +431,29 @@ export async function serve({
           args.about.length > namingTool.inputSchema.properties.about.maxLength)))) {
         return reply(errorResult('naming_method accepts an optional about description of up to 512 characters.'));
       }
-      shortlist = undefined;
       return reply(toolResult(JSON.stringify({ display: attributed(namingRecipe(args?.about?.slice(0, 160))) })));
+    }
+    if (name === watchTool.name) {
+      let result;
+      try {
+        result = await watch(args);
+      } catch (problem) {
+        return reply(errorResult(problem.message));
+      }
+      // Preserve a successful submission response even if disk space or local permissions prevent a receipt.
+      const data = await pages(result, {}, { watch: true }).catch(() => ({ ...result, display: result.say }));
+      return reply(toolResult(JSON.stringify(data)));
     }
     const purchase = isObject(args) && args.purchase === true;
     if (name === triageTool.name) {
-      const prior = shortlist && Date.now() - shortlist.at < 120_000 ? shortlist.data : undefined;
-      return reply(await runLookup(args, triageArguments, triageRows, data => triageText(data, prior, { purchase, preferred: args.endings }),
+      return reply(await runLookup(args, triageArguments, triageRows, data => pages(data, args, { triage: true }),
         (progress, timing) => progressText(progress, { ...timing, triage: true, purchase })));
     }
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    return reply(await runLookup(args, cliArguments, checkRows, data => {
-      if (args.shortlist) shortlist = { at: Date.now(), data };
-      return checkText(data, args.shortlist, { purchase, preferred: args.endings });
-    }, (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact })));
+    return reply(await runLookup(args, cliArguments, checkRows, data => pages(data, args),
+      (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact })));
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });

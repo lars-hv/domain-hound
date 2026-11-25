@@ -4,12 +4,12 @@
   "title": "Domain Hound",
   "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "transport": {
         "type": "stdio"
       }

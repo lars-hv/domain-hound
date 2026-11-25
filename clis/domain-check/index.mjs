@@ -3,8 +3,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
+import { checkDomainSite } from './com-site.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
-import { asciiDomain, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
+import { applyLiveSite, asciiDomain, canRecommend, defaultEndings, eligibilityNotes, listQuote, mergeQuote, nameCandidates, normalizeName, pickName,
   premiumRisk, rankName, registrationStatus, searchCandidates, searchName, termCosts, unicodeName, validEligibility, validEndings,
   withPremiumRisk, withoutListPrice } from './name-search.mjs';
 import { bundledCatalog, catalogOffers, datedListPrices, isListPriceUsable, loadCachedCatalog, refreshPrices } from './price-catalog.mjs';
@@ -334,7 +335,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   let priceListDate;
   let best;
   for (const { name, results } of groups) {
-    const taken = [], resale = [], free = [], shop_check = [], likelyFree = [], likelyTaken = [];
+    const taken = [], resale = [], free = [], shop_check = [], reserved = [], likelyFree = [], likelyTaken = [];
     for (const row of results) {
       checkedEndings.add(row.tld);
       const d = row.exact ? row.tld : row.domain;
@@ -368,6 +369,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
       }
       if (row.status === 'reserved') {
         shop_check.push(d);
+        reserved.push(d);
         shopCheckWhy[row.domain] = String(row.registryReason ?? 'Not offered for registration').slice(0, 80);
         continue;
       }
@@ -399,6 +401,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
     const unicode = unicodeName(name);
     byName.set(name, { name, ...(unicode && { unicode }), ...(taken.length && { taken }), ...(resale.length && { resale }),
       ...(free.length && { free }), ...(shop_check.length && { shop_check }),
+      ...(reserved.length && { reserved }),
       // Subsets of shop_check with a DNS likelihood; only a registry or shop settles them.
       ...(likelyFree.length && { likely_free: likelyFree }), ...(likelyTaken.length && { likely_taken: likelyTaken }) });
   }
@@ -511,13 +514,18 @@ export async function agentResult(input, options = {}) {
     complete = false;
   }
   const apply = row => quotes.has(row.domain) ? mergeQuote(row, quotes.get(row.domain)) : row;
-  const rankedGroups = fast.groups.map(({ name, results }) => ({ name, results: rankName(results.map(apply)) }));
+  const rankedGroups = fast.groups.map(group => ({ ...group, results: rankName(group.results.map(apply)) }));
   const checkedAt = options.now?.toISOString() ?? new Date().toISOString();
   // An exact .com gets the standard list prices of the other endings as one benchmark line, with no extra lookups.
   const exactCom = names.length === 1 && names[0].endsWith('.com') ? names[0] : null;
   const otherEndings = exactCom ? await endingBenchmarks(exactCom, options) : null;
-  return compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
+  const result = compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
     options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings });
+  if (options.receipt) result.receiptDetails = rankedGroups.map(({ results, sites }) => ({ endings: results.map(row => ({
+    domain: row.domain, source: row.source, checkedAt: row.checkedAt, priceAt: row.priceCheckedAt,
+    shop: row.shop, checkout: row.buyUrl, site: sites?.[row.tld], risk: row.premium === 'risk' || row.premiumRisk,
+  })) }));
+  return result;
 }
 
 // The cheapest standard list price of each other ending for this label, from the saved or bundled price list.
@@ -551,14 +559,29 @@ async function retryGoogle(fast, remaining, options) {
   const until = performance.now() + budget;
   const timeLeft = () => Math.max(0, Math.floor(until - performance.now()));
   const answers = new Map();
+  const siteChecks = [];
+  const sites = new Map();
+  const verify = options.verifyFreeSite ?? options.comSite ?? checkDomainSite;
+  const checkNegative = options.fetcher === undefined || options.verifyFreeSite;
   let timer;
   await Promise.race([
     lookupRegistrations([...pending.values()].map(({ domain, tld, exact }) => ({ domain, tld, exact })), {
       directory: options.directory, fetcher: options.fetcher, pause: options.pause, now: options.now,
       // DNS already showed no name servers for these rows.
       resolveNs: async () => [], timeLeft, rdapAttempts: 1,
-      onResult: (candidate, registry) => { if (timeLeft() > 0) answers.set(candidate.domain, registry); },
-    }).catch(() => {}),
+      onResult: ({ domain }, registry) => {
+        if (!timeLeft()) return;
+        if (registry.status !== 'free' || !checkNegative) {
+          answers.set(domain, registry);
+          return;
+        }
+        const wait = Math.min(1_200, timeLeft());
+        siteChecks.push(Promise.resolve().then(() => verify(domain, wait, true)).then(site => {
+          sites.set(domain, site);
+          answers.set(domain, applyLiveSite(registry, site));
+        }, () => { answers.set(domain, registry); }));
+      },
+    }).then(() => Promise.all(siteChecks)).catch(() => {}),
     new Promise(resolve => { timer = setTimeout(resolve, budget + 100); }),
   ]);
   clearTimeout(timer);
@@ -567,6 +590,7 @@ async function retryGoogle(fast, remaining, options) {
     group.results = rankName(group.results.map(row => {
       const answer = pending.has(row.domain) && answers.get(row.domain);
       if (!answer) return row;
+      if (sites.has(row.domain)) group.sites[row.tld] = sites.get(row.domain);
       const status = registrationStatus(answer);
       if (status === 'check-at-shop') {
         if (/HTTP 429/.test(answer.reason ?? '')) limited = true;
@@ -629,6 +653,7 @@ function lookupArgs(args) {
     else if (arg === '--eligible' && !options.eligible) options.eligible = (args[++index] ?? '').split(',');
     else if (arg === '--category' && !options.category) options.category = (args[++index] ?? '').slice(0, 100);
     else if (arg === '--compact') options.compact = true;
+    else if (arg === '--receipt') options.receipt = true;
     // The headless browser shop check runs only on this explicit flag.
     else if (arg === '--confirm') options.browser = true;
     else if (arg === '--geo' && options.geo === undefined) options.geo = readGeo(args[++index]);
