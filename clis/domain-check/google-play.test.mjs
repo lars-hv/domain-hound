@@ -5,7 +5,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { test } from 'node:test';
+import { beforeEach, test } from 'node:test';
+import 'parse5'; // Fail at startup if the fallback's parser is missing.
 import { searchAndroidApps } from './google-play.mjs';
 
 const now = new Date('2026-11-24T12:00:00Z');
@@ -19,6 +20,21 @@ const detailsHtml = id => '<script type="application/ld+json">' + JSON.stringify
   aggregateRating: { ratingCount: '120' }, applicationCategory: 'PRODUCTIVITY',
 }) + '</script>';
 const noBrowser = async () => { throw new Error('Fixture has no browser'); };
+
+async function cache(t) {
+  const path = await mkdtemp(join(tmpdir(), 'hound-play-'));
+  t.after(() => rm(path, { recursive: true, force: true }));
+  return pathToFileURL(path + '/');
+}
+
+function unexpectedFetch() {
+  throw new Error('Unexpected live network request');
+}
+
+beforeEach(t => {
+  const fetch = t.mock.method(globalThis, 'fetch', unexpectedFetch);
+  t.after(() => assert.equal(fetch.mock.callCount(), 0, 'Google Play fixtures must use the injected fetcher'));
+});
 
 function playFetcher(searchBody, calls = []) {
   return async (value, init) => {
@@ -44,9 +60,7 @@ function quietConsole(t) {
 
 test('reads server-rendered Google Play cards without a browser and caches them', async t => {
   const consoleStaysQuiet = quietConsole(t);
-  const path = await mkdtemp(join(tmpdir(), 'hound-play-'));
-  t.after(() => rm(path, { recursive: true, force: true }));
-  const directory = pathToFileURL(path + '/');
+  const directory = await cache(t);
   const calls = [];
   const options = { directory, now, launch: noBrowser, fetcher: playFetcher(() => searchHtml, calls) };
   const names = new Map([['cloudotter', 'Cloud Otter']]);
@@ -60,12 +74,15 @@ test('reads server-rendered Google Play cards without a browser and caches them'
   const search = calls.find(call => call.url.pathname === '/store/search').url;
   assert.deepEqual(Object.fromEntries(search.searchParams), { q: 'Cloud Otter', c: 'apps', hl: 'en', gl: 'US' });
   assert.equal(calls.filter(call => call.url.pathname === '/store/apps/details').length, 2);
-  assert.deepEqual(await searchAndroidApps(names, { ...options, fetcher: noBrowser }), new Map([['cloudotter', apps]]));
+  const cachedFetch = t.mock.fn(unexpectedFetch);
+  assert.deepEqual(await searchAndroidApps(names, { ...options, fetcher: cachedFetch }), new Map([['cloudotter', apps]]));
+  assert.equal(cachedFetch.mock.callCount(), 0);
   consoleStaysQuiet();
 });
 
 test('keeps known empty Play searches and drops unknown pages or providers', async t => {
   const consoleStaysQuiet = quietConsole(t);
+  const directory = await cache(t);
   const searches = new Map();
   const fetcher = playFetcher(url => {
     const query = url.searchParams.get('q');
@@ -76,26 +93,29 @@ test('keeps known empty Play searches and drops unknown pages or providers', asy
     return '<h1>Something went wrong</h1>';
   });
   const names = new Map([['mossfinch', 'Moss Finch'], ['willowsail', 'Willow Sail']]);
-  const results = await searchAndroidApps(names, { directory: null, launch: noBrowser, fetcher });
+  const results = await searchAndroidApps(names, { directory, now, launch: noBrowser, fetcher });
   assert.deepEqual(results, new Map([['mossfinch', []]]));
   assert.deepEqual(Object.fromEntries(searches), { 'Moss Finch': 1, 'Willow Sail': 2 });
   const unavailable = await searchAndroidApps(new Map([['softsparrow', 'Soft Sparrow']]),
-    { directory: null, launch: noBrowser, fetcher: async () => new Response('busy', { status: 503 }) });
+    { directory, now, launch: noBrowser, fetcher: async () => new Response('busy', { status: 503 }) });
   assert.deepEqual(unavailable, new Map());
   consoleStaysQuiet();
 });
 
 test('uses the server-rendered fallback only when the browser cannot start', async t => {
   const consoleStaysQuiet = quietConsole(t);
+  const directory = await cache(t);
   const page = {
     context: () => ({}), goto: async () => ({ ok: () => true }),
     url: () => 'https://play.google.com/store/search?q=Cloud+Otter',
     waitForFunction: async () => ({ jsonValue: async () => [] }), close: async () => {},
   };
   const launch = async () => ({ newContext: async () => ({ newPage: async () => page }), close: async () => {} });
+  const fetcher = t.mock.fn(unexpectedFetch);
   const results = await searchAndroidApps(new Map([['cloudotter', 'Cloud Otter']]), {
-    directory: null, launch, fetcher: async () => assert.fail('The browser result needs no public fetch'),
+    directory, now, launch, fetcher,
   });
   assert.deepEqual(results, new Map([['cloudotter', []]]));
+  assert.equal(fetcher.mock.callCount(), 0);
   consoleStaysQuiet();
 });
