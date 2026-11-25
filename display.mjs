@@ -591,7 +591,8 @@ export function progressText(progress, { rows = [], elapsedMs = 0, budgetMs = 0,
       + (row._groups.checking.length ? ', ask again' : '')),
     ...(progressStage[progress?.stage] ? [progressStage[progress.stage]] : []),
     'Prices, ' + (triage ? 'verdicts, ' : '') + 'links and every ending come with the finished result. '
-      + 'Call the same tool again with the same input to collect it from this lookup.',
+      + (triage ? 'The results page fills in by itself; a repeat call with the same input returns it in chat.'
+        : 'Call the same tool again with the same input to collect it from this lookup.'),
   ];
   for (const row of names) {
     delete row._groups;

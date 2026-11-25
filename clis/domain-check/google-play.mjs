@@ -1,4 +1,5 @@
 import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { withShopPages } from './confirm.mjs';
 import { appNameMatches, compactText, day, request } from './triage-sources.mjs';
 
@@ -146,29 +147,38 @@ async function lookUp(source, name, input, deadline) {
   });
 }
 
+// Leave room for a retry on slow pages or failed connections within the shared clock.
+const playAttemptMs = 2800;
+
 export async function searchAndroidApps(names, options = {}) {
   const { directory = cacheDir, now = new Date(), playBudgetMs = 12000, cacheLifetime = day } = options;
-  const deadline = performance.now() + Math.min(12000, playBudgetMs);
+  const budget = Math.min(30000, playBudgetMs);
+  const deadline = performance.now() + budget;
+  const retryMs = Math.min(playAttemptMs, budget / 2);
+  const answered = (name, apps) => { results.set(name, apps); options.onResult?.(name, apps); };
   const results = new Map();
   const pending = (await Promise.all([...names].map(async ([name, input]) => {
     const filename = 'triage-play-' + name + '.json';
     const prior = await readCache(directory, filename);
     const age = now.getTime() - prior?.at;
     if (age >= 0 && age < cacheLifetime && Array.isArray(prior.apps) && prior.apps.every(app => Object.hasOwn(app, 'ratings')) && (!prior.apps.length || prior.version === 2)) {
-      results.set(name, prior.apps);
+      answered(name, prior.apps);
       return null;
     }
     return { name, input, filename };
   }))).filter(Boolean);
+  const waits = budget < 1600 ? [0, 0] : [0, 350, 1200];
   const search = useSource => mapLimit(pending, 5, async ({ name, input, filename }) => {
     if (performance.now() >= deadline) return;
-    for (let attempt = 0; attempt < 2 && performance.now() < deadline; attempt++) {
+    for (const pause of waits) {
+      if (options.signal?.aborted || deadline - performance.now() < (pause ? retryMs + pause : 1)) break;
+      if (pause) await delay(pause);
       let source;
       try {
         source = await useSource();
-        const apps = await lookUp(source, name, input, Math.min(deadline, performance.now() + 2800));
+        const apps = await lookUp(source, name, input, Math.min(deadline, performance.now() + 8000));
         if (apps === null || performance.now() >= deadline) continue;
-        results.set(name, apps);
+        answered(name, apps);
         await writeCache(directory, filename, { at: now.getTime(), apps, version: 2 }).catch(() => {});
         return;
       } catch { /* An unavailable search gives no evidence about the name. */ }
@@ -176,12 +186,15 @@ export async function searchAndroidApps(names, options = {}) {
     }
   });
   if (pending.length && performance.now() < deadline) {
-    let browserReady = false;
-    let browserFailed = false;
-    await withShopPages(deadline, async (_, openPage) => {
-      browserReady = true;
-      await search(async () => browserSource(await openPage()));
-    }, { ...options, onFailure: () => { browserFailed = !browserReady; return null; } });
+    // The public search response includes the cards. A normal lookup needs no browser or page assets.
+    let browserFailed = !options.launch;
+    if (options.launch) {
+      let browserReady = false;
+      await withShopPages(deadline, async (_, openPage) => {
+        browserReady = true;
+        await search(async () => browserSource(await openPage()));
+      }, { ...options, onFailure: () => { browserFailed = !browserReady; return null; } });
+    }
     if (browserFailed && performance.now() < deadline) {
       const parse = await import('parse5').then(module => module.parse, () => null);
       if (parse) await search(() => fetchSource(parse, options));

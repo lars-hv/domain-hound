@@ -26,6 +26,16 @@ main > header {
 }
 header small, time, code { font-family: var(--mono); }
 header small { color: var(--gold); font-weight: 700; }
+header a.share, header a.share:visited {
+  float: right;
+  min-height: 44px;
+  padding: .5rem .875rem;
+  border-radius: 999px;
+  background: var(--lime);
+  color: var(--blue);
+  font-weight: 800;
+}
+header a.share:focus-visible { outline-color: var(--cream); }
 h1, h2 { margin: 0; font-weight: 900; line-height: 1.12; letter-spacing: -.035em; }
 h1 { margin-block: .2rem; font-size: clamp(2rem, 4vw, 2.75rem); }
 h2 { font-size: 1.65rem; }

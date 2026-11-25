@@ -40,6 +40,8 @@
     "display.mjs",
     "results.mjs",
     "results-style.mjs",
+    "share.mjs",
+    "site/r/share-format.mjs",
     "watch.mjs",
     "clis/domain-check/cache.mjs",
     "clis/domain-check/com-site.mjs",
@@ -70,7 +72,7 @@
     "server.json"
   ],
   "scripts": {
-    "test": "node --test server.test.mjs results.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs",
+    "test": "node --test server.test.mjs results.test.mjs share.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "snapshot-prices": "node scripts/snapshot-prices.mjs",
     "build-mcpb": "node scripts/build-mcpb.mjs"

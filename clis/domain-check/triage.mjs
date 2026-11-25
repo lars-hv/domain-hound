@@ -4,6 +4,7 @@ import { shopSearchUrl } from './prices.mjs';
 import { checkHandles, compactText, handleSearches, letters, searchApps, searchEntities, searchMarks, trademarkSearches } from './triage-sources.mjs';
 import { loadEdgarCompanies, matchEdgarCompanies, searchNorwegianCompanies } from './company-search.mjs';
 import { mapLimit } from './cache.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 import { checkSocialHandles } from './handles.mjs';
 import { checkDomainSite } from './com-site.mjs';
 import { playSearchLink, searchAndroidApps } from './google-play.mjs';
@@ -145,11 +146,14 @@ function trademarkReason(mark) {
     + (mark.classes.join('/') || 'class unavailable') + ')';
 }
 
-function verdict({ mark, otherMark, silent, ...evidence }) {
+function verdict({ mark, otherMark, silent, waiting = [], ...evidence }) {
   const [decision, reason] = baseVerdict({ mark, ...evidence });
   const trademark = trademarkReason(mark);
-  const missing = silent.length ? silent.join(', ') + ' did not answer' : '';
+  const missing = [silent.length && silent.join(', ') + ' did not answer', waiting.length && 'still checking ' + waiting.join(', ')]
+    .filter(Boolean).join('; ');
   if (reason === 'A competition source did not answer' && missing) return [decision, missing];
+  // A clear verdict waits for the checks that are still running; the follow-up re-assesses it.
+  if (decision === 'No conflict found' && waiting.length) return ['Check first', missing];
   return [decision, [reason, trademark !== reason && trademark, trademarkReason(otherMark), missing].filter(Boolean).join(' · ')];
 }
 
@@ -268,13 +272,35 @@ export async function triageNames(inputs, options = {}) {
   const timeLeft = () => budgetMs - (performance.now() - started);
   const signal = AbortSignal.timeout(budgetMs);
   const sources = { ...options, signal, timeLeft, cacheLifetime: evidenceLifetime, retryUnavailable: true, githubSearch: true };
-  // Ask an unavailable source once more while the triage budget lasts.
-  const retry = async (lookup, answered) => {
-    const first = await lookup();
-    return answered(first) || signal.aborted || timeLeft() < 300 ? first : lookup();
+  const retry = async (lookup, answered, waits = [0]) => {
+    let result = await lookup();
+    for (const wait of waits) {
+      if (answered(result) || signal.aborted || timeLeft() < wait + 300) break;
+      if (wait) await delay(wait);
+      if (!signal.aborted) result = await lookup();
+    }
+    return result;
   };
   const found = value => value != null;
-  const traction = createTraction({ ...sources, refreshTranco: options.refreshTranco === true });
+  // A follow-up run calls triageNames twice with one memo. The first pass answers by options.answerAt with the checks
+  // done so far and lists the others as waiting; the second pass reuses every started lookup and re-assesses the names.
+  const memo = options.memo ?? new Map();
+  const once = (key, start) => {
+    if (!memo.has(key)) memo.set(key, start());
+    return memo.get(key);
+  };
+  const answerBy = options.answerAt == null ? null
+    : new Promise(resolve => setTimeout(resolve, Math.max(0, options.answerAt - performance.now())));
+  const waiting = new Map();
+  const wait = (index, source) => waiting.set(index, new Set([...waiting.get(index) ?? [], source]));
+  const waitingFor = index => [...new Set([...waiting.get('all') ?? [], ...waiting.get(index) ?? []])];
+  const byAnswer = (promise, index, source, fallback = null) => {
+    if (!answerBy) return promise;
+    let settled = false;
+    return Promise.race([promise.then(value => { settled = true; return value; }),
+      answerBy.then(() => { if (settled) return fallback; wait(index, source); return fallback; })]);
+  };
+  const traction = once('traction', () => createTraction({ ...sources, refreshTranco: options.refreshTranco === true }));
   const nameOf = new Map([...names.keys()].map((name, index) => [name, index]));
   // Start traction lookups as soon as a rival's home is known, so the slow free sources overlap the other checks.
   const startHomes = (name, domains, live = true) => {
@@ -294,8 +320,13 @@ export async function triageNames(inputs, options = {}) {
   const screened = entries.slice(0, screenLimit);
   const isScreened = index => index < screenLimit;
   const screenedDomains = new Set([...names.keys()].slice(0, screenLimit));
+  const sourceNames = new Map([[searchMarks, 'USPTO'], [searchApps, 'App Store'], [searchEntities, 'Wikidata'],
+    [searchNorwegianCompanies, 'Brønnøysund']]);
   const check = (concurrency, lookup, after = () => {}) => mapLimit(entries, concurrency, async ([name, input, index]) => {
-    const result = signal.aborted || !isScreened(index) ? null : await retry(() => lookup(name, input, sources), found);
+    const source = sourceNames.get(lookup) ?? lookup.name;
+    const waits = lookup === searchApps || lookup === searchEntities ? [450 + index * 110, 1600 + index * 110] : [0];
+    const result = signal.aborted || !isScreened(index) ? null
+      : await byAnswer(once(source + ':' + name, () => retry(() => lookup(name, input, sources), found, waits)), index, source);
     after(result, index);
     return result;
   });
@@ -311,36 +342,46 @@ export async function triageNames(inputs, options = {}) {
     startHomes(name, (result ?? []).filter(row => row.brand).flatMap(row => (row.website ?? []).map(siteDomain))
       .filter(domain => domain?.split('.')[0].includes(name)));
   });
-  const domainsDone = searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
+  const domainsDone = once('domains', () => searchCandidates(groups, { ...options, budgetMs: Math.min(budgetMs, 11500),
     siteEndings: websiteEndings, siteTimeout: 3000, siteDetails: true, onSite,
-    siteFilter: domain => screenedDomains.has(domain.slice(0, domain.indexOf('.'))) });
+    siteFilter: domain => screenedDomains.has(domain.slice(0, domain.indexOf('.'))) }));
   // GitHub and npm accounts are same-name evidence for every screened name; they share one run of controls.
-  const evidenceHandles = options.deferHandles ? Promise.resolve(new Map()) : checkSocialHandles(screened.map(([name]) => ({ name, platforms: ['GitHub', 'npm'], links: false })),
-    { ...options, signal });
+  const evidenceHandles = options.deferHandles ? Promise.resolve(new Map()) : once('evidenceHandles', () => checkSocialHandles(screened.map(([name]) => ({ name, platforms: ['GitHub', 'npm'], links: false })),
+    { ...options, signal }));
   // Once the registry answers are in, the top three names get the full handle row, with Bluesky and variants.
-  const handleRows = options.deferHandles || options.handleRows === false ? Promise.resolve(new Map()) : domainsDone.then(domains => {
+  const handleRows = options.deferHandles || options.handleRows === false ? Promise.resolve(new Map()) : once('handleRows', () => domainsDone.then(domains => {
     const order = handleOrder(domains.groups, keys, options.eligible).slice(0, handleLimit);
     options.onProgress?.({ stage: 'handles' });
     return evidenceHandles.then(() => checkSocialHandles(order.map(key => ({ name: key, variants: true })), { ...options, signal }));
-  }).catch(() => new Map());
+  }).catch(() => new Map()));
+  // Google Play answers per name, so the first pass keeps the names it has.
+  const playLive = once('playLive', () => new Map());
+  let playFinished = !answerBy;
+  const play = once('play', () => searchAndroidApps(new Map(screened.map(([key, input]) => [key, input])),
+    { ...sources, onResult: (name, apps) => playLive.set(name, apps),
+      playBudgetMs: Math.min(answerBy ? 20000 : 12000, options.playBudgetMs ?? Infinity, budgetMs) }));
+  const unverifiedHandles = { github: { status: 'check' }, handles: { GitHub: 'check', npm: 'check' } };
   const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName, socialByName] =
     await Promise.all([
       // A cold cache still gets the bundled, dated list prices, so free endings never all read "price at shop".
-      domainsDone,
+      // The second pass also collects the slow website checks.
+      options.memo && !answerBy ? domainsDone.then(async done => { await done.settleSites?.(); return done; }) : domainsDone,
       check(6, searchMarks), check(8, searchApps, (result, index) => startHomes(entries[index][0],
         (result ?? []).map(row => siteDomain(row.sellerUrl)).filter(domain => domain?.split('.')[0].includes(entries[index][0])))),
       entityChecks,
       Promise.all(entries.map(([name], index) => isScreened(index)
-        ? checkHandles(name, { ...sources, social: evidenceHandles.then(rows => rows.get(name)).catch(() => null) }) : null)),
+        ? byAnswer(once('handles:' + name, () => checkHandles(name, {
+          ...sources, social: evidenceHandles.then(rows => rows.get(name)).catch(() => null),
+        })), index, 'GitHub repositories', unverifiedHandles) : null)),
       check(8, searchNorwegianCompanies),
-      searchAndroidApps(new Map(screened.map(([key, input]) => [key, input])),
-        { ...sources, playBudgetMs: Math.min(12000, options.playBudgetMs ?? Infinity, budgetMs) }),
-      retry(() => loadEdgarCompanies(sources), found),
-      mapLimit(entries, 5, ([name, input, index]) => isScreened(index) ? searchGoogle(name, input, {
+      answerBy ? Promise.race([play.then(map => [map, true]), answerBy.then(() => [new Map(playLive), false])])
+        .then(([map, done]) => { playFinished = done; return map; }) : play,
+      byAnswer(once('edgar', () => retry(() => loadEdgarCompanies(sources), found)), 'all', 'EDGAR'),
+      mapLimit(entries, 5, ([name, input, index]) => isScreened(index) ? byAnswer(once('google:' + name, () => searchGoogle(name, input, {
         ...sources, timeoutMs: timeLeft(),
         entities: entities[index].promise,
         sameBusiness: text => describedBusiness(name, text, options.about, options.category),
-      }) : { unchecked: 'not screened' }),
+      })), index, 'Google', { unchecked: 'still checking' }) : { unchecked: 'not screened' }),
       handleRows,
     ]);
   const counts = {};
@@ -362,8 +403,10 @@ export async function triageNames(inputs, options = {}) {
     startEvidence(traction, rivals);
     return rivals;
   });
+  if (!playFinished) for (const [key, , index] of screened) if (!androidApps.has(key)) wait(index, 'Google Play');
   options.onProgress?.({ stage: 'rivals' });
-  const evidence = await traction.settle();
+  // The first pass waits for rival traction only until its answer is due.
+  const evidence = await traction.settle(answerBy ? Math.max(150, timeLeft() - Math.max(0, options.answerAt - performance.now())) : undefined);
   const rows = domains.groups.map(({ name, results, sites }, index) => {
       const requested = results.filter(row => endings.includes(row.tld));
       const available = results.filter(row => row.status === 'probably-free' && endings.includes(row.tld));
@@ -383,7 +426,8 @@ export async function triageNames(inputs, options = {}) {
       };
       const receipt = options.receipt && { _receiptEndings: requested.map(row => ({ domain: row.domain, source: row.source,
         checkedAt: row.checkedAt, priceAt: row.priceCheckedAt, shop: row.shop, checkout: row.buyUrl,
-        site: sites[row.tld], risk: row.premium === 'risk' || row.premiumRisk })), _handles: social };
+        site: sites[row.tld], risk: row.premium === 'risk' || row.premiumRisk, ...(row.savings && { savings: row.savings }) })),
+        _handles: social, _waiting: () => isScreened(index) ? waitingFor(index) : [] };
       if (!isScreened(index)) {
         // Registry answers and prices only. The verdict never reads "No conflict found" without the checks.
         return {
@@ -443,20 +487,27 @@ export async function triageNames(inputs, options = {}) {
       const sameName = sameNameEvidence({ name: key, live, norway, us, entities, entity, github, handles, deferHandles: options.deferHandles });
       const otherEntities = entities?.filter(row => !explained.has(row));
       const legacy = sameNameEvidence({ name: key, live: unmeasured, norway, us, entities: otherEntities, entity, github, handles, deferHandles: options.deferHandles });
+      // Taken endings whose website check is still running count as a waiting source.
+      const sitesWaiting = options.lateSiteMs > 0 && results.some(row => row.status === 'taken' && row.exact !== false
+        && websiteEndings.includes(row.tld) && !sites[row.tld]);
+      const sitesSilent = sitesWaiting || Object.values(sites).some(site => site?.state === 'unknown');
+      if (answerBy && sitesWaiting) wait(index, 'websites');
+      const pending = waitingFor(index);
       const silent = silentSources({ marks, apps, android, entities, norway, edgar, github, handles })
-        .filter(source => !options.deferHandles || !['GitHub', 'npm'].includes(source));
+        .filter(source => (!options.deferHandles || !['GitHub', 'npm'].includes(source)) && !pending.includes(source));
+      if (sitesSilent && !pending.includes('websites')) silent.push('websites');
       const otherEntity = otherEntities?.find(row => row.brand) ?? otherEntities?.[0];
       const [decision, reason] = verdict({
         rival: tractionVerdict(judged), overlap, sameName: legacy, activeApp,
         brand: otherEntity?.brand ? otherEntity : undefined, app: apps?.find(row => !explained.has(row)), entity: otherEntity,
-        mark, otherMark, site, silent, best, available, marks, apps, premium: results.filter(row => row.status === 'premium'),
+        mark, otherMark, site, silent, waiting: pending, best, available, marks, apps, premium: results.filter(row => row.status === 'premium'),
         android: android?.filter(row => !explained.has(row)), androidAnswered: android, company,
       });
       const googleExplained = explainedGoogle(key, googleByName[index].raw, judged, entities);
       const summary = tractionSummary(judged);
       const answered = {
         USPTO: marks, 'App Store': apps, 'Google Play': android, Google: google.google, Wikidata: entities,
-        Brønnøysund: norway, EDGAR: edgar,
+        Brønnøysund: norway, EDGAR: edgar, ...(options.memo && { Websites: sitesSilent ? null : true }),
         ...!options.deferHandles && Object.fromEntries(Object.entries(handles).map(([service, status]) => [service, status === 'check' ? null : status])),
       };
       for (const [source, value] of Object.entries(answered)) coverage(source, value != null);
@@ -498,9 +549,12 @@ export async function triageNames(inputs, options = {}) {
   for (const row of googleCandidates(rows)) row.google.search = true;
   const sourcesSummary = Object.fromEntries(Object.entries(counts).map(([source, answered]) =>
     [source, Math.round(100 * answered / Math.min(names.size, screenLimit))]));
-  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, _receiptEndings, _handles }) =>
-    ({ competition, details, traction, google, reason, endings: _receiptEndings, handles: _handles }))) : null;
+  const receiptDetails = options.receipt ? structuredClone(rows.map(({ competition, details, traction, google, reason, _receiptEndings, _handles, _waiting }) =>
+    ({ competition, details, traction, google, reason, endings: _receiptEndings, handles: _handles,
+      ...(_waiting?.().length && { waiting: _waiting() }) }))) : null;
   const result = packTriage(rows, sourcesSummary, options.compact, endings, options.eligible);
+  // The first pass of a follow-up run says more checks are coming.
+  if (answerBy && waiting.size) result.followUp = true;
   if (options.receipt) {
     result.checkedAt = (options.now ?? new Date()).toISOString();
     result.priceListDate = domains.priceDate?.slice(0, 10);
@@ -589,7 +643,7 @@ function packTriage(rows, sources, compact, endings, eligible) {
   const top = topChoices(rows);
   // Handle states for the top names: taken, not_found (no public profile found) or check (check yourself).
   const handles = Object.fromEntries(rows.filter(row => row._social).map(row => [row.name, row._social]));
-  const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, _receiptEndings, _handles, _social, ...row }) => {
+  const names = rows.map(({ _free, _recommendable, _mark, _googleExplained, _receiptEndings, _handles, _social, _waiting, ...row }) => {
     const own = {};
     for (const option of _free) {
       const entry = priceEntry(option);

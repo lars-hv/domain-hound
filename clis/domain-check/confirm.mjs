@@ -401,7 +401,10 @@ export async function confirmDomain(shopValue, domain, options = {}) {
   const deadline = Math.min(options.deadline ?? Infinity, start + budget);
   const tld = domain.split('.').at(-1);
   const order = shopOrder(shop, tld, options.unsupported).slice(0, options.oneShop ? 1 : 2);
-  const run = usePage => usePage(domain, check => confirmAtShops(domain, check, deadline, order));
+  const run = usePage => usePage(domain, check => confirmAtShops(domain, (id, until) => {
+    options.onShopQuery?.(id, domain);
+    return check(id, until);
+  }, deadline, order));
   const settled = options.usePage ? await run(options.usePage) : await withShopPages(deadline, run, options);
   const result = formatResult(start, domain, shop, settled.shop ?? shop, settled.result ?? settled, now);
   if (result.status === 'confirmed') await writeCache(directory, filename, result).catch(() => {});
@@ -520,8 +523,9 @@ async function postJson(fetcher, url, body, headers, timeout) {
   return response.json();
 }
 
-async function spaceshipQuotes(domains, { env, fetcher, timeout, now }) {
+async function spaceshipQuotes(domains, { env, fetcher, timeout, now, onShopQuery }) {
   const headers = { 'X-API-Key': env.DOMAIN_HOUND_SPACESHIP_KEY.trim(), 'X-API-Secret': env.DOMAIN_HOUND_SPACESHIP_SECRET.trim() };
+  for (const domain of domains) onShopQuery?.('spaceship', domain);
   const [availability, pricing] = await Promise.all([
     postJson(fetcher, spaceshipApi + 'available', { domains }, headers, timeout),
     postJson(fetcher, spaceshipApi + 'pricing/query', { domains }, headers, timeout).catch(() => null),
@@ -529,7 +533,7 @@ async function spaceshipQuotes(domains, { env, fetcher, timeout, now }) {
   return parseSpaceshipApi(availability, pricing, domains, now);
 }
 
-async function dynadotQuotes(domains, { env, fetcher, timeout, now, listFor, deadline }) {
+async function dynadotQuotes(domains, { env, fetcher, timeout, now, listFor, deadline, onShopQuery }) {
   const quotes = new Map();
   // A regular Dynadot account checks one domain per command and one request at a time.
   for (const domain of domains) {
@@ -538,6 +542,7 @@ async function dynadotQuotes(domains, { env, fetcher, timeout, now, listFor, dea
     const url = dynadotApi + '?' + new URLSearchParams({ key: env.DOMAIN_HOUND_DYNADOT_KEY.trim(), command: 'search',
       domain0: domain, show_price: '1', currency: 'USD' });
     try {
+      onShopQuery?.('dynadot', domain);
       const response = await fetcher(url, { redirect: 'error', signal: AbortSignal.timeout(wait), headers: { Accept: 'application/json' } });
       if (!response.ok) { await response.body?.cancel().catch(() => {}); continue; }
       const quote = parseDynadotSearch(await response.json(), domain, listFor(domain, 'dynadot'), now);
@@ -583,7 +588,7 @@ function combine(answers) {
 
 export async function lightConfirm(domains, {
   env = process.env, fetcher = globalThis.fetch, directory, now = new Date(), deadline = performance.now() + 3000,
-  listFor = () => null,
+  listFor = () => null, onShopQuery,
 } = {}) {
   const folder = directory === undefined ? cacheDir : directory;
   const results = new Map();
@@ -597,7 +602,7 @@ export async function lightConfirm(domains, {
   const keyed = apiShops(env);
   const timeout = Math.min(apiTimeout, Math.floor(deadline - performance.now()));
   if (!pending.length || !keyed.length || timeout < 300) return results;
-  const context = { env, fetcher, timeout, now, listFor, deadline };
+  const context = { env, fetcher, timeout, now, listFor, deadline, onShopQuery };
   const [spaceship, dynadot] = await Promise.all([
     keyed.includes('spaceship') ? spaceshipQuotes(pending, context).catch(() => new Map()) : new Map(),
     keyed.includes('dynadot') ? dynadotQuotes(pending, context) : new Map(),

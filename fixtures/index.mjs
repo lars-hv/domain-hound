@@ -49,6 +49,25 @@ if (query === 'slowroom' || query === 'Slow Room' || slowBatch?.includes('slowro
   }
   process.exit(0);
 }
+// A name screen with a slow source: the first answer lists Google Play as still checking, the follow-up line re-assesses.
+if (mode === '--triage' && query === 'Late Room') {
+  const prices = { app: { now: 8.28, renew: 14.49, shop: 'Spaceship' } };
+  const row = (verdict, reason, GooglePlay) => ({ name: query, verdict, reason, free: ['app'], taken: ['com'],
+    competition: { US: [], AppStore: [], GooglePlay, Wikidata: [], sameName: { summary: 'Same name used by: none found', level: 'few' } } });
+  const detail = (GooglePlay, reason, waiting) => ({ competition: { US: [], AppStore: [], GooglePlay, Wikidata: [] },
+    reason, ...(waiting && { waiting }) });
+  const checkedAt = '2026-11-24T12:00:00.000Z';
+  const followUp = process.env.DOMAIN_HOUND_FOLLOW_UP === '1';
+  console.log(JSON.stringify({ prices, checkedAt, ...(followUp && { followUp: true }),
+    names: [row('Check first', 'still checking Google Play', null)], receiptDetails: [detail(null, 'still checking Google Play', ['Google Play'])] }));
+  if (!followUp) process.exit(0);
+  await new Promise(resolve => setTimeout(resolve, Number(process.env.DOMAIN_HOUND_TEST_FOLLOW_MS ?? 300)));
+  const app = [{ name: 'Late Room', developer: 'Example Apps', ratings: 5000, url: 'https://play.google.com/store/apps/details?id=example.lateroom' }];
+  const reason = 'Late Room is an app in the same category with 5000 Android ratings';
+  console.log(JSON.stringify({ prices, checkedAt: '2026-11-24T12:00:20.000Z',
+    names: [row('Avoid', reason, app)], receiptDetails: [detail(app, reason)] }));
+  process.exit(0);
+}
 if (mode === '--triage') {
   // Mirrors the compact triage shape; flags echo the forwarded arguments for the tests.
   const prices = { co: { now: 3.11, renew: 31.05, jump: true, shop: 'Spaceship' }, app: { now: 8.28, renew: 14.49, shop: 'Spaceship' },

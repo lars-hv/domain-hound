@@ -1,5 +1,6 @@
 import { anySignal, cacheDir, readCache, writeCache } from './cache.mjs';
 import { checkSocialHandles, handlePlatforms } from './handles.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const uspto = 'https://tmsearch.uspto.gov';
 const githubState = 'triage-github-limit.json';
@@ -158,7 +159,7 @@ export function searchApps(name, input, options = {}) {
 async function fetchApps(name, input, options) {
   const data = await readJson('https://itunes.apple.com/search?' + new URLSearchParams({
     term: input, country: 'us', entity: 'software', limit: '25',
-  }), options);
+  }), options, { timeout: 5000 });
   if (!Array.isArray(data?.results)) return null;
   const rows = data.results.flatMap(row => {
     if (typeof row?.trackName !== 'string' || !/^\d{4,}$/.test(row.trackId) || !appNameMatches(name, row.trackName)) return [];
@@ -184,18 +185,34 @@ export function searchEntities(name, input, options = {}) {
   return cacheTractionSource('wikidata', name, options, () => fetchEntities(name, input, options));
 }
 
+// Wikidata can return a "too busy" error inside an HTTP 200 when searches overlap.
+let wikidataSearches = Promise.resolve();
+function searchWikidata(url, options) {
+  const turn = wikidataSearches.then(async () => {
+    for (const wait of [0, 250, 500]) {
+      if (wait) await delay(wait);
+      if (options.signal?.aborted) return null;
+      const data = await readJson(url, options, { timeout: 5000, headers: wikidataHeaders });
+      if (data?.error?.code !== 'cirrussearch-too-busy-error') return data;
+    }
+    return null;
+  });
+  wikidataSearches = turn.catch(() => {});
+  return turn;
+}
+
 async function fetchEntities(name, input, options) {
   const api = 'https://www.wikidata.org/w/api.php?';
-  const data = await readJson(api + new URLSearchParams({
+  const data = await searchWikidata(api + new URLSearchParams({
     action: 'wbsearchentities', search: input, language: 'en', format: 'json', limit: '15',
-  }), options, { headers: wikidataHeaders });
+  }), options);
   if (!Array.isArray(data?.search)) return null;
   const key = letters(name);
   const exact = data.search.filter(row => /^Q\d+$/.test(row.id) && letters(row.label) === key);
   if (!exact.length) return [];
   const getClaims = async (ids, props = 'claims') => (await readJson(api + new URLSearchParams({
     action: 'wbgetentities', ids: ids.join('|'), props, format: 'json',
-  }), options, { timeout: 1200, headers: wikidataHeaders }))?.entities;
+  }), options, { timeout: options.detailTimeoutMs ?? 3000, headers: wikidataHeaders }))?.entities;
   // The same request returns sitelinks and the official website (P856) for traction.
   const details = await getClaims(exact.map(row => row.id), 'claims|sitelinks');
   if (!details && options.cacheLifetime) return null;

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -439,10 +440,16 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   return result;
 }
 
-// The top pick and up to three runners-up get a light confirm: registry signals first, then a keyed shop API.
-export function lightTargets(rows, eligible, count = 4) {
-  const top = pickName(rows, eligible);
-  const others = rankName(rows.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
+// The light confirm uses registry signals first, then a keyed shop API (only with the person's own key). By default only
+// the pick is sent to a shop, so no shop sees the other names. DOMAIN_HOUND_SHOP_QUOTES=top4 adds up to three runners-up.
+export const shopQuoteCount = (env = process.env) => env?.DOMAIN_HOUND_SHOP_QUOTES === 'top4' ? 4 : 1;
+
+export function lightTargets(rows, eligible, count = 1, preferred = [], cap) {
+  const inScope = rows.filter(row => (!preferred.length || preferred.includes(row.tld))
+    && (cap == null || (row.firstPayment ?? Infinity) <= cap));
+  const top = preferred.length ? preferred.map(tld => pickName(inScope.filter(row => row.tld === tld), eligible)).find(Boolean)
+    : pickName(inScope, eligible);
+  const others = rankName(inScope.filter(row => row !== top && ['probably-free', 'premium'].includes(row.status)
     && canRecommend(row.tld, eligible)));
   return [top, ...others].filter(Boolean).slice(0, count);
 }
@@ -477,11 +484,14 @@ export async function agentResult(input, options = {}) {
   const rows = fast.groups.flatMap(group => group.results);
   const targets = domain ? rows.filter(row => canRecommend(row.tld, options.eligible)
     && ['probably-free', 'check-at-shop', 'premium'].includes(row.status))
-    : lightTargets(rows, options.eligible);
+    : lightTargets(rows, options.eligible, shopQuoteCount(options.env ?? process.env), options.preferredEndings, options.upfrontCap);
   const [candidate] = targets;
   // A Google retry can settle every row that the first pass left waiting.
   let complete = fast.complete || !rows.some(row => row.registryReason === 'Registry lookup timed out');
   const quotes = new Map();
+  // The domains a shop was asked about in this lookup, for the receipt's disclosure.
+  const asked = new Set();
+  const onShopQuery = (_shop, domain) => asked.add(domain);
   if (targets.length) {
     options.onProgress?.({ stage: 'quotes' });
     const catalog = await loadCachedCatalog(options.directory);
@@ -489,7 +499,7 @@ export async function agentResult(input, options = {}) {
       options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog).find(row => row.id === shop) ?? null;
     const light = options.lightConfirm ?? lightConfirm;
     const found = await light(targets.map(row => row.domain), { env: options.env, fetcher: options.fetcher,
-      directory: options.directory, now: options.now, deadline: performance.now() + Math.max(0, remaining() - 150), listFor })
+      directory: options.directory, now: options.now, deadline: performance.now() + Math.max(0, remaining() - 150), listFor, onShopQuery })
       .catch(() => new Map());
     for (const [key, value] of found) quotes.set(key, value);
   }
@@ -505,7 +515,7 @@ export async function agentResult(input, options = {}) {
     try {
       quote = await Promise.race([
         confirm(candidate.confirmShop, candidate.domain, { deadline, directory: options.directory,
-          unsupported: ['so', 'no'], fresh: true, oneShop: batch }).catch(() => null),
+          unsupported: ['so', 'no'], fresh: true, oneShop: batch, onShopQuery }).catch(() => null),
         new Promise(resolve => { timer = setTimeout(resolve, remaining()); }),
       ]);
       if (!remaining() || quote === undefined) complete = false;
@@ -527,9 +537,11 @@ export async function agentResult(input, options = {}) {
   const otherEndings = exactCom ? await endingBenchmarks(exactCom, options) : null;
   const result = compactAgentResult(rankedGroups, names, complete, checkedAt, batch, rateLimited,
     options.browser ? liveCheckFor(candidate, quote) : null, { eligible: options.eligible, otherEndings });
+  if (asked.size) result.shopAsked = [...asked];
   if (options.receipt) result.receiptDetails = rankedGroups.map(({ results, sites }) => ({ endings: results.map(row => ({
     domain: row.domain, source: row.source, checkedAt: row.checkedAt, priceAt: row.priceCheckedAt,
     shop: row.shop, checkout: row.buyUrl, site: sites?.[row.tld], risk: row.premium === 'risk' || row.premiumRisk,
+    ...(row.savings && { savings: row.savings }),
   })) }));
   return result;
 }
@@ -656,6 +668,8 @@ function lookupArgs(args) {
     const arg = args[index];
     if (arg === '--ai') options.ai = true;
     else if (arg === '--endings' && !options.endings) options.endings = (args[++index] ?? '').split(',');
+    else if (arg === '--prefer-endings' && !options.preferredEndings) options.preferredEndings = (args[++index] ?? '').split(',');
+    else if (arg === '--upfront-cap' && options.upfrontCap === undefined) options.upfrontCap = Number(args[++index]);
     else if (arg === '--eligible' && !options.eligible) options.eligible = (args[++index] ?? '').split(',');
     else if (arg === '--category' && !options.category) options.category = (args[++index] ?? '').slice(0, 100);
     else if (arg === '--compact') options.compact = true;
@@ -669,12 +683,44 @@ function lookupArgs(args) {
   return { options, positional };
 }
 
+function triageOutput(result, options) {
+  if (options.compact) {
+    for (const row of result.names ?? []) {
+      row.checks = nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
+    }
+  }
+  return result;
+}
+
+function printResult(result) {
+  const packet = process.env.DOMAIN_HOUND_MCP_OUTPUT === '1' && !result.error ? { ...result, _mcpResult: true } : result;
+  console.log(JSON.stringify(packet));
+}
+
+// The name screen's first answer comes by answerMs with the checks done so far. With followUp, the slow checks keep
+// running in the same process (no lookup is repeated) and a second, re-assessed result follows on the next line.
+export const firstAnswerMs = 8000;
+export const followUpMs = 24000;
+export const lateSiteMs = 8000;
+export async function triageWithFollowUp(names, options, { followUp = false, answerMs = firstAnswerMs, print = () => {} } = {}) {
+  if (!followUp) return triageNames(names, options);
+  const memo = new Map();
+  const run = { ...options, memo, budgetMs: options.budgetMs ?? followUpMs, lateSiteMs };
+  const first = await triageNames(names, { ...run, answerAt: performance.now() + answerMs });
+  if (first.error || !first.followUp) return first;
+  print(first);
+  return triageNames(names, run);
+}
+
 function runConfirmation(shop, domain) {
   return confirmDomain(shop, domain, { unsupported: ['so', 'no'], fresh: true });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const args = process.argv.slice(2);
+  // The 250 ms default was cutting off the IPv4 leg before several public sources could connect.
+  // The individual request deadlines and the first-answer deadline still apply.
+  if (args[0] === '--triage') setDefaultAutoSelectFamilyAttemptTimeout(Math.max(900, getDefaultAutoSelectFamilyAttemptTimeout()));
   const { options, positional } = lookupArgs(args.slice(1));
   // The MCP server reads these to answer with progress when a lookup outlasts its budget.
   const onProgress = progressReporter();
@@ -696,15 +742,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       : args[0] === '--refresh-tranco' && args.length === 1
         ? await refreshTranco({ directory: process.env.DOMAIN_HOUND_TRANCO_CACHE ? pathToFileURL(process.env.DOMAIN_HOUND_TRANCO_CACHE.replace(/\/?$/, '/')) : undefined })
       : args[0] === '--presence' && args.length === 2 ? await namePresence(args[1], { refreshTranco: true })
-      : args[0] === '--triage' ? await triageNames(positional.length === 1 ? positional[0].split(',') : null,
-        { ...options, refreshTranco: true, deferHandles: process.env.DOMAIN_HOUND_DEFER_HANDLES === '1' })
+      : args[0] === '--triage' ? await triageWithFollowUp(positional.length === 1 ? positional[0].split(',') : null,
+        { ...options, refreshTranco: true, deferHandles: process.env.DOMAIN_HOUND_DEFER_HANDLES === '1' },
+        { followUp: process.env.DOMAIN_HOUND_FOLLOW_UP === '1', answerMs: Number(process.env.DOMAIN_HOUND_ANSWER_MS) || undefined,
+          print: first => printResult(triageOutput(first, options)) })
       : await checkDomain(args.length === 1 ? args[0] : undefined);
     if (result.error) process.exitCode = 1;
-    if (args[0] === '--triage' && options.compact) {
-      for (const row of result.names ?? []) {
-        row.checks = nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
-      }
-    }
-    console.log(JSON.stringify(result));
+    printResult(args[0] === '--triage' ? triageOutput(result, options) : result);
   }
 }

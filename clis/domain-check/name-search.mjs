@@ -1,7 +1,8 @@
 import { domainToASCII, domainToUnicode } from 'node:url';
 import { checkDomainSite } from './com-site.mjs';
 import { cachedSignals, confirmingShops } from './confirm.mjs';
-import { bundledCatalog, datedListPrices, getNameCatalog, loadCachedCatalog, requestEndings, supportedEndings, targetEndings } from './price-catalog.mjs';
+import { bundledCatalog, datedListPrices, getNameCatalog, isListPriceUsable, listedPrices, loadCachedCatalog, requestEndings,
+  supportedEndings, targetEndings } from './price-catalog.mjs';
 import { linkable, shopSearchUrl } from './prices.mjs';
 import { lookupRegistrations } from './registry.mjs';
 import { foldLatin } from './triage-sources.mjs';
@@ -194,9 +195,36 @@ export function listQuote(catalog, { domain, tld }, now, bundled = bundledCatalo
   };
 }
 
+// Savings are proof, never a pitch: the pick's three-year list cost against the median of at least three distinct shops'
+// dated list prices for the same ending, all over a common three-year term. The lower median is used, so the comparison
+// is never the highest price. Only a strictly positive difference counts; anything else returns null.
+export function listSavings(catalog, { tld, price, renewal, shop, priceCheckedAt }, now, bundled = bundledCatalog) {
+  if (!(price > 0) || !(renewal > 0) || !shop || !priceCheckedAt) return null;
+  const own = termCosts(tld, price, renewal);
+  if (own.minimumYears !== 1 || own.renewalYears !== 1 || own.threeYear == null) return null;
+  const byShop = new Map();
+  for (const row of [...datedListPrices(catalog, tld, now, bundled), ...listedPrices(bundled, tld)]) {
+    if (!byShop.has(row.shop) && row.firstYear > 0 && row.renewal > 0 && isListPriceUsable(row.checkedAt, now)) {
+      byShop.set(row.shop, row);
+    }
+  }
+  const listed = byShop.get(shop);
+  // The pick must be one of the compared list prices, unchanged.
+  if (listed?.firstYear !== price || listed.renewal !== renewal || listed.checkedAt !== priceCheckedAt) return null;
+  const totals = [...byShop.values()].map(row => ({ shop: row.shop, checkedAt: row.checkedAt,
+    total: termCosts(tld, row.firstYear, row.renewal).threeYear })).sort((a, b) => a.total - b.total || a.shop.localeCompare(b.shop));
+  if (totals.length < 3) return null;
+  const median = totals[Math.floor((totals.length - 1) / 2)];
+  const saved = Math.round((median.total - own.threeYear) * 100) / 100;
+  if (!(saved > 0) || median.shop === shop) return null;
+  const dates = totals.map(row => new Date(row.checkedAt).toISOString().slice(0, 10)).sort();
+  return { years: 3, here: own.threeYear, shop, median: median.total, medianShop: median.shop, saved, shops: totals.length,
+    checkedFrom: dates[0], checkedTo: dates.at(-1) };
+}
+
 // A premium, reserved or possible-premium signal never leaves a list price on the row.
 export function withoutListPrice(row, status, reason) {
-  return { ...row, status, price: null, renewal: null, priceSource: null, priceCheckedAt: null,
+  return { ...row, status, price: null, renewal: null, priceSource: null, priceCheckedAt: null, savings: null,
     ...(reason && { registryReason: reason }) };
 }
 
@@ -225,7 +253,8 @@ export function mergeQuote(row, quote) {
     : quote.status === 'premium' ? quote.premium ?? true : possiblePremium(row, quote) ? 'possible'
       : (row.premium === 'risk' || row.premiumRisk) && quote.standard !== true ? 'possible' : false;
   const price = money(quote.price) > 0 ? quote.price : null;
-  return { ...row, status: premium ? 'premium' : quote.status, price, renewal: price == null ? null : quote.renewal ?? null,
+  // A shop quote replaces the list price, so a list-price comparison no longer applies.
+  return { ...row, savings: null, status: premium ? 'premium' : quote.status, price, renewal: price == null ? null : quote.renewal ?? null,
     ...(premium && { premium }), shop: quote.shopName, buyUrl: quote.buyUrl, priceCheckedAt: null, priceSource: null,
     quotedAt: quote.checkedAt ?? null, checkedAt: quote.checkedAt ?? row.checkedAt, source: 'shop' };
 }
@@ -242,10 +271,11 @@ export async function searchCandidates(groups, options = {}) {
   const siteEndings = options.siteEndings ?? (options.skipComSite ? [] : ['com']);
   const lookedUp = new Map();
   const checks = [];
+  const lateChecks = [];
   let catalog = null;
   let timer;
   let complete = false;
-  const onResult = ({ domain, tld, exact }, registry) => {
+  const onResult = ({ domain, tld, exact }, registry, dnsCode) => {
     if (timeLeft() <= 0) return;
     const publish = (result) => {
       lookedUp.set(domain, result);
@@ -258,16 +288,32 @@ export async function searchCandidates(groups, options = {}) {
     const checkTaken = registry.status === 'taken' && exact && siteEndings.includes(tld) && (options.siteFilter?.(domain) ?? true);
     if (!checkNegative) publish(registry);
     if (!checkNegative && !checkTaken) return;
-    const timeout = Math.min(options.siteTimeout ?? 1200, timeLeft());
+    if (dnsCode === 'ENOTFOUND' && !options.verifyFreeSite && !options.comSite) {
+      // NXDOMAIN for the hostname also rules out its web address. Reuse the DNS answer.
+      sites.set(domain, { result: { state: 'no-site', why: 'DNS NXDOMAIN' } });
+      if (checkNegative) publish(registry);
+      return;
+    }
+    // A taken site may get a longer, final check that outlives the first answer (settleSites collects it).
+    const late = checkTaken && options.lateSiteMs > 0;
+    const timeout = late ? options.lateSiteMs : Math.min(options.siteTimeout ?? 1200, timeLeft());
     const visit = checkNegative ? options.verifyFreeSite ?? options.comSite ?? checkDomainSite
       : options.comSite ?? checkDomainSite;
-    const pending = Promise.resolve().then(() => visit(domain, timeout, options.siteDetails || checkNegative)).then(site => {
+    const pending = Promise.resolve().then(() => visit(domain, timeout, options.siteDetails || checkNegative))
+      .then(site => {
       sites.get(domain).result = site;
       options.onSite?.(domain, site);
       if (checkNegative) publish(applyLiveSite(registry, site));
     }, () => { if (checkNegative) publish(registry); });
     sites.set(domain, { pending });
-    checks.push(pending);
+    if (!late) checks.push(pending);
+    else {
+      // The first answer still waits as long as for any site check; the late check keeps running after that.
+      lateChecks.push(pending);
+      checks.push(Promise.race([pending, new Promise(resolve => {
+        setTimeout(resolve, Math.min(options.siteTimeout ?? 1200, timeLeft())).unref?.();
+      })]));
+    }
   };
   const loadCatalog = options.cachedOnly ? loadCachedCatalog(options.directory)
     : getNameCatalog({ ...options, now, coldWaitMs: bundled ? 0 : Math.min(1900, budgetMs) });
@@ -301,10 +347,11 @@ export async function searchCandidates(groups, options = {}) {
         ? { shop: quote.shop, checkedAt: quote.priceCheckedAt, ...termCosts(row.tld, quote.price, quote.renewal),
           renewalJump: quote.renewal > 2 * quote.price }
         : null;
+      const savings = status === 'probably-free' ? listSavings(catalog, { ...row, ...quote }, now, bundled) : null;
       const settled = withPremiumRisk({ ...row, status, checkedAt: lookup.checkedAt ?? checkedAt, source: lookup.source,
         registryReason: lookup.reason, forSale: Boolean(lookup.forSale), ...(lookup.marketplace && { marketplace: lookup.marketplace }),
         ...(status === 'check-at-shop' && lookup.likely && { likely: lookup.likely }),
-        ...(status !== 'taken' ? quote : listPrice && { listPrice }) });
+        ...(status !== 'taken' ? quote : listPrice && { listPrice }), ...(savings && { savings }) });
       if (status === 'premium') return { ...withoutListPrice(settled, 'premium'), premium: true };
       if (status === 'reserved') return withoutListPrice(settled, 'reserved', lookup.reason);
       const signal = status === 'taken' ? null : signals.get(row.domain);
@@ -319,7 +366,22 @@ export async function searchCandidates(groups, options = {}) {
     }
     return { ...group, results: rows, comSite: checkedSites.com ?? null, sites: checkedSites };
   });
-  return { groups: results, complete, priceDate: catalog?.checkedAt ?? bundled?.checkedAt ?? null, ms: Math.round(performance.now() - start) };
+  // Site checks that outlived the first answer fill in their group's sites when they finish.
+  const settleSites = async () => {
+    await Promise.all([...checks, ...lateChecks]);
+    for (const group of results) {
+      for (const row of group.results) {
+        const site = sites.get(row.domain)?.result;
+        if (!site || group.sites[row.tld]) continue;
+        group.sites[row.tld] = site;
+        if (row.tld === 'com') group.comSite = site;
+        if (site.state === 'for-sale') row.forSale = true;
+      }
+    }
+    return results;
+  };
+  return { groups: results, complete, priceDate: catalog?.checkedAt ?? bundled?.checkedAt ?? null, ms: Math.round(performance.now() - start),
+    settleSites };
 }
 
 export async function searchName(input, options = {}) {
