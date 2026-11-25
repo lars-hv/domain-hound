@@ -303,6 +303,97 @@
           "transfer": null
         }
       }
+    },
+    "cloudflare": {
+      "checkedAt": "2026-11-25T00:00:00.000Z",
+      "source": "https://pricing.registrar.cloudflare.com/",
+      "note": "Standard registration and renewal from the official public table; needs Cloudflare DNS",
+      "prices": {
+        "com": {
+          "shop": "Cloudflare",
+          "firstYear": 11.17,
+          "renewal": 11.17,
+          "transfer": null
+        },
+        "ai": {
+          "shop": "Cloudflare",
+          "firstYear": 80,
+          "renewal": 80,
+          "transfer": null
+        },
+        "io": {
+          "shop": "Cloudflare",
+          "firstYear": 50,
+          "renewal": 50,
+          "transfer": null
+        },
+        "dev": {
+          "shop": "Cloudflare",
+          "firstYear": 12.2,
+          "renewal": 12.2,
+          "transfer": null
+        },
+        "app": {
+          "shop": "Cloudflare",
+          "firstYear": 14.2,
+          "renewal": 14.2,
+          "transfer": null
+        },
+        "co": {
+          "shop": "Cloudflare",
+          "firstYear": 30,
+          "renewal": 30,
+          "transfer": null
+        },
+        "me": {
+          "shop": "Cloudflare",
+          "firstYear": 16.56,
+          "renewal": 16.56,
+          "transfer": null
+        },
+        "xyz": {
+          "shop": "Cloudflare",
+          "firstYear": 13.5,
+          "renewal": 13.5,
+          "transfer": null
+        },
+        "tech": {
+          "shop": "Cloudflare",
+          "firstYear": 49.2,
+          "renewal": 49.2,
+          "transfer": null
+        },
+        "net": {
+          "shop": "Cloudflare",
+          "firstYear": 11.86,
+          "renewal": 11.86,
+          "transfer": null
+        },
+        "org": {
+          "shop": "Cloudflare",
+          "firstYear": 11.2,
+          "renewal": 11.2,
+          "transfer": null
+        },
+        "studio": {
+          "shop": "Cloudflare",
+          "firstYear": 31.2,
+          "renewal": 31.2,
+          "transfer": null
+        },
+        "uk": {
+          "shop": "Cloudflare",
+          "firstYear": 5.3,
+          "renewal": 5.3,
+          "transfer": null
+        },
+        "co.uk": {
+          "shop": "Cloudflare",
+          "firstYear": 5.3,
+          "renewal": 5.3,
+          "transfer": null
+        }
+      }
     }
   }
 }

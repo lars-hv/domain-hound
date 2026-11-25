@@ -178,7 +178,7 @@ test('a name screen reports slow app and EUIPO checks as pending, then reuses th
   const final = await triageWithFollowUp(['Quiet Fern'], options, { followUp: true, answerMs: 150, print: value => { first = value; } });
   assert.equal(first.followUp, true);
   assert.equal(first.names[0].verdict, 'Check first');
-  assert.match(first.names[0].reason, /still checking App Store/);
+  assert.match(first.names[0].reason, /^still checking\b.*\bApp Store\b/);
   assert.doesNotMatch(first.names[0].reason, /did not answer/);
   assert.ok(first.receiptDetails[0].waiting.includes('App Store'));
   assert.ok(first.receiptDetails[0].waiting.includes('EUIPO'));

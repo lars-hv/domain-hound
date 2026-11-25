@@ -38,6 +38,7 @@ function domainRow(record) {
     identity.append(element('span', 'chip best-value', 'Best value · ' + usd.format(record.bestValue) + ' over 3 years'));
   }
   if (record.status !== registryFree) identity.append(element('span', 'status', record.status));
+  if (record.dns) identity.append(element('span', 'status dns', record.dns));
   const prices = element('dl', 'quotes');
   prices.append(price('Upfront', record.now), price('Renewal', record.renew, record.jump));
   item.append(identity, prices);

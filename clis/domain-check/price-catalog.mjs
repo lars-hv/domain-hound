@@ -7,10 +7,11 @@ import { cacheDir, readCache, writeCache } from './cache.mjs';
 import { withShopPages } from './confirm.mjs';
 import { catalogPrice, dynadotOffer, offer, shops } from './prices.mjs';
 
-// The endings every bare name is checked on. The first ten are the 0.1.4 set; .net, .org, .xyz and .tech joined in 0.1.5.
-export const targetEndings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no', 'net', 'org', 'xyz', 'tech'];
+// The endings every bare name is checked on. The first ten are the 0.1.4 set; .xyz and .tech joined in 0.1.5.
+// .net and .org left the defaults in 0.1.8 (few AI-native companies want them); they stay checkable on request.
+export const targetEndings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no', 'xyz', 'tech'];
 // Checked only when the person asks for them (or names them in endings).
-export const requestEndings = ['sh', 'gg', 'inc', 'studio', 'se', 'dk', 'de', 'uk', 'co.uk', 'eu'];
+export const requestEndings = ['net', 'org', 'sh', 'gg', 'inc', 'studio', 'se', 'dk', 'de', 'uk', 'co.uk', 'eu'];
 export const supportedEndings = [...targetEndings, ...requestEndings];
 // A saved or bundled catalog must cover these; newer endings are priced once a refresh has them.
 const coreEndings = targetEndings.slice(0, 10);
@@ -19,6 +20,10 @@ const spaceshipEndings = coreEndings.filter(tld => !otherEndings.includes(tld));
 const filename = 'prices.json';
 const day = 86_400_000;
 const primaryShops = ['spaceship', 'porkbun', 'dynadot'];
+// Registrars priced only from the checked snapshot, never fetched at run time. Cloudflare's standard registration and
+// renewal prices come from its official public table (pricing.registrar.cloudflare.com), checked on the snapshot date.
+// They stay a dated estimate and need Cloudflare DNS.
+export const snapshotShops = ['cloudflare'];
 const automaticShops = ['porkbun', 'dynadot'];
 const refreshMarker = 'price-refresh.attempt';
 const pricingPage = 'https://www.spaceship.com/domain-search/pricing/';
@@ -30,7 +35,7 @@ function validPrice(row, shop) {
 
 function validSource(id, prices) {
   const entries = Object.entries(prices ?? {});
-  const required = id === 'spaceship' ? spaceshipEndings : id === 'gandi' ? [] : ['com', 'io', 'me'];
+  const required = id === 'spaceship' ? spaceshipEndings : ['gandi', ...snapshotShops].includes(id) ? [] : ['com', 'io', 'me'];
   return entries.length > 0 && required.every(tld => Object.hasOwn(prices, tld)) &&
     entries.every(([tld, row]) => supportedEndings.includes(tld) && validPrice(row, shops[id].name));
 }
@@ -45,7 +50,7 @@ export function validCatalog(value) {
     return coreEndings.every(tld => validPrice(value.prices?.[tld], otherEndings.includes(tld) ? 'Gandi' : 'Spaceship'));
   }
   return Object.keys(value.catalogs).length > 0 && Object.entries(value.catalogs).every(([id, source]) =>
-    [...primaryShops, 'gandi'].includes(id) && validDate(source.checkedAt) && validSource(id, source.prices));
+    [...primaryShops, 'gandi', ...snapshotShops].includes(id) && validDate(source.checkedAt) && validSource(id, source.prices));
 }
 
 export async function loadCachedCatalog(directory = cacheDir) {
@@ -90,11 +95,22 @@ export const bundledCatalog = readBundledCatalog();
 // 2. otherwise the bundled snapshot as a dated estimate, or older cached rows if they are at least as new.
 // Without a snapshot for the ending, an older cached price is never shown. Rows from the snapshot carry
 // bundled: true. A live or shop-confirmed quote replaces all of these later.
+// Snapshot-only registrars (Cloudflare) join by registrar: a fresh cached row for that registrar wins, else its dated
+// snapshot row. Fresh data from the other shops never discards them.
 export function datedListPrices(catalog, tld, now = new Date(), bundled = bundledCatalog) {
-  const cached = listedPrices(catalog, tld);
+  const cachedAll = listedPrices(catalog, tld);
+  const shippedAll = listedPrices(bundled, tld).map(row => ({ ...row, bundled: true }));
+  const refreshable = rows => rows.filter(row => !snapshotShops.includes(row.id));
+  const pinned = snapshotShops.flatMap(id => {
+    const row = cachedAll.find(item => item.id === id && isListPriceUsable(item.checkedAt, now)) ?? shippedAll.find(item => item.id === id);
+    return row ? [row] : [];
+  });
+  return [...shopListPrices(refreshable(cachedAll), refreshable(shippedAll), now), ...pinned];
+}
+
+function shopListPrices(cached, snapshot, now) {
   const fresh = cached.filter(row => isListPriceUsable(row.checkedAt, now));
   if (fresh.length) return fresh;
-  const snapshot = listedPrices(bundled, tld).map(row => ({ ...row, bundled: true }));
   if (!snapshot.length) return [];
   const older = cached.filter(row => now - Date.parse(row.checkedAt) >= 0);
   const newest = rows => rows.reduce((date, row) => row.checkedAt > date ? row.checkedAt : date, '');
@@ -153,6 +169,9 @@ export function listedPrices(catalog, tld) {
   }] : []);
   if (!listed.length && sources.gandi?.prices[tld]) {
     listed.push({ ...sources.gandi.prices[tld], id: 'gandi', checkedAt: sources.gandi.checkedAt });
+  }
+  for (const id of snapshotShops) {
+    if (sources[id]?.prices[tld]) listed.push({ ...sources[id].prices[tld], id, checkedAt: sources[id].checkedAt });
   }
   return listed;
 }

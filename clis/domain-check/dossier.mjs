@@ -4,10 +4,10 @@
 // bought, no shop credentials are used, and no background refresh starts. Every part shares one total deadline.
 import { classifyComSite } from './com-site.mjs';
 import { anySignal, cacheDir, readCache } from './cache.mjs';
-import { asciiDomain, canRecommend, defaultEndings, domainEnding, fallbackEndings, listQuote, mainstreamEndings, nameCandidates,
-  premiumRisk, searchCandidates, supportedEndings, unicodeName } from './name-search.mjs';
+import { asciiDomain, canRecommend, choosePick, defaultEndings, domainEnding, listQuote, nameCandidates, premiumRisk, qualityEndings,
+  searchCandidates, supportedEndings, unicodeName } from './name-search.mjs';
 import { bundledCatalog, loadCachedCatalog } from './price-catalog.mjs';
-import { bestValue, triageNames } from './triage.mjs';
+import { triageNames } from './triage.mjs';
 import { bootstrap, bootstrapUrl, documentedWhois, lookupRegistrations, rdapBase, rdapDomainUrl, systemResolveNs } from './registry.mjs';
 import { saleMarketplace } from './parking.mjs';
 import { checkListings, marketplaceFor, providers, stopReason, urlBindsDomain } from './marketplaces.mjs';
@@ -20,6 +20,7 @@ const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const registrarPriceUrls = {
   Spaceship: 'https://www.spaceship.com/domain-search/pricing/',
   Dynadot: 'https://www.dynadot.com/domain/prices?currency=USD',
+  Cloudflare: 'https://pricing.registrar.cloudflare.com/',
 };
 const priceSourceUrl = (quote, tld) => quote.shop === 'Gandi'
   ? 'https://www.gandi.net/en/domain/tld/' + encodeURIComponent(tld) + '?currency=USD'
@@ -304,10 +305,8 @@ export function chooseTrack(registry, listing, outlook) {
   return 'not-listed';
 }
 
-// Broker ending order: the anchors, then established mainstream endings (the shared attractiveness tiers). .xyz and
-// .tech are a fallback tier, ranked after every mainstream ending however cheap their first year is. Other supported
-// endings follow in catalog order.
-const brokerEndingOrder = [...new Set([...mainstreamEndings, ...fallbackEndings, ...supportedEndings])];
+// Broker ending order: the shared quality order, then other supported endings in catalog order.
+const brokerEndingOrder = [...new Set([...qualityEndings, ...supportedEndings])];
 const labelOf = domain => domain.slice(0, domain.indexOf('.'));
 const threeYearOf = row => Number.isFinite(row?.threeYear) ? row.threeYear : Infinity;
 
@@ -338,8 +337,9 @@ function variantForms(name) {
   });
 }
 
-// Pick the best value for the exact name, a natural .com variant, and the strongest remaining exact ending.
-// Fill open slots in ending order, then with additional variants.
+// The shared pick for the exact name (highest-quality ending within $60 over 3 years, else the least paid over 3 years,
+// never .ai by default), a natural .com variant, and the strongest remaining exact ending.
+// Fill open slots in the quality order, then with additional variants.
 export function pickAlternatives(rows, domain) {
   const name = labelOf(domain);
   const forms = variantForms(name);
@@ -354,8 +354,7 @@ export function pickAlternatives(rows, domain) {
   const picks = [];
   const open = list => list.filter(row => !picks.some(pick => pick.row === row));
   const take = (row, role) => { if (row && open([row]).length) picks.push({ row, role }); };
-  const attractive = exact.filter(row => mainstreamEndings.includes(row.tld));
-  take(bestValue(attractive) ?? bestValue(exact), 'best-value');
+  take(choosePick(exact.map(row => ({ domain: row.domain, now: row.firstPayment ?? null, total: row.threeYear ?? null, row })))?.row, 'pick');
   take(variants[0], 'variant');
   for (const row of [...open(exact), ...open(variants)]) {
     if (picks.length >= 3) break;

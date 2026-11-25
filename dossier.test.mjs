@@ -270,7 +270,7 @@ test('alternatives use the name engine with cached prices only and keep evidence
   assert.equal(seen.options.skipComSite, true);
   assert.ok(!seen.groups[0].candidates.some(row => row.domain === domain));
   assert.deepEqual(rows.map(row => [row.domain, row.role]),
-    [['example.dev', 'best-value'], ['getexample.com', 'variant'], ['example.me', 'exact-ending']]);
+    [['example.dev', 'pick'], ['getexample.com', 'variant'], ['example.me', 'exact-ending']]);
   assert.equal(priceContext, null, 'the cheapest first payment is already a pick');
   assert.equal(results.length, 7, 'the checked rows come back for the name screen');
   for (const row of rows) {
@@ -346,7 +346,7 @@ test('alternatives rank by three-year value, not a cheap first year with a renew
     ['getexample', 'com', 10, 10], ['tryexample', 'com', 10, 10], ['example', 'app', 14, 14]]);
   const { picks, priceContext } = pickAlternatives(rows, domain);
   assert.deepEqual(picks.map(row => [row.domain, row.role]),
-    [['example.dev', 'best-value'], ['getexample.com', 'variant'], ['example.ai', 'exact-ending']]);
+    [['example.dev', 'pick'], ['getexample.com', 'variant'], ['example.ai', 'exact-ending']]);
   const ai = picks.find(row => row.tld === 'ai');
   assert.deepEqual([ai.minimumYears, ai.firstPayment, ai.threeYear], [2, 140, 280]);
   assert.equal(priceContext.domain, 'example.xyz', 'the cheapest first payment is context, not a pick');
@@ -355,11 +355,11 @@ test('alternatives rank by three-year value, not a cheap first year with a renew
 });
 
 test('no renewal jump sits above a non-jump with an equal or lower three-year total', () => {
-  // Slot order would be .io (best value among attractive endings), the variant, then the fallback-tier .tech.
-  const rows = priced([['example', 'io', 5, 40], ['getexample', 'com', 20, 25], ['example', 'tech', 20, 20]]);
+  // Slot order would be .io (the pick: best quality within $60), the variant, then .tech, last in the quality order.
+  const rows = priced([['example', 'io', 5, 27], ['getexample', 'com', 20, 25], ['example', 'tech', 19, 20]]);
   const { picks } = pickAlternatives(rows, domain);
   assert.deepEqual(picks.map(row => [row.domain, row.role, row.renewalJump, row.threeYear]), [
-    ['getexample.com', 'variant', false, 70], ['example.tech', 'exact-ending', false, 60], ['example.io', 'best-value', true, 85]]);
+    ['example.tech', 'exact-ending', false, 59], ['example.io', 'pick', true, 59], ['getexample.com', 'variant', false, 70]]);
   const ordered = orderByValue([{ domain: 'a', renewalJump: true, threeYear: 20 }, { domain: 'b', renewalJump: false, threeYear: 20 },
     { domain: 'c', renewalJump: true, threeYear: 10 }, { domain: 'd', renewalJump: false, threeYear: 50 }]);
   assert.deepEqual(ordered.map(row => row.domain), ['b', 'a', 'c', 'd'], 'a cheaper jump may stay above a dearer non-jump');
@@ -369,7 +369,7 @@ test('a natural variant gets its own slot even when the exact .com is available'
   const io = pickAlternatives(priced([['example', 'com', 10, 10], ['example', 'dev', 5, 5], ['example', 'app', 14, 14],
     ['getexample', 'com', 9, 9]]), 'example.io');
   assert.deepEqual(io.picks.map(row => [row.domain, row.role]),
-    [['example.dev', 'best-value'], ['getexample.com', 'variant'], ['example.com', 'exact-com']]);
+    [['example.com', 'pick'], ['getexample.com', 'variant'], ['example.dev', 'exact-ending']]);
   const variants = pickAlternatives(priced([['examplehq', 'com', 10, 10], ['useexample', 'com', 10, 10], ['example', 'dev', 12, 12]]), domain);
   assert.deepEqual(variants.picks.map(row => row.domain), ['example.dev', 'examplehq.com', 'useexample.com']);
   const repeated = pickAlternatives(priced([['getgetexample', 'com', 5, 5], ['getexamplehq', 'com', 10, 10],
@@ -377,7 +377,8 @@ test('a natural variant gets its own slot even when the exact .com is available'
   assert.deepEqual(repeated.picks.map(row => row.domain), ['getexample.dev', 'getexamplehq.com']);
   assert.equal(repeated.priceContext, null, 'a repeated add-on is excluded from price context too');
   const fallback = pickAlternatives(priced([['example', 'xyz', 1, 14], ['example', 'tech', 5, 5]]), domain);
-  assert.deepEqual(fallback.picks.map(row => [row.domain, row.role]), [['example.tech', 'best-value'], ['example.xyz', 'exact-ending']]);
+  // Both fit within $60, so the quality order picks .xyz over .tech; its renewal jump still lists it below the cheaper .tech.
+  assert.deepEqual(fallback.picks.map(row => [row.domain, row.role]), [['example.tech', 'exact-ending'], ['example.xyz', 'pick']]);
   assert.equal(fallback.priceContext, null);
   const short = pickAlternatives(priced([['abc', 'dev', 5, 5]], 'abc'), 'abc.com');
   assert.deepEqual(short.picks, [], 'a possible premium short name is never a pick');
@@ -391,7 +392,7 @@ const altRow = (name, tld, price, renewal, role) => ({ domain: name + '.' + tld,
 const quick = { clock, providerList: manualProviders, registry: async () => registry(), renewal: async () => null,
   site: async () => ({ state: 'live', host: domain, checkedAt: fixedNow.toISOString(), url: 'https://example.com/', chain: [] }) };
 const threeAlternatives = async () => ({
-  rows: [altRow('example', 'dev', 12, 12, 'best-value'), altRow('getexample', 'com', 10, 10, 'variant'),
+  rows: [altRow('example', 'dev', 12, 12, 'pick'), altRow('getexample', 'com', 10, 10, 'variant'),
     altRow('example', 'app', 14, 14, 'exact-ending')],
   priceContext: altRow('example', 'xyz', 1, 14), results: [{ domain: 'example.dev', tld: 'dev', exact: true, status: 'probably-free' }],
   endings: ['com', 'dev', 'app'],
@@ -422,11 +423,21 @@ test('one screen per label, with the base name warning carried onto the variant'
   assert.equal(variant.baseScreen.verdict, 'Check first');
   assert.deepEqual(Object.keys(data.screens).sort(), ['example', 'getexample']);
   const display = data.display ?? (await import('./dossier.mjs')).dossierDisplay(data);
-  assert.match(display, /- \*\*Check first\*\*\. Near-identical: EXAMPLE \(Example Corp, 009\)\. example\.dev \(best 3-year value for the exact name\): \$12 first year/);
+  assert.match(display, /- \*\*Check first\*\*\. Near-identical: EXAMPLE \(Example Corp, 009\)\. example\.dev \(pick for the exact name\): \$12 first year/);
   assert.match(display, /- getexample\.com \(\.com variant\)[^\n]+Base name \*\*Check first\*\*/);
   assert.match(display, /Evidence from US mark \[Near-identical[^\]]*\]\(<https:\/\/tsdr\.uspto\.gov[^>]*>\), iOS app \[Example App\]/);
   assert.match(display, /Lowest first payment elsewhere is example\.xyz at \$1 first year, renews at \$14\/year \(renewal jump\), \$29 over 3 years/);
   assert.doesNotMatch(display, /No conflict found|\bclear/i);
+});
+
+test('a Cloudflare-priced alternative says it needs Cloudflare DNS and links the official price table', async () => {
+  const cloudflare = { ...altRow('example', 'uk', 5.3, 5.3, 'pick'), shop: 'Cloudflare', priceCheckedAt: '2026-11-25T00:00:00.000Z',
+    priceUrl: 'https://pricing.registrar.cloudflare.com/' };
+  const data = await buildDossier(domain, { ...quick, budgetMs: 2000,
+    alternatives: async () => ({ rows: [cloudflare], priceContext: null, results: [], endings: ['com', 'uk'] }),
+    screen: async () => ({ state: 'settled', verdict: 'No conflict found', reason: 'No exact matches', appEvidence: [] }) });
+  const display = data.display ?? (await import('./dossier.mjs')).dossierDisplay(data);
+  assert.match(display, /example\.uk \(pick for the exact name\): \$5\.30 first year, renews at \$5\.30\/year, \$15\.90 over 3 years \(needs cloudflare dns\)\. \[Cloudflare\]\(<https:\/\/pricing\.registrar\.cloudflare\.com\/>\)/);
 });
 
 test('a hanging name screen still returns the priced alternatives and any settled screen', async () => {
@@ -442,7 +453,7 @@ test('a hanging name screen still returns the priced alternatives and any settle
   const { dossierDisplay } = await import('./dossier.mjs');
   const display = dossierDisplay(data);
   assert.match(display, /- Name screen pending\. getexample\.com \(\.com variant\): \$10 first year/);
-  assert.match(display, /example\.dev \(best 3-year value for the exact name\)[^\n]+No conflict found in the sources checked/);
+  assert.match(display, /example\.dev \(pick for the exact name\)[^\n]+No conflict found in the sources checked/);
   const thrown = await buildDossier(domain, { ...quick, budgetMs: 700, alternatives: threeAlternatives,
     screen: async () => { throw Error('source down'); } });
   assert.equal(thrown.alternatives.length, 3);

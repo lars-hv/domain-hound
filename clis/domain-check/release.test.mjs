@@ -60,8 +60,8 @@ test('a name with æøå is checked as its punycode label and shown in its own s
   const result = await agentResult('Grønnstue', options);
   assert.equal(result.names[0].name, ascii);
   assert.equal(result.names[0].unicode, 'grønnstue');
-  // Fourteen endings, each on the punycode label; no stripped spelling and no prefixed variants.
-  assert.equal(asked.length, 14);
+  // Twelve endings, each on the punycode label; no stripped spelling and no prefixed variants.
+  assert.equal(asked.length, 12);
   assert.ok(asked.every(domain => domain.startsWith(ascii + '.')), asked.join());
   const display = displayOf(result);
   assert.ok(display.includes('- grønnstue.com (' + ascii + '.com) $9.48/$10.68 list price'), display);
@@ -109,16 +109,16 @@ test('a short name may be premium: no list price, never the cheapest pick, never
   const directory = await pricedDirectory(t);
   const result = await agentResult(['qxvo'], registryOptions(directory));
   const [row] = result.names;
-  assert.ok(row.free.length === 14 && row.free.every(option => option.s === 'prem' && option.risk === true), JSON.stringify(row));
+  assert.ok(row.free.length === 12 && row.free.every(option => option.s === 'prem' && option.risk === true), JSON.stringify(row));
   assert.equal(result.best, undefined);
   assert.equal(result.listPrices, undefined);
   const display = displayOf(result);
   assert.match(display, /^- qxvo\.com may be premium, price at shop$/m);
-  assert.doesNotMatch(display, /\$\d|Cheapest now|Best value|Standard prices/);
+  assert.doesNotMatch(display, /\$\d|Pick:|Cheapest now|Best value|Standard prices/);
   // A single name also gets longer .com variants; those are normal names with list prices and can be the pick.
   const single = await agentResult('qxvo', registryOptions(directory));
   assert.ok(single.names[0].free.filter(option => !option.d.includes('.')).every(option => option.s === 'prem' && option.risk));
-  assert.match(displayOf(single), /^Cheapest now: getqxvo\.com$/m);
+  assert.match(displayOf(single), /^Pick: getqxvo\.com$/m);
 
   const exact = await agentResult('qxvo.com', registryOptions(directory));
   assert.equal(exact.otherEndings, undefined);
@@ -167,7 +167,10 @@ test('a renewal jump is said on the price line, with one cheapest-now and one be
   const display = displayOf(payload);
   assert.match(display, /^- lanternbay\.co \$3\.11, then \$31\.05\/yr, 10x jump \(list price\)$/m);
   assert.match(display, /^- lanternbay\.ai \$159\.96\/\$159\.96 2y list price$/m);
-  assert.match(display, /^Cheapest now: lanternbay\.co\nBest value: lanternbay\.com, \$30\.84 over 3 years$/m);
+  // .co renews at $31.05 ($65.21 over 3 years), so the pick is .com within $60; .co is only the cheapest upfront.
+  // .com is also the best 3-year value, so it gets no separate line. .ai is never the default pick.
+  assert.match(display, /^Pick: lanternbay\.com\nCheapest now: lanternbay\.co$/m);
+  assert.doesNotMatch(display, /^Best value:|^Pick: lanternbay\.ai/m);
   // Each number appears in one place only.
   for (const amount of ['$31.05', '$10.68', '$9.48']) assert.equal(count(display, amount), 1, amount);
 
@@ -202,12 +205,13 @@ test('.no says plainly that the buyer is not eligible until they say they qualif
   const display = displayOf(base);
   assert.match(display, /^\.no not eligible: needs Norwegian org\/ID\.$/m);
   assert.match(display, /^- lanternbay\.no not eligible: needs Norwegian org\/ID$/m);
-  assert.match(display, /^Cheapest now: lanternbay\.com$/m);
-  assert.doesNotMatch(display, /\$7\.91/);
+  assert.match(display, /^Pick: lanternbay\.com$/m);
+  assert.doesNotMatch(display, /\$7\.91|^Cheapest now:|^Best value:/m);
   const eligible = displayOf({ ...base, eligible: ['no'] });
   assert.match(eligible, /^\.no: eligible, you said you qualify \(Norwegian org\/ID\)\.$/m);
   assert.match(eligible, /^- lanternbay\.no \$7\.91\/\$7\.91 list price$/m);
-  assert.match(eligible, /^Cheapest now: lanternbay\.no$/m);
+  // Eligible .no ranks right after .com: .com stays the pick, .no is the cheapest upfront.
+  assert.match(eligible, /^Pick: lanternbay\.com\nCheapest now: lanternbay\.no$/m);
 
   const exact = displayOf({ ...base, names: [{ name: 'lanternbay.no', free: [{ d: 'no', s: 'nc' }] }],
     buyUrlTemplate: { Dynadot: 'https://www.dynadot.com/domain/search?domain={domain}' } });
@@ -222,7 +226,7 @@ test('an exact .com adds one list-price line for the other endings and a benchma
   const result = await agentResult('lanternbay.com', options);
   assert.deepEqual(asked, ['lanternbay.com']);
   assert.deepEqual(result.names[0], { name: 'lanternbay.com', taken: ['com'] });
-  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'net', 'org', 'xyz', 'tech']);
+  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'xyz', 'tech']);
   assert.deepEqual(result.otherEndings.ai, { now: 159.96, renew: 159.96, y3: 319.92, term: 2, shop: 'Dynadot' });
   const display = displayOf(result);
   assert.match(display, /^\*\*lanternbay\.com is taken\. This check leaves checkout to you\.\*\*/);
@@ -521,7 +525,9 @@ test('the published smoke fails at once on any other npx error and stops retryin
   const stale = await publishedSmoke(t, ['etarget'], { PACKAGE_SMOKE_WINDOW_MS: '1500', PACKAGE_SMOKE_RETRY_DELAY_MS: '200' });
   assert.notEqual(stale.code, 0);
   assert.ok(stale.calls.length >= 2, 'retried within the window');
-  assert.match(stale.stderr, /npx still could not find domain-hound@[\d.]+ after \d+ attempts/);
+  assert.match(stale.stderr, /npm error code ETARGET/);
+  // The overall cap can expire while the last retry is in flight.
+  assert.match(stale.stderr, /npx still could not find domain-hound@[\d.]+ after \d+ attempts|npx smoke timed out after [12] s/);
   assert.ok(stale.ms < 8000, Math.round(stale.ms) + ' ms');
 
   // A hanging npx is cut off at the overall cap, not after the full per-attempt allowance.

@@ -46,14 +46,70 @@ export { requestEndings, supportedEndings };
 export const restrictedEndings = Object.keys(facts).filter(tld => facts[tld].eligibility);
 const firstCost = row => row.firstPayment ?? Infinity;
 
-// The broker dossier orders mainstream endings first, then .xyz and .tech, then other supported endings.
-export const mainstreamEndings = ['com', 'ai', 'si', 'io', 'app', 'dev', 'me', 'co', 'net', 'org'];
-export const fallbackEndings = ['xyz', 'tech'];
-// Requested endings, exact domains and eligibility opt-ins can compete with the mainstream tier.
-export function endingTier(domain, requested = [], eligible = []) {
+// One quality order for every recommender: the CLI and name rankings, the receipt, its share link and the broker
+// dossier. Domain Hound is for AI-native companies, so these endings lead in this order; .xyz and .tech come last.
+// Other supported endings (.net, .org, regional endings) rank after them in catalog order.
+export const qualityEndings = ['com', 'ai', 'io', 'dev', 'app', 'co', 'so', 'me', 'si', 'xyz', 'tech'];
+// The default pick stays within this many dollars of payments due in 3 years; a budget the person gave replaces it.
+export const pickCapUsd = 60;
+
+const asked = (domain, requested) => requested.findIndex(value => value === domain || value === domainEnding(domain));
+
+// Lower is better. Requested endings and exact domains the person typed come first, in the person's order. A restricted
+// ending the buyer said they qualify for (.no) comes right after .com. Then the quality order, then everything else.
+export function qualityRank(domain, requested = [], eligible = []) {
+  const position = asked(domain, requested);
+  if (position >= 0) return position - requested.length;
+  const order = ['com', ...eligible.filter(tld => restrictedEndings.includes(tld)), ...qualityEndings.slice(1)];
   const tld = domainEnding(domain);
-  if (mainstreamEndings.includes(tld) || requested.includes(tld) || requested.includes(domain) || eligible.includes(tld)) return 0;
-  return fallbackEndings.includes(tld) ? 1 : 2;
+  const index = order.indexOf(tld);
+  if (index >= 0) return index;
+  const other = supportedEndings.indexOf(tld);
+  return order.length + (other < 0 ? supportedEndings.length : other);
+}
+
+const cents = value => Math.round(value * 100);
+const known = value => typeof value === 'number' && Number.isFinite(value);
+
+function fitsCap(option, { budget } = {}) {
+  return known(option.total) && cents(option.total) <= cents(budget ?? pickCapUsd);
+}
+
+// The one pick rule. options are free, eligible, in-scope rows shaped { domain, now, total } (total = payments due in
+// 3 years). The pick is the highest-quality option within the cap; when none fits, the least paid over 3 years.
+// .ai is never the default: only when the person asked for it or its 3-year total fits the budget they gave.
+export function choosePick(options, { requested = [], eligible = [], budget } = {}) {
+  const allowed = options.filter(option => domainEnding(option.domain) !== 'ai' || asked(option.domain, requested) >= 0
+    || (budget != null && known(option.total) && cents(option.total) <= cents(budget)));
+  const rank = option => qualityRank(option.domain, requested, eligible);
+  // A name variation (getexample.com) ranks after every exact ending.
+  const byQuality = (a, b) => Number(a.exact === false) - Number(b.exact === false) || rank(a) - rank(b)
+    || (a.total ?? Infinity) - (b.total ?? Infinity)
+    || (a.now ?? Infinity) - (b.now ?? Infinity) || a.domain.localeCompare(b.domain);
+  return allowed.filter(option => fitsCap(option, { budget })).sort(byQuality)[0]
+    ?? lowestTotal(allowed, rank);
+}
+
+// The least paid over 3 years; the cheaper first payment, then quality, breaks a tie.
+export function lowestTotal(options, rank = option => qualityRank(option.domain)) {
+  return options.filter(option => known(option.total)).sort((a, b) => cents(a.total) - cents(b.total)
+    || (a.now ?? Infinity) - (b.now ?? Infinity) || rank(a) - rank(b) || a.domain.localeCompare(b.domain))[0];
+}
+
+// The cheapest upfront payment; quality breaks a tie.
+export function lowestUpfront(options, rank = option => qualityRank(option.domain)) {
+  return options.filter(option => known(option.now)).sort((a, b) => cents(a.now) - cents(b.now) || rank(a) - rank(b)
+    || a.domain.localeCompare(b.domain))[0];
+}
+
+// Across names, prefer quality inside the cap and the lowest three-year total above it.
+export function comparePicks(a, b, context = {}) {
+  const aFits = fitsCap(a, context);
+  const bFits = fitsCap(b, context);
+  const rank = qualityRank(a.domain, context.requested, context.eligible) - qualityRank(b.domain, context.requested, context.eligible);
+  const total = (a.total ?? Infinity) - (b.total ?? Infinity);
+  return Number(bFits) - Number(aFits) || (aFits ? rank || total : total || rank)
+    || (a.now ?? Infinity) - (b.now ?? Infinity);
 }
 
 export function validEligibility(eligible) {
@@ -159,7 +215,7 @@ export function termCosts(tld, price, renewal) {
   };
 }
 
-// Exact names first, then by attractiveness tier, then by upfront payment (including any minimum term).
+// Exact names first, then by the quality order, then by upfront payment (including any minimum term).
 export function rankName(rows, requested = [], eligible = []) {
   return rows.map(row => {
     const { tld, exact, status, price = null, renewal = null } = row;
@@ -170,19 +226,17 @@ export function rankName(rows, requested = [], eligible = []) {
     return { ...row, ...termCosts(tld, price, renewal), reason, terms: facts[tld] ?? null,
       renewalJump: price != null && renewal > 2 * price };
   }).sort((a, b) => Number(b.exact) - Number(a.exact)
-    || endingTier(a.domain, requested, eligible) - endingTier(b.domain, requested, eligible) || firstCost(a) - firstCost(b)
+    || qualityRank(a.domain, requested, eligible) - qualityRank(b.domain, requested, eligible) || firstCost(a) - firstCost(b)
     || supportedEndings.indexOf(a.tld) - supportedEndings.indexOf(b.tld) || a.domain.localeCompare(b.domain));
 }
 
-// The cheapest upfront payment within the most attractive tier that has a recommendable free row.
-export function pickName(rows, eligible, requested = []) {
-  const tier = row => endingTier(row.domain, requested, eligible);
-  return rows.reduce((best, row) => {
-    if (!canRecommend(row.tld, eligible) || premiumRisk(row.domain) || !['probably-free', 'confirmed'].includes(row.status)) return best;
-    if (best && tier(row) !== tier(best)) return tier(row) < tier(best) ? row : best;
-    return !best || firstCost(row) < firstCost(best) ||
-      (firstCost(row) === firstCost(best) && row.exact && !best.exact) ? row : best;
-  }, undefined);
+// The pick among recommendable free rows: the shared pick rule over upfront payment and payments due in 3 years.
+// budget is the person's explicit cap, when given.
+export function pickName(rows, eligible, requested = [], budget) {
+  const options = rows.filter(row => canRecommend(row.tld, eligible) && !premiumRisk(row.domain)
+    && ['probably-free', 'confirmed'].includes(row.status))
+    .map(row => ({ domain: row.domain, exact: row.exact !== false, now: row.firstPayment ?? null, total: row.threeYear ?? null, row }));
+  return choosePick(options, { requested, eligible, budget })?.row;
 }
 
 export function registrationStatus(registry) {

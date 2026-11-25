@@ -34,7 +34,7 @@ const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entr
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: supportedEndings.length, uniqueItems: true,
   items: { type: 'string', enum: supportedEndings },
-  description: 'Endings to consider for the recommendation, in preference order. For .com only use ["com"]. The page still shows all fourteen default endings for bare names. '
+  description: 'Endings to consider for the recommendation, in preference order; listed endings rank first. For .com only use ["com"]. The page still shows all twelve default endings for bare names. '
     + 'On request only (add them here when the person asks or names a country): ' + requestEndings.map(ending => '.' + ending).join(', ') + '.',
 };
 const countryEnding = {
@@ -51,7 +51,7 @@ const lookupProperties = {
   ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
   endings: endingsSchema,
   budget: { type: 'number', minimum: 0, maximum: 1000000,
-    description: 'Maximum upfront price in USD when the person gave a cap. Carry it from the registry screen into triage.' },
+    description: 'The person\'s budget in USD, only when they gave one. Endings that cost more upfront are left out, and it replaces the $60 three-year cap of the default pick (highest-quality ending within the cap, else the least paid over 3 years; .ai only when asked for or within this budget). Carry it from the registry screen into triage.' },
   eligible: { type: 'array', uniqueItems: true, items: { type: 'string', enum: restrictedEndings },
     description: 'Restricted endings the buyer qualifies to register. Pass no or eu only when the buyer qualifies for that ending.' },
 };
@@ -87,7 +87,7 @@ const triageTool = {
   name: 'triage_names',
   description: 'Use for “find a name and domain” or “can I use this name?”. For a new name, generate five distinct, easy-to-say candidates now. '
     + 'Call triage_names once with those names, an about description under 160 characters, and shortlist: true. No preliminary tool or web search is needed. '
-    + 'Put the person’s own name first if supplied. The tool checks fourteen endings, US marks, optional EU and Norway marks, apps, rivals and meanings in 14 languages. The receipt fills in slow checks and top-three handles. '
+    + 'Put the person’s own name first if supplied. The tool checks twelve endings, US marks, optional EU and Norway marks, apps, rivals and meanings in 14 languages. The receipt fills in slow checks and top-three handles. '
     + 'Use the returned verdicts. Report checks in progress as pending and give the page link. ' + relay,
   inputSchema: {
     type: 'object',
@@ -257,8 +257,9 @@ function triageArguments(args) {
     throw new Error('names[' + bad + '] is not valid. Supply 1 to 20 bare names of up to 100 characters, without commas or domain endings.');
   }
   const flags = lookupFlags(args);
-  // Requested endings are never demoted to the fallback tier in the screen's own picks.
+  // Requested endings rank first in the screen's own picks, and a budget applies there as on the receipt.
   if (args.endings) flags.push('--prefer-endings', args.endings.join(','));
+  if (args.budget !== undefined) flags.push('--upfront-cap', String(args.budget));
   if (Object.hasOwn(args, 'shortlist') && typeof args.shortlist !== 'boolean') throw new Error('shortlist must be a boolean.');
   const { companyType, additionalHandles } = args;
   if (companyType !== undefined && !Object.hasOwn(handlePriorities, companyType)) throw new Error('Choose a supported company type.');

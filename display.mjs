@@ -1,6 +1,7 @@
-import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
+import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { isSearchLink, nameCheckLines } from './clis/domain-check/google-search.mjs';
-import { canRecommend, eligibilityNeed, endingTier, normalizeName, premiumRisk, unicodeName } from './clis/domain-check/name-search.mjs';
+import { canRecommend, choosePick, comparePicks, eligibilityNeed, lowestTotal, lowestUpfront, normalizeName, premiumRisk, qualityRank,
+  unicodeName } from './clis/domain-check/name-search.mjs';
 import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
 export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
@@ -260,7 +261,8 @@ function freeLines(row, listPrices, level, eligible) {
     const quote = own ? option : listPrices[option.d];
     const listed = jumpRatio(quote) ? ' (list price)' : ' list price';
     const tag = option.s === 'ok' ? ' ✓ ' + priceLabel(option, option.shop) : level >= 1 || quote?.now == null ? '' : listed;
-    return '- ' + domain + ' ' + (quote?.now == null ? 'price at shop' : priceText(quote)) + tag;
+    const dns = quote?.now != null && dnsNeed(quote.shop) ? ' (' + dnsNeed(quote.shop).toLowerCase() + ')' : '';
+    return '- ' + domain + ' ' + (quote?.now == null ? 'price at shop' : priceText(quote)) + tag + dns;
   });
 }
 
@@ -276,8 +278,8 @@ function groupRows(rows, linesFor) {
   return [...groups.values()];
 }
 
-// For one bare name: the cheapest first payment and the best three-year value among the endings this buyer can register,
-// both within the most attractive tier that has a free ending (fallback endings only when nothing else is free).
+// For one bare name, the shared pick rule: the pick, then the cheapest first payment and the best three-year value
+// among the endings this buyer can register, each only when it is not the pick.
 function choiceLines(row, listPrices, eligible, preferred = []) {
   const free = (row.free ?? []).flatMap(option => {
     const domain = option.d.includes('.') ? option.d : row.name + '.' + option.d;
@@ -285,15 +287,18 @@ function choiceLines(row, listPrices, eligible, preferred = []) {
     if (option.s === 'prem' || option.prem || premiumRisk(domain) || ineligible(ending, eligible)
       || (preferred.length && !preferred.includes(ending))) return [];
     const price = option.now != null ? option : listPrices[option.d];
-    return [{ domain, price, value: threeYears(price)?.total ?? Infinity, tier: endingTier(domain, preferred, eligible) }];
+    return [{ domain, price, now: price?.now ?? null, total: threeYears(price)?.total ?? null }];
   });
-  const tier = Math.min(...free.map(option => option.tier));
-  const options = free.filter(option => option.tier === tier && option.price?.now != null);
-  if (!options.length) return [];
-  const cheapest = options.reduce((best, row) => row.price.now < best.price.now ? row : best);
-  const value = options.reduce((best, row) => row.value < best.value
-    || (row.value === best.value && row.price.now < best.price.now) ? row : best);
-  return ['Cheapest now: ' + shown(cheapest.domain), ...(value.value < Infinity ? [bestValueLine(value.domain, value.price)] : [])];
+  const rank = option => qualityRank(option.domain, preferred, eligible);
+  const pick = choosePick(free, { requested: preferred, eligible });
+  const cheapest = lowestUpfront(free, rank);
+  const value = lowestTotal(free, rank);
+  // Each price and renewal jump appears once, on its free line; these lines only name the domains and the 3-year total.
+  return [
+    ...(pick ? ['Pick: ' + shown(pick.domain)] : []),
+    ...(cheapest && cheapest !== pick ? ['Cheapest now: ' + shown(cheapest.domain)] : []),
+    ...(value && value !== pick ? [bestValueLine(value.domain, value.price)] : []),
+  ];
 }
 
 export function checkDisplay(result, level = 0, purchase = false, preferred = []) {
@@ -364,12 +369,12 @@ export function checkDisplay(result, level = 0, purchase = false, preferred = []
       if (!canRecommend(ending, eligible) || (preferred.length && !preferred.includes(ending))) return [];
       const price = option.prem || option.s === 'prem' ? option : { ...listPrices[option.d], ...option };
       const link = templateLink(result.buyUrlTemplate, price.shop, domain);
-      // An exact domain the person typed is requested, so it is never demoted to the fallback tier.
-      const tier = endingTier(domain, row.name.includes('.') ? [...preferred, domain] : preferred, eligible);
-      return link ? [{ link, price: price.now ?? Infinity, tier }] : [];
+      // An exact domain the person typed is requested, so it ranks first.
+      const requested = row.name.includes('.') ? [...preferred, domain] : preferred;
+      return link ? [{ link, domain, now: price.now ?? null, total: threeYears(price)?.total ?? null, requested }] : [];
     }));
-    const cheapest = available.sort((a, b) => a.tier - b.tier || a.price - b.price)[0];
-    if (cheapest) lines.push('Check at shop: ' + cheapest.link);
+    const pick = choosePick(available, { requested: [...new Set(available.flatMap(option => option.requested))], eligible });
+    if (pick) lines.push('Check at shop: ' + pick.link);
   }
   return lines.join('\n').trim();
 }
@@ -393,48 +398,40 @@ export function checkLines(row, short = false) {
 
 const verdictRank = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
 
-// The cheapest free ending this buyer can register, at the name's own price or the standard list price, within the
-// most attractive tier that has a free eligible ending. tier is not part of the pick it returns.
-function cheapestEligible(row, prices, eligible, preferred = []) {
+// A name's pick under the shared pick rule, among the free endings this buyer can register, at the name's own price or
+// the standard list price. fit, rank and total are for ranking names and are not part of the pick it returns.
+function eligiblePick(row, prices, eligible, preferred = []) {
   const free = (Array.isArray(row?.free) ? row.free : []).filter(ending => canRecommend(ending, eligible)
     && (!preferred.length || preferred.includes(ending)));
-  const tier = ending => endingTier('.' + ending, preferred, eligible);
-  const top = Math.min(...free.map(tier));
-  let best = null;
-  for (const ending of free) {
+  const options = free.flatMap(ending => {
     const quote = row.own?.[ending] ?? prices?.[ending];
-    if (tier(ending) !== top || quote?.now == null) continue;
-    if (!best || quote.now < best.now) best = { ending, now: quote.now, renew: quote.renew ?? null, term: quote.term ?? null };
-  }
-  return best && { ...best, tier: top };
+    if (quote?.now == null) return [];
+    return [{ ending, domain: 'x.' + ending, now: quote.now, renew: quote.renew ?? null, term: quote.term ?? null,
+      total: threeYears(quote)?.total ?? null }];
+  });
+  return choosePick(options, { requested: preferred, eligible });
 }
 
 // Three ranked picks once three or more names are screened: the screen's own ranking first, then the other
-// names by verdict and cheapest eligible price. Each pick carries its cheapest eligible domain and price.
+// names by verdict and their pick (within the cap first, then the quality order). Each pick carries its domain and price.
 export function topPicks(result, preferred = []) {
   const rows = (result.names ?? []).filter(Boolean);
   const prices = result.prices ?? {};
-  const eligibleCheapest = row => {
-    const found = cheapestEligible(row, prices, result.eligible, preferred);
-    if (!found) return null;
-    const { tier, ...pick } = found;
-    return pick;
-  };
+  const pickFields = found => found && { ending: found.ending, now: found.now, renew: found.renew, term: found.term };
   const picks = (Array.isArray(result.top) ? result.top : []).filter(Boolean).slice(0, 3).map(pick => {
     if (pick.ending || pick.domain) return pick;
-    const cheapest = eligibleCheapest(rows.find(row => row.name === pick.name));
-    return cheapest ? { ...pick, ...cheapest } : pick;
+    const found = pickFields(eligiblePick(rows.find(row => row.name === pick.name), prices, result.eligible, preferred));
+    return found ? { ...pick, ...found } : pick;
   });
   if (rows.length < 3) return picks;
-  const rest = rows.map((row, index) => ({ row, index, cheapest: cheapestEligible(row, prices, result.eligible, preferred) }))
+  const context = { requested: preferred, eligible: result.eligible ?? [] };
+  const rest = rows.map((row, index) => ({ row, index, pick: eligiblePick(row, prices, result.eligible, preferred) }))
     .filter(({ row }) => !picks.some(pick => pick.name === row.name))
     .sort((a, b) => (verdictRank[a.row.verdict] ?? 3) - (verdictRank[b.row.verdict] ?? 3)
-      || (a.cheapest?.tier ?? Infinity) - (b.cheapest?.tier ?? Infinity)
-      || (a.cheapest?.now ?? Infinity) - (b.cheapest?.now ?? Infinity) || a.index - b.index);
-  for (const { row, cheapest } of rest.slice(0, 3 - picks.length)) {
-    const { tier, ...pick } = cheapest ?? {};
+      || Number(!a.pick) - Number(!b.pick) || (a.pick && b.pick ? comparePicks(a.pick, b.pick, context) : 0) || a.index - b.index);
+  for (const { row, pick } of rest.slice(0, 3 - picks.length)) {
     picks.push({ name: row.name, verdict: row.verdict, reason: row.reason,
-      ...(cheapest && { ...pick, domain: fullDomain(label(row.name), cheapest.ending) }) });
+      ...(pick && { ...pickFields(pick), domain: fullDomain(label(row.name), pick.ending) }) });
   }
   return picks;
 }
@@ -448,7 +445,7 @@ function nameLabel(name) {
 function topLines(result, showReason, showValue = true, preferred = []) {
   return ['**Top picks**', ...topPicks(result, preferred).map(row => {
     const ending = row.domain ? shown(row.domain) : row.ending && '.' + row.ending;
-    const domain = ending ? ', cheapest now ' + priced(ending, row) : ', no eligible free ending';
+    const domain = ending ? ', pick ' + priced(ending, row) : ', no eligible free ending';
     const value = !showValue ? '' : typeof row.bestValue === 'string'
       ? rowBestValue(result.names.find(candidate => candidate.name === row.name), result.prices)
       : row.bestValue && bestValueLine(row.bestValue.domain, row.bestValue);

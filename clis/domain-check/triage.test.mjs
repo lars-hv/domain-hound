@@ -14,6 +14,7 @@ import { loadEdgarCompanies, matchEdgarCompanies, searchNorwegianCompanies } fro
 import { readPlayCards, readPlayDetails, searchAndroidApps } from './google-play.mjs';
 import { checkHandles, matchTier, searchApps, searchEntities, searchMarks } from './triage-sources.mjs';
 import { memorability, namePresence, triageNames } from './triage.mjs';
+import { qualityRank } from './name-search.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/triage.json', import.meta.url), 'utf8'));
 const companies = JSON.parse(readFileSync(new URL('./fixtures/company-names.json', import.meta.url), 'utf8'));
@@ -246,13 +247,15 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.match(brand.competition.sameName.summary, /2 EDGAR-listed companies/);
   assert.equal(clear.verdict, 'No conflict found');
   assert.equal(clear.details.appName, 'App name: free on iOS, free on Android');
-  assert.equal(clear.free[0], 'co');
+  // Free endings follow the quality order (0.1.8): .ai first, but never the default pick.
+  assert.equal(clear.free[0], 'ai');
   assert.match(report.eligibility.no, /Norwegian/);
   // Best value is the lowest three-year total: .me $9 + 2 × $15 = $39 beats .dev $8 + 2 × $16 = $40 and .co $64.
   assert.equal(clear.bestValue, 'me');
   assert.equal(rival.bestValue, 'me');
+  // The pick is the best quality within $60 over 3 years: .dev ($40). .co renews at $30 ($64) and .ai is never the default.
   assert.deepEqual(report.top[0], { name: 'DappleBear', verdict: 'No conflict found', reason: clear.reason,
-    domain: 'dapplebear.co', ending: 'co', now: 4, renew: 30, term: 1,
+    domain: 'dapplebear.dev', ending: 'dev', now: 8, renew: 16, term: 1,
     bestValue: { domain: 'dapplebear.me', now: 9, renew: 15, term: 1, y3: 39 } });
   // Best value is always named, also when it is the cheapest ending itself.
   for (const [endings, value] of [[['co', 'si'], 'co'], [['dev', 'me'], 'me']]) {
@@ -265,10 +268,16 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   withNorway.catalogs.dynadot.prices.no = { shop: 'Dynadot', firstYear: 2, renewal: 2 };
   await writeCache(directory, 'prices.json', withNorway);
   const defaultBuyer = await triageNames(['DappleBear'], options);
-  assert.equal(defaultBuyer.names[0].free[0], 'co');
+  assert.equal(defaultBuyer.names[0].free[0], 'ai');
   assert.ok(defaultBuyer.names[0].free.includes('no'));
-  assert.equal(defaultBuyer.top[0].domain, 'dapplebear.co');
+  assert.equal(defaultBuyer.top[0].domain, 'dapplebear.dev');
   assert.equal(defaultBuyer.names[0].bestValue, 'me');
+  const onlyAi = await triageNames(['DappleBear'], { ...options, endings: ['ai'] });
+  assert.deepEqual(onlyAi.names[0].free, ['ai']);
+  assert.equal(onlyAi.top[0].domain, null);
+  const budgetedAi = await triageNames(['DappleBear'], { ...options, endings: ['ai'], upfrontCap: 500 });
+  assert.equal(budgetedAi.top[0].domain, 'dapplebear.ai');
+  // An eligibility opt-in puts .no right after .com, so it becomes the pick within $60.
   const eligible = await triageNames(['DappleBear'], { ...options, eligible: ['no'] });
   assert.equal(eligible.top[0].domain, 'dapplebear.no');
   assert.equal(eligible.names[0].bestValue, 'no');
@@ -402,11 +411,11 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.equal(compactClear.name, 'DappleBear');
   assert.equal(compactClear.verdict, clear.verdict);
   assert.equal(compactClear.reason, clear.reason);
-  assert.equal(compactClear.free[0], 'co');
-  assert.ok(compactClear.free.includes('ai'));
-  const todays = compactClear.free.map(ending => (compactClear.own?.[ending] ?? compact.prices[ending])?.now ?? Infinity);
-  assert.deepEqual(todays, [...todays].sort((a, b) => a - b));
-  assert.equal(compactClear.buy, 'https://www.dynadot.com/domain/search?domain=dapplebear.co');
+  // Free endings follow the quality order; the checkout link goes to the pick (.dev), not the cheapest first year (.co).
+  assert.equal(compactClear.free[0], 'ai');
+  const ranks = compactClear.free.map(ending => qualityRank('x.' + ending));
+  assert.deepEqual(ranks, [...ranks].sort((a, b) => a - b));
+  assert.equal(compactClear.buy, 'https://www.dynadot.com/domain/search?domain=dapplebear.dev');
   assert.ok(compactClear.taken.includes('com'));
   assert.equal(compact.prices.si, undefined);
   assert.equal(compactBrand.verdict, 'Avoid');

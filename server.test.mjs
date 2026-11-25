@@ -150,7 +150,7 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   assert.equal(triage.inputSchema.properties.names.maxItems, 20);
   assert.deepEqual(triage.inputSchema.required, ['names']);
   assert.deepEqual(alias.inputSchema, inputSchema);
-  assert.match(inputSchema.properties.endings.description, /preference order.*all fourteen default endings/);
+  assert.match(inputSchema.properties.endings.description, /preference order.*all twelve default endings/);
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   const { query, names } = inputSchema.properties;
   assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
@@ -296,7 +296,8 @@ test('an ending on request joins the default endings at the wire and on the page
   const checked = callData(responses, 2);
   assert.deepEqual(checked.names[0].free.map(option => option.d), [...defaultEndings, 'de']);
   assert.deepEqual(callData(responses, 3).names[0].free, [...defaultEndings, 'uk']);
-  assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), defaultEndings);
+  // .net left the defaults in 0.1.8, so asking for it adds it like any ending on request.
+  assert.deepEqual(callData(responses, 4).names[0].free.map(option => option.d), [...defaultEndings, 'net']);
   assert.match(errorText(responses, 5), /supported domain endings/);
   const receipt = await readFile(new URL(checked.resultPage), 'utf8');
   assert.ok(receipt.includes('endingsample.de'));
@@ -431,7 +432,7 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
       checking: unanswered }]);
     const lines = progress.display.split('\n');
     assert.match(lines[0], /^\*\*Still checking\*\* after 1\.\d s \(answer budget 1\.0 s\)\. The lookup keeps running\.$/);
-    assert.equal(lines[1], 'Registry answers so far: 3 of 14 domains.');
+    assert.equal(lines[1], 'Registry answers so far: 3 of 12 domains.');
     assert.equal(lines[2], '- slowroom: free .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
     assert.match(progress.display, /Call the same tool again with the same input/);
 
@@ -466,7 +467,7 @@ test('lists all seven requested names in order on a timeout and collects the cac
       assert.equal(progress.complete, false);
       assert.deepEqual(progress.names.map(row => row.name), names);
       const lines = progress.display.split('\n');
-      assert.equal(lines[1], 'Registry answers so far: 3 of 85 domains.');
+      assert.equal(lines[1], 'Registry answers so far: 3 of 73 domains.');
       // A row without any answer yet shows every default ending; the exact domain stays exact.
       assert.deepEqual(progress.names[0], { name: 'quietbook', checking: defaultEndings });
       assert.deepEqual(progress.names[2], { name: 'oakenroom.me', checking: ['oakenroom.me'] });
@@ -593,7 +594,9 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
   assert.deepEqual(one.names[0].notes, ['iOS app: Example One (Example Inc., 12 ratings)']);
   assert.ok(one.names[0].memorable);
   assert.match(one.say, /Keep Example One\? Check first/);
-  assert.match(one.say, /exampleone\.co \$3\.11, then \$31\.05/);
+  // .co renews at $31.05 ($65.21 over 3 years), so the pick is .app within $60; .co is the cheapest upfront line.
+  assert.match(one.say, /^1\. exampleone\.app \$8\.28, then \$14\.49/m);
+  assert.match(one.say, /^Cheapest: \[exampleone\.co\]\([^)]+\) \$3\.11, then \$31\.05 \(renewal jumps\)/m);
   assert.doesNotMatch(one.say, /\[x\]\(/);
   assert.match(await readFile(new URL(one.resultPage), 'utf8'), /exampleone\.ai[\s\S]*?\$160\.02/);
   assert.match(errorText(responses, 6), /product description/);
@@ -718,7 +721,7 @@ test('renders the triage shortlist as one priced, linked row per candidate', () 
   const lines = display.split('\n');
   assert.equal(lines[0], '**Top picks**');
   assert.equal(lines[4], '');
-  for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, cheapest now [a-z]+\.[a-z]+ \$[\d.]+(?:\/\$[\d.]+|, then \$[\d.]+\/yr, \d+x jump)/);
+  for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, pick [a-z]+\.[a-z]+ \$[\d.]+(?:\/\$[\d.]+|, then \$[\d.]+\/yr, \d+x jump)/);
   assert.ok(lines.includes('| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |'));
   const rows = lines.filter(line => /^\| (?!Name|---)/.test(line));
   assert.deepEqual(rows.map(line => line.split(' | ')[0].slice(2)), five);
@@ -778,7 +781,7 @@ test('shows best value beside the cheapest offer in the top picks and name row',
     renew: 31.05, bestValue: { domain: 'quietotter.dev', now: 7.24, renew: 13.45, term: 1 } }];
   const { display } = JSON.parse(triageText(sample));
   // Cheapest now carries the jump in plain words; best value is the lowest three-year total.
-  assert.match(display, /cheapest now quietotter\.co \$3\.11, then \$31\.05\/yr, 10x jump.*\n  Best value: quietotter\.dev, \$34\.14 over 3 years/);
+  assert.match(display, /pick quietotter\.co \$3\.11, then \$31\.05\/yr, 10x jump.*\n  Best value: quietotter\.dev, \$34\.14 over 3 years/);
   assert.match(display, /^\| Quiet Otter .*<br>Best value: quietotter\.dev, \$34\.14 over 3 years \|/m);
 });
 
@@ -823,21 +826,22 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
     if (index < 5) assert.match(row.reason, /^Near-identical: ex.*010\/011/);
     else assert.match(row.reason, /^Not screened/);
     assert.notEqual(row.verdict, 'No conflict found');
-    assert.equal(row.free.length, 14);
-    assert.equal(row.free[0], 'co');
+    assert.equal(row.free.length, 12);
+    // Free endings follow the quality order (0.1.8), not the cheapest first payment.
+    assert.equal(row.free[0], 'com');
     assert.equal(row.bestValue, 'com');
   }
   // Fourteen endings (0.1.5): four more ending codes per name than the 13 000-byte bound of 0.1.4 allowed for.
   assert.ok(size(JSON.stringify(report)) < 14_000, String(size(JSON.stringify(report))));
   const text = triageText(report);
-  // display.mjs triageText is not on the MCP path (the server answers with the results-page say). With fourteen
+  // display.mjs triageText is not on the MCP path (the server answers with the results-page say). With twelve
   // priced endings for twenty 63-character labels it needs a little more than the 8 KB it had for ten.
   assert.ok(size(text) < 9500, String(size(text)));
   const parsed = JSON.parse(text);
   assert.deepEqual(Object.keys(parsed)[0], 'display');
   assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
-  assert.ok(parsed.names.every(row => row.free.length === 14));
+  assert.ok(parsed.names.every(row => row.free.length === 12));
   for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
     assert.ok(parsed.display.includes(source), source);
   }

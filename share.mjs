@@ -19,19 +19,21 @@ export function shareUrl(groups, checkedAt, facts = []) {
     const base = records.length > 1 ? records[0].domain.split('.')[0] : '';
     const endings = [];
     let jumps = 0;
-    for (const [position, { domain, status, now, renew, term, jump }] of records.entries()) {
+    let cloudflare = 0;
+    for (const [position, { domain, status, now, renew, term, jump, dns }] of records.entries()) {
       const state = shareStatuses.indexOf(status);
       if (typeof domain !== 'string' || domain.length > 253 || !shareDomain.test(domain) || state < 0) return null;
       const part = domain.startsWith(base + '.') ? domain.slice(base.length) : domain;
       endings.push([part, state, cents(now), cents(renew), term ?? 1]);
       if (jump) jumps += 2 ** position;
+      if (dns) cloudflare += 2 ** position;
     }
     const { pick, value, taken = records.filter(record => /^Taken\b/.test(record.status)) } = facts[index] ?? {};
     const rowOf = record => records.indexOf(record);
     const total = value && cents(value.total);
     if ([pick, value, ...taken].some(record => record && rowOf(record) < 0) || (value && total === null)) return null;
     const meta = { ...(pick && { p: rowOf(pick) }), ...(value && { b: [rowOf(value), total] }),
-      ...(jumps && { j: jumps }), ...(taken.length && { t: taken.map(rowOf) }) };
+      ...(jumps && { j: jumps }), ...(taken.length && { t: taken.map(rowOf) }), ...(cloudflare && { c: cloudflare }) };
     const display = row.name.trim().normalize('NFC');
     const name = shareName.test(display) ? display : records[0].domain;
     shortlist.push([name, Math.max(0, shareVerdicts.indexOf(row.verdict)), base, endings,

@@ -1,7 +1,8 @@
 // Version 2 stores a timestamp and up to five groups of [name, verdict, domain label, endings, facts?].
 // A domain starts with a dot when it reuses the group's label. Prices are in integer cents.
 // facts is optional and only holds what the local receipt worked out for that name:
-// { p: pick row, b: [best value row, three-year payments in cents], j: renewal-jump bit mask by row, t: taken rows, preferred first }.
+// { p: pick row, b: [best value row, three-year payments in cents], j: renewal-jump bit mask by row, t: taken rows, preferred first,
+//   c: bit mask of rows whose price needs Cloudflare DNS }. A link carries c only when such a row is shown.
 // Version 1 links have no facts: they decode with no pick or best value and with jumps worked out from their prices.
 export const sharePage = 'https://domainhound.dev/r/';
 export const shareUrlLimit = 2000;
@@ -32,21 +33,24 @@ const maximumInflatedBytes = 24 * 1024;
 const isCents = value => value === null || (Number.isSafeInteger(value) && value >= 0);
 const dollars = value => value === null ? null : value / 100;
 const isTaken = row => /^Taken\b/.test(row.status);
-const factKeys = ['p', 'b', 'j', 't'];
+const factKeys = ['p', 'b', 'j', 't', 'c'];
+export const cloudflareDns = 'Needs Cloudflare DNS';
 
 function parseFacts(facts, rows) {
   if (!facts || typeof facts !== 'object' || Array.isArray(facts) || Object.keys(facts).some(key => !factKeys.includes(key))) return null;
-  const { p: pick = null, b: best = null, j: jumps = 0, t: taken = [] } = facts;
+  const { p: pick = null, b: best = null, j: jumps = 0, t: taken = [], c: cloudflare = 0 } = facts;
   const validIndex = index => Number.isInteger(index) && index >= 0 && index < rows.length;
   const available = index => validIndex(index) && ['Free at the registry', 'Confirmed at shop'].includes(rows[index].status);
   if ((pick !== null && !available(pick))
       || (best !== null && !(Array.isArray(best) && best.length === 2 && available(best[0]) && best[1] !== null && isCents(best[1])))
       || !Number.isSafeInteger(jumps) || jumps < 0 || jumps >= 2 ** rows.length
+      || !Number.isSafeInteger(cloudflare) || cloudflare < 0 || cloudflare >= 2 ** rows.length
       || !Array.isArray(taken) || new Set(taken).size !== taken.length
       || !taken.every(index => validIndex(index) && isTaken(rows[index]))) return null;
   return {
     records: rows.map((record, index) => ({ ...record, jump: Boolean(jumps & (1 << index)), pick: index === pick,
-      ...(best?.[0] === index && { bestValue: dollars(best[1]) }) })),
+      ...(best?.[0] === index && { bestValue: dollars(best[1]) }),
+      ...(Math.floor(cloudflare / 2 ** index) % 2 === 1 && { dns: cloudflareDns }) })),
     takenDomains: taken.map(index => rows[index].domain),
   };
 }

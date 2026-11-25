@@ -84,13 +84,16 @@ test('the viewer rejects corrupt, oversized and invalid share fragments', async 
   const rows = [['.com', 2, null, 1452, 1], ['.net', 0, 749, 1252, 1]];
   const v2 = facts => fragment(2, [checkedAt, [['Quiet Otter', 2, 'quietotter', rows, facts]]]);
   assert.ok(await readShareFragment(v2({ p: 1, b: [1, 2247], j: 2, t: [0] })));
+  // c marks the rows that need Cloudflare DNS.
+  const cloudflare = await readShareFragment(v2({ p: 1, c: 2 }));
+  assert.deepEqual(cloudflare.groups[0].records.map(row => row.dns ?? null), [null, 'Needs Cloudflare DNS']);
   for (const hash of ['', '#3.ABC', '#1.AB_0', '#1.' + 'a'.repeat(2000),
     fragment(1, 'a'.repeat(50_000)), fragment(1, [checkedAt, [['<img>', 0, '', []]]]),
     fragment(1, [checkedAt, [['Fjæra', 0, '', [['javascript:alert(1)', 0, null, null, 1]]]]]),
     fragment(1, [checkedAt, [['Fjæra', 0, '', [['example.com', 0, -1, null, 1]]]]]),
     fragment(1, [checkedAt, [['Quiet Otter', 2, 'quietotter', rows, { p: 1 }]]]),
     v2({ p: 0 }), v2({ p: 2 }), v2({ b: [1, null] }), v2({ b: [0, 100] }), v2({ j: 4 }), v2({ t: [1] }), v2({ t: [0, 0] }),
-    v2({ rank: 1 }), v2([1])]) {
+    v2({ rank: 1 }), v2([1]), v2({ c: 4 }), v2({ c: -1 }), v2({ c: 0.5 })]) {
     assert.equal(await readShareFragment(hash), null, hash);
   }
 });
@@ -114,15 +117,20 @@ const cards = shared => shared.groups.map(({ records, takenDomains }) => [record
 
 test('every name gets its own pick and best value under the receipt\'s scope, with all rows in receipt order', async t => {
   const { say, html, link, shared } = await receipt(t, lookup(25), scope);
-  // Same selection as the receipt: Avoid gets nothing, .no needs eligibility, $60 .com is over budget, y3 and terms count.
+  // Same selection as the receipt: Avoid gets nothing, .no needs eligibility, $60 .com is over budget upfront, y3 and
+  // terms count. The $35 budget replaces the $60 cap: the pick is the first asked-for ending within $35 over 3 years,
+  // else the least paid over 3 years (Reed Heron: .com at $40 beats .io at $102).
   assert.match(say, /Pick: mossheron\.io \$30\.00, then \$31\.00/);
-  assert.match(say, /Best value: mossheron\.io, \$25\.00 in payments due in 3 years/);
+  assert.match(say, /^2\. fernheron\.ai \$15\.00/m);
+  assert.match(say, /^Cheapest: \[cedarheron\.com\]/m);
+  // The best 3-year value is the pick, so it gets no line of its own.
+  assert.doesNotMatch(say, /^Best value:/m);
   assert.deepEqual(cards(shared), [
     [null, ['paperheron.io', 'paperheron.com']],
-    ['cedarheron.io', 'cedarheron.ai 31', []],
+    ['cedarheron.ai', 'cedarheron.ai 31', []],
     ['mossheron.io', 'mossheron.io 25', ['mossheron.com']],
     ['fernheron.ai', 'fernheron.ai 31', []],
-    ['reedheron.io', 'reedheron.com 40', []],
+    ['reedheron.com', 'reedheron.com 40', []],
   ]);
   const rows = shared.groups.flatMap(group => group.records);
   assert.deepEqual(rows.map(row => row.domain), [...html.matchAll(/<code>([^<]+)<\/code>/g)].map(match => match[1]));
@@ -132,7 +140,10 @@ test('every name gets its own pick and best value under the receipt\'s scope, wi
 
   const { say: termSay, shared: termShared } = await receipt(t, lookup(), scope);
   // Without the y3 quote, two-year .ai terms ($31) beat yearly .com ($40); a plain yearly sum would make .ai $47.
-  assert.match(termSay, /Best value: fernheron\.ai, \$31\.00/);
+  // Fern Heron's .ai is now both the pick and the best value; a tie on price goes to the better verdict.
+  assert.match(termSay, /Pick: fernheron\.ai \$15\.00/);
+  assert.doesNotMatch(termSay, /^Best value:/m);
+  assert.equal(cards(termShared)[3][1], 'fernheron.ai 31');
   assert.equal(cards(termShared)[2][1], 'mossheron.io 92');
 
   const { shared: early } = await receipt(t, { ...lookup(25), pending: true }, scope);

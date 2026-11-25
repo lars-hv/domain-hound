@@ -1,7 +1,7 @@
 {
   "name": "domain-hound",
   "displayName": "Domain Hound",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
   "author": {
     "name": "Lars Hvinden"
