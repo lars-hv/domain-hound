@@ -6,3 +6,4 @@ dist/
 *.log
 *.tgz
 .DS_Store
+/REPORT*.md

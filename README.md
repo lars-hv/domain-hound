@@ -6,18 +6,18 @@ Check whether domains are available, compare the first payment and renewal acros
 
 Requires Node.js 20 or later.
 
-### Works now (from GitHub)
+### Install
 
 **Claude Code**
 
 ```sh
-claude mcp add domain-hound -- npx -y github:lars-hv/domain-hound
+claude mcp add domain-hound -- npx -y domain-hound
 ```
 
 **Codex**
 
 ```sh
-codex mcp add domain-hound -- npx -y github:lars-hv/domain-hound
+codex mcp add domain-hound -- npx -y domain-hound
 ```
 
 **Other MCP clients**
@@ -29,20 +29,11 @@ Add this to the client’s MCP configuration for a local stdio server.
   "mcpServers": {
     "domain-hound": {
       "command": "npx",
-      "args": ["-y", "github:lars-hv/domain-hound"]
+      "args": ["-y", "domain-hound"]
     }
   }
 }
 ```
-
-### From npm (the default once published)
-
-```sh
-claude mcp add domain-hound -- npx -y domain-hound
-codex mcp add domain-hound -- npx -y domain-hound
-```
-
-For other MCP clients, use `"args": ["-y", "domain-hound"]` in the configuration above.
 
 The default install checks the registry and shows dated list prices. For a confirmed price, set `DOMAIN_HOUND_SPACESHIP_KEY` and `DOMAIN_HOUND_SPACESHIP_SECRET` (Spaceship permission `domains:read`), or `DOMAIN_HOUND_DYNADOT_KEY` (a production API key). Dynadot gives its production key account-wide access. Domain Hound only uses it to search. It shows premium pricing when it has a quote and points you to the shop when it has a premium signal without a price.
 
