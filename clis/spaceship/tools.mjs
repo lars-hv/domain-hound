@@ -23,17 +23,11 @@ export const quoteTool = {
 
 export const buyTool = {
   name: 'buy_domain',
-  description: 'COSTS MONEY: buys a domain in the person’s own Spaceship account. Needs an unexpired quote_id from quote_domain and '
-    + 'max_usd, the most the person agreed to pay. It refuses a quote above the max or server cap (DOMAIN_HOUND_MAX_USD, default $30), '
-    + 'or any change on a fresh price check. In direct mode Spaceship sets the actual charge. By default it orders nothing and returns '
-    + 'a handoff: preview with Spaceship’s own MCP tool ' + spaceshipMcp.tool + ', check '
-    + 'the preview against the listed price ceilings, and accept only after the person approves that exact confirmation; follow it step '
-    + 'by step, and stop if the price or payment method cannot be seen or the result is unclear. It also gives the command to connect '
-    + 'Spaceship’s MCP. Only when the person set DOMAIN_HOUND_DIRECT_PURCHASE=1 in the server settings does it order directly: a '
-    + 'standard-price domain for the registry minimum term (one year; two for .ai), with confirm: true after the person saw the exact '
-    + 'quote and said yes; without confirm it is a dry run. Never retry an unclear order by any path. Spaceship checkout is the last '
-    + 'resort, only after a valid quote when nothing was submitted. After a purchase, call setup_domain with verify: true, and offer '
-    + 'DNS setup only after it verifies. Relay the display as written.',
+  description: 'COSTS MONEY: requires an unexpired quote_id and the agreed max_usd. Stops on a changed price or above the max or server cap. '
+    + 'Preview with Spaceship’s ' + spaceshipMcp.tool + ' by default. Check the total against the quote and both limits. Stop if the price or payment method '
+    + 'is missing. Show the full confirmation and accept it only after approval. Direct orders require server opt-in, a standard-price minimum term, '
+    + 'and confirm: true after approval. Spaceship sets the charge. Use checkout only with a valid quote and no submitted order. '
+    + 'Never retry an unclear order. Verify with setup_domain (verify: true) before offering DNS setup. Relay the display as written.',
   annotations: { title: 'Buy a domain (costs money)', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,

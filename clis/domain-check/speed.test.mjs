@@ -138,13 +138,14 @@ test('Wikidata entity details get more than 1.2 seconds', async () => {
   assert.equal(rows?.[0]?.brand, true);
 });
 
-test('a name screen answers first with slow sources waiting, then re-assesses them without repeating any lookup', async t => {
+test('a name screen reports slow app and EUIPO checks as pending, then reuses their answers', async t => {
   const directory = await directoryFor(t);
   await writeCache(directory, 'prices.json', catalog([['dynadot', 'Dynadot', 9, 11]]));
   const calls = new Map();
   const count = host => calls.set(host, (calls.get(host) ?? 0) + 1);
   const options = {
-    directory, now, env: {}, cachedOnly: true, bundledCatalog: null, receipt: true, compact: true, deferHandles: true, endings: ['com'],
+    directory, now, env: { DOMAIN_HOUND_EUIPO_CLIENT_ID: 'fixture-id', DOMAIN_HOUND_EUIPO_CLIENT_SECRET: 'fixture-secret' },
+    cachedOnly: true, bundledCatalog: null, receipt: true, compact: true, deferHandles: true, endings: ['com'],
     launch: async () => { throw new Error('No browser in this test'); },
     resolveNs: async () => [],
     comSite: async () => ({ state: 'no-site' }),
@@ -158,6 +159,11 @@ test('a name screen answers first with slow sources waiting, then re-assesses th
         return Response.json({ results: [] });
       }
       if (url.hostname === 'tmsearch.uspto.gov') return Response.json({ hits: { hits: [] } });
+      if (url.hostname === 'euipo.europa.eu') return Response.json({ access_token: 'fixture-token' });
+      if (url.hostname === 'api.euipo.europa.eu') {
+        await new Promise(resolve => setTimeout(resolve, 600));
+        return Response.json({ trademarks: [], totalElements: 0 });
+      }
       if (url.hostname === 'www.wikidata.org') return Response.json({ search: [] });
       if (url.hostname === 'play.google.com') return new Response('<html><h1>No results for Quiet Fern</h1></html>', { headers: { 'content-type': 'text/html' } });
       if (url.hostname === 'api.github.com') return Response.json({ total_count: 0, incomplete_results: false, items: [] });
@@ -175,13 +181,17 @@ test('a name screen answers first with slow sources waiting, then re-assesses th
   assert.match(first.names[0].reason, /still checking App Store/);
   assert.doesNotMatch(first.names[0].reason, /did not answer/);
   assert.ok(first.receiptDetails[0].waiting.includes('App Store'));
+  assert.ok(first.receiptDetails[0].waiting.includes('EUIPO'));
   assert.equal(first.names[0].competition.AppStore, null);
+  assert.equal(first.names[0].competition.EU, null);
   // The second pass re-assesses with the late answer and says nothing is pending.
   assert.equal(final.followUp, undefined);
   assert.deepEqual(final.names[0].competition.AppStore, []);
+  assert.deepEqual(final.names[0].competition.EU, []);
   assert.equal(final.receiptDetails[0].waiting, undefined);
   assert.doesNotMatch(final.names[0].reason, /still checking/);
   // Every source ran once across both passes.
   assert.equal(calls.get('itunes.apple.com'), 1);
   assert.equal(calls.get('tmsearch.uspto.gov'), 1);
+  assert.equal(calls.get('api.euipo.europa.eu'), 1);
 });

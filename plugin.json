@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "domain-hound",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
   "author": {
     "name": "Lars Hvinden"

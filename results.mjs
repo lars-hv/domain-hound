@@ -28,15 +28,18 @@ const notScreened = row => row.competition?.sameName?.summary === 'Not screened'
 const missing = (row, source) => waitingOn(row, source) ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete';
 // EU and Norway marks appear once their key is set: a hit, [] for none, null for check yourself.
 const offices = [['EU', 'EU', 'EUIPO'], ['NO', 'Norway', 'Patentstyret']];
-const officeText = (row, office) => {
+const officeText = (row, office, name) => {
   const mark = row.competition?.[office];
-  return typeof mark === 'string' ? evidenceText(mark) : mark === true ? 'match found' : mark == null ? (waitingOn(row, offices.find(([id]) => id === office)?.[2]) ? 'still checking' : 'check yourself') : 'no match found';
+  if (typeof mark === 'string') return evidenceText(mark);
+  if (mark === true) return 'match found';
+  if (mark != null) return 'no match found';
+  return waitingOn(row, name) ? 'still checking' : 'check yourself';
 };
 const marksText = (row, skip = []) => {
   const mark = markOf(row);
   return [...(skip.includes('US') ? [] : ['US marks: ' + (typeof mark === 'string' ? evidenceText(mark) : mark == null ? missing(row, 'USPTO') : 'no match found')]),
     ...offices.filter(([office]) => Object.hasOwn(row.competition ?? {}, office) && !skip.includes(office))
-      .map(([office, label]) => label + ' marks: ' + officeText(row, office))].join('; ');
+      .map(([office, label, name]) => label + ' marks: ' + officeText(row, office, name))].join('; ');
 };
 // Record links only to the offices' own record pages.
 const recordHosts = new Set(['euipo.europa.eu', 'services.patentstyret.no', 'tsdr.uspto.gov']);

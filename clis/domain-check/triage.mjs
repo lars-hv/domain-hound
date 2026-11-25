@@ -554,7 +554,7 @@ export async function triageNames(inputs, options = {}) {
         // EU and NO appear once a key is set: the strongest hit, [] when the office answered in full with none,
         // null when it failed or answered in part (check yourself).
         ...Object.fromEntries(offices.filter(result => result.state !== 'off').map(result => {
-          const [best] = result.marks;
+          const best = result.marks?.[0];
           return [result.office, officeAnswered(result) ? (best ? trademarkReason(best) : []) : null];
         })),
         ...(officeMarks.length > 0 && { marks: officeMarkEntries(officeMarks.sort(markOrder(key))) }),

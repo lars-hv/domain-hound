@@ -490,7 +490,8 @@ test('the server lists the dossier tool and dispatches to it', async () => {
   await next();
   send({ method: 'notifications/initialized' });
   send({ id: 2, method: 'tools/list' });
-  assert.equal((await next()).result.tools.at(-1).name, 'taken_domain_dossier');
+  const listedDossier = (await next()).result.tools.find(tool => tool.name === 'taken_domain_dossier');
+  assert.equal(listedDossier?.annotations.readOnlyHint, true);
   send({ id: 3, method: 'tools/call', params: { name: 'taken_domain_dossier', arguments: { domain } } });
   const ok = (await next()).result;
   assert.equal(ok.isError, false);

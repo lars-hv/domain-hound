@@ -1,6 +1,6 @@
 # Find a startup name and a domain you can actually buy
 
-Domain Hound checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. It runs locally and leaves checkout to you.
+Domain Hound checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. It runs locally. Connect your Spaceship account to quote a domain, buy it with your approval, and set up DNS.
 
 ![Live Domain Hound results with completed app checks and dated upfront and renewal prices](assets/readme-search.png)
 
@@ -50,8 +50,6 @@ Registry answers and prices cover every name. Trademark, app and rival checks co
 
 The default install checks the registry and shows dated list prices. For a confirmed price, set `DOMAIN_HOUND_SPACESHIP_KEY` and `DOMAIN_HOUND_SPACESHIP_SECRET` (Spaceship permission `domains:read`), or `DOMAIN_HOUND_DYNADOT_KEY` (a production API key). Dynadot gives its production key account-wide access. Domain Hound only uses it to search. It shows premium pricing when it has a quote and points you to the shop when it has a premium signal without a price.
 
-EU and Norwegian trademark checks are optional and free. For the EU, register an EUIPO account, sign in at [dev.euipo.europa.eu](https://dev.euipo.europa.eu/), create an app, and subscribe it to Trademark Search (approval can take a week); then set `DOMAIN_HOUND_EUIPO_CLIENT_ID` and `DOMAIN_HOUND_EUIPO_CLIENT_SECRET` (`DOMAIN_HOUND_EUIPO_SANDBOX=1` uses the sandbox). For Norway, sign up at [developer.patentstyret.no](https://developer.patentstyret.no/), subscribe to the open data product, and set `DOMAIN_HOUND_PATENTSTYRET_KEY`. Keys go only to the offices' own API hosts. An office that does not answer in full reads "check yourself", never clear.
-
 GitHub allows 60 anonymous API requests an hour. To check GitHub handles more often, set `DOMAIN_HOUND_GITHUB_TOKEN` to a token with no scopes; Domain Hound sends it only to `api.github.com`.
 
 For the optional browser fallback, run `npm install domain-hound playwright && npx playwright install chromium` in a project directory and start your MCP client there. Ask for a live shop check to set the `confirm` tool flag, or use `--confirm` with the CLI.
@@ -62,21 +60,18 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 - [Find an available startup name](https://domainhound.dev/guides/find-an-available-startup-name/)
 - [Check whether an app name is taken](https://domainhound.dev/guides/is-my-app-name-available/)
 
-## Tools
-
-- `check_domains` checks one name or exact domain, or up to 20 at once. A bare name checks fourteen endings. The first lookup on a fresh install shows the list prices bundled with the package, labelled with their date, while the local price list refreshes in the background.
-- `triage_names` screens a new shortlist or a name you already have against registration, marks, apps, companies and handles.
-- `naming_method` explains the recipe if you want to see how the shortlist is made.
-- `watch_domain` checks the registry, expiry and website. To start a free watch, give your assistant the email it should use. Confirm the watch in your inbox. Optional news requires a separate choice in that confirmation.
-- `taken_domain_dossier` checks a taken domain’s registry record, website, and public Atom listings. It shows sources, priced alternatives, and a draft inquiry when useful. Other marketplaces have manual links. The tool leaves sending, buying, and starting a watch to you.
-
-- `quote_domain`, `buy_domain` and `setup_domain` work in your own Spaceship account. See below.
+Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to screen a short list or a name you already have. Ask for `naming_method` to see how a shortlist is generated.
 
 Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. On macOS, naming and batch results open in the background. Windows and Wayland request a background open where the desktop supports it. Exact checks and watch results stay in chat with a file link. Set `DOMAIN_HOUND_OPEN=off` on the MCP server to keep every page closed.
 
 ## Share
 
 Use **Share** on the results page to send up to five names. The link carries the names, checked endings, verdicts, prices and check time after the `#`. The browser reads that part locally. Your brief and notes stay out of the link. Anyone with the full link can read the shortlist.
+
+## Taken names
+
+- `taken_domain_dossier` checks the registry record, website and public Atom listings. It shows sources, up to three priced alternatives with a quick name screen, and an inquiry draft when useful. Other marketplaces have manual links. The draft stays in the result.
+- `watch_domain` checks the registry, expiry and website. To start a free watch, give your assistant the email it should use. Confirm the watch in your inbox. Optional news requires a separate choice in that confirmation.
 
 ## Buy and set up
 
@@ -125,19 +120,30 @@ Domain Hound uses your brief locally. Availability queries use registries and DN
 | The DNS resolvers configured on your device, authoritative DNS servers, and the registry’s RDAP or WHOIS host. RDAP routes come from IANA or use `rdap.registry.co`, `rdap.identitydigital.services`, `rdap.norid.no` and `rdap.nic.so`. WHOIS for .ai, .io and .me goes to `whois.nic.ai`, `whois.nic.io` and `whois.nic.me`. | Candidate or rival domain. A DNS routing query can contain just an ending or a nameserver hostname. Registry referrals and redirects can select another registry host. |
 | Candidate website and public hosts it redirects to | The domain in a homepage request; an onward request can include a URL provided by that website. |
 | `tmsearch.uspto.gov` | Candidate name, spelling variants and relevant trademark class numbers. |
+| `api.euipo.europa.eu` and `euipo.europa.eu` (sandbox: `api-sandbox.euipo.europa.eu` and `auth-sandbox.euipo.europa.eu`) | With EUIPO credentials, the token host gets the client ID and secret. The search host gets the client ID, access token and candidate spellings. |
+| `api.patentstyret.no` | With a subscription key, the Norwegian office gets the key and candidate spellings. |
+| `mcp.atom.com` | The taken domain for an exact listing lookup. The buyer's ceiling stays local. |
 | `itunes.apple.com`, `play.google.com` | Candidate name for US store search; Google Play may also get the ID of a matched app. |
 | `www.wikidata.org`, `www.google.com`, `trends.google.com`, `data.brreg.no` | Candidate name; Wikidata also gets entity or class IDs for matches. |
 | `api.github.com`, `registry.npmjs.org`, `public.api.bsky.app` | Candidate name or handle, handle variants and public controls. With a GitHub token configured, it goes only to GitHub. |
 | `www.sec.gov`, `tranco-list.eu` | Public company and site lists with no candidate name. |
 | `index.commoncrawl.org` | Rival domain for a public crawl count. The index list request has no name. |
 | `api.porkbun.com`, `www.dynadot.com`, `www.gandi.net` | Public price catalogs, sometimes filtered by ending. The standalone exact-price CLI may also ask `data.norges-bank.no` for USD/NOK with no name. |
-| `spaceship.dev`, `api.dynadot.com`; `api.porkbun.com` for the standalone exact-price CLI | With configured credentials, the selected domain and the relevant shop credentials. |
+| `spaceship.dev`, `api.dynadot.com`; `api.porkbun.com` for the standalone exact-price CLI | With configured credentials, the selected domain and the relevant shop credentials. The Spaceship API also gets quote and purchase details, the owner contact ID on a direct order, or DNS records for approved setup. |
+| `mcp.spaceship.com` | When you use Spaceship's own MCP, your assistant passes the domain and the registration options to Spaceship. |
 | `www.spaceship.com`, `www.namecheap.com`, `www.dynadot.com`, `www.cloudflare.com` | Optional live browser check sends only the selected domain. Storefront pages can load supporting assets. A manual Spaceship price refresh opens its public catalog without a candidate name. |
 | `api.search.brave.com` or `google.serper.dev` | Candidate search when you configure a search provider. |
 
 Results and caches are local. The share viewer receives its shortlist from the URL fragment in the browser. The site receives the page request without that fragment.
 
-Submitting a watch sends the domain, supplied email, optional name and news choice to the Domain Hound watch service. An agent’s yes highlights the news choice. The confirmation click records whether you want it. Result pages omit your supplied email and name.
+Submitting a watch sends the domain, supplied email, optional name and news choice to `domainhound-alerts.domainhound.workers.dev`. An agent’s yes highlights the news choice. The confirmation click records whether you want it. Result pages omit your supplied email and name.
+
+## Optional EU and Norwegian trademark keys
+
+- **EUIPO.** Create an EUIPO account, register an app and subscribe to Trademark Search. Production access requires approval. Set `DOMAIN_HOUND_EUIPO_CLIENT_ID` and `DOMAIN_HOUND_EUIPO_CLIENT_SECRET` for the local CLI or MCP server. Set `DOMAIN_HOUND_EUIPO_SANDBOX=1` to use sandbox data. [EUIPO setup](https://dev.euipo.europa.eu/getting-started)
+- **Patentstyret.** Create a developer account, subscribe to the open data product that includes the MCP endpoint, and set `DOMAIN_HOUND_PATENTSTYRET_KEY` for the local CLI or MCP server. [Patentstyret setup](https://developer.patentstyret.no/docs-get-access)
+
+Without keys, or when an office returns an incomplete answer, the results page links to the office's manual search. WIPO is always a manual link.
 
 ## Daily checks
 

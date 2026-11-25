@@ -3,13 +3,9 @@ import { attributed, md } from './display.mjs';
 
 export const dossierTool = {
   name: 'taken_domain_dossier',
-  description: 'Use when someone wants a domain that is already taken. Builds a read-only broker dossier: registry facts '
-    + '(created, expiry, registrar, name servers, status), what the site does now, public listing evidence, likely owner type, '
-    + 'the track (listed, not listed, expiring), a price range only from shown evidence, up to 3 free alternatives (best '
-    + '3-year value for the exact name, a .com variant, the next strongest ending) with first-year, renewal and 3-year '
-    + 'list prices and a quick US trademark, app and rival screen, '
-    + 'and a draft for the owner when an inquiry makes sense. Relay the display with its sources. Provide follow-up drafts only '
-    + 'on request. Never send a draft, start a watch automatically, or reveal maxBudget to the owner.',
+  description: 'Investigate a taken domain. Get registry, site and public listing evidence, likely owner type, and a price range when supported. '
+    + 'See up to three free alternatives with upfront, renewal and three-year prices, plus a quick trademark, app and rival screen. '
+    + 'Relay the display and sources. Keep maxBudget private, send no drafts, and start a watch only on request. Share follow-up drafts only on request.',
   annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   inputSchema: {
     type: 'object',
