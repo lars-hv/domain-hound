@@ -539,7 +539,7 @@ test('tool descriptions label money and DNS changes, and check descriptions drop
     + 'To buy through the person’s own Spaceship account, use quote_domain, then buy_domain.');
   assert.equal(currentDescription('Alias. Never buys.', false), 'Alias. This check leaves checkout to you.');
   const tools = registeredTools([{ name: 'check_domains', description: stale }, { name: 'broker_find', description: 'Alias. Never buys.' }]);
-  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'broker_find', 'quote_domain', 'buy_domain', 'setup_domain']);
+  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'broker_find', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
   for (const tool of tools) assert.doesNotMatch(tool.description, /cannot buy|never buys/i);
 });
 
@@ -737,7 +737,7 @@ test('the server registers the purchase tools and answers buy_domain without a q
   input.end();
   await done;
   const replies = new Map(lines.map(line => JSON.parse(line)).map(reply => [reply.id, reply.result]));
-  assert.deepEqual(replies.get(2).tools.slice(-3).map(tool => tool.name), ['quote_domain', 'buy_domain', 'setup_domain']);
+  assert.deepEqual(replies.get(2).tools.slice(-4).map(tool => tool.name), ['quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
   assert.match(replies.get(3).content[0].text, /^No valid quote with that ID\./);
   assert.equal(replies.get(4).isError, true);
 });

@@ -10,5 +10,6 @@ if (!process.env.DOMAIN_HOUND_CACHE_DIR) {
   process.env.DOMAIN_HOUND_RESULTS_DIR ??= join(directory, 'results');
   process.env.DOMAIN_HOUND_OPEN ??= 'off';
   process.env.DOMAIN_HOUND_PURCHASE_DIR ??= join(directory, 'purchases');
+  process.env.DOMAIN_HOUND_PORTFOLIO_FILE ??= join(directory, 'portfolio.json');
   process.on('exit', () => rmSync(directory, { recursive: true, force: true }));
 }

@@ -2,7 +2,7 @@
   "name": "domain-hound",
   "displayName": "Domain Hound",
   "version": "0.1.8",
-  "description": "Check domain availability and prices, and screen product names, from your AI assistant.",
+  "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "author": {
     "name": "Lars Hvinden"
   },

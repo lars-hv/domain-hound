@@ -10,6 +10,7 @@ import { attributed, errorText, progressText } from './display.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
+import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
@@ -58,9 +59,8 @@ const lookupProperties = {
 const relay = 'The answer starts with the clickable Markdown link on the first line of say. Then give the relevant facts from say.';
 const checkTool = {
   name: 'check_domains',
-  description: 'Check availability and dated list prices for one domain or up to 20 names or domains. Use triage_names to find or vet a product name. '
-    + 'For one check, pass query, for example {"query":"lanternbay.com"}. For a batch, pass names. '
-    + 'For a buy or register request, set purchase: true and state the checkout limitation. Set confirm: true only for an explicit live shop check. '
+  description: 'Check availability and dated prices for up to 20 names or domains. Use triage_names for product names. '
+    + 'For purchase requests, set purchase: true and relay the checkout guidance. Use confirm: true only for an explicit live shop check. '
     + 'Keep list, shop-confirmed and premium prices distinct. ' + relay,
   inputSchema: {
     type: 'object',
@@ -85,10 +85,9 @@ const legacyTool = { ...checkTool, name: 'broker_find',
 
 const triageTool = {
   name: 'triage_names',
-  description: 'Use for “find a name and domain” or “can I use this name?”. For a new name, generate five distinct, easy-to-say candidates now. '
-    + 'Call triage_names once with those names, an about description under 160 characters, and shortlist: true. No preliminary tool or web search is needed. '
-    + 'Put the person’s own name first if supplied. The tool checks twelve endings, US marks, optional EU and Norway marks, apps, rivals and meanings in 14 languages. The receipt fills in slow checks and top-three handles. '
-    + 'Use the returned verdicts. Report checks in progress as pending and give the page link. ' + relay,
+  description: 'Find or vet a product name before any other search. For naming, generate five distinct, easy-to-say names, with the supplied name first. '
+    + 'Call triage_names once with those names, a short about description and shortlist: true. Checks domains, trademarks, apps, rivals and meanings. '
+    + 'Use the returned verdicts and label unfinished checks as pending. ' + relay,
   inputSchema: {
     type: 'object',
     properties: {
@@ -415,7 +414,7 @@ function pendingTriage(progress, rows) {
 
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
-  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier,
+  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -616,7 +615,7 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool]) });
+    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool, portfolioTool]) });
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
     if (name === namingTool.name) {
@@ -641,6 +640,13 @@ export async function serve({
     if (name === dossierTool.name) {
       try {
         return reply(toolResult(JSON.stringify(await dossier(args))));
+      } catch (problem) {
+        return reply(errorResult(problem.message));
+      }
+    }
+    if (name === portfolioTool.name) {
+      try {
+        return reply(toolResult(JSON.stringify(await portfolio(args))));
       } catch (problem) {
         return reply(errorResult(problem.message));
       }

@@ -8,10 +8,10 @@ const consentTextVersion = 'news-v1';
 
 export const watchTool = {
   name: 'watch_domain',
-  description: 'Check a specific domain’s registry, expiry and website and start a free release watch at the person’s request. '
-    + 'Use the email and optional name they gave for this submission. If the email is missing, ask once and never guess. '
+  description: 'Check registry, expiry and website. Start a free release watch only at the person’s request. '
+    + 'Use only the email and optional name they gave for this submission. If the email is missing, ask once and never guess. '
     + 'Before submitting, ask exactly: “' + newsQuestion + '” Pass news: true only on an explicit yes, or false if they decline or skip it. '
-    + 'This highlights a choice in the confirmation email. Only the email confirmation can start news. Relay say as written.',
+    + 'Only the email confirmation can start news. Relay say as written.',
   annotations: { title: 'Watch a domain', readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   inputSchema: {
     type: 'object',
