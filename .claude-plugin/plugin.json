@@ -1,7 +1,7 @@
 {
   "name": "domain-hound",
   "displayName": "Domain Hound",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Check domains, compare registrar prices, and screen product names.",
   "author": { "name": "Lars Hvinden" },
   "homepage": "https://domainhound.dev",

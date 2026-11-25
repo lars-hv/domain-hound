@@ -75,6 +75,11 @@ function checkRow(row) {
   };
 }
 
+// The date of the oldest list price shown, e.g. "list price from 2026-11-25".
+function listDate(result) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(result.priceListDate ?? '') ? result.priceListDate : null;
+}
+
 function exactDisplay(result) {
   const row = result.names?.[0] ?? {};
   const domain = row.name;
@@ -108,7 +113,8 @@ function exactDisplay(result) {
         + ' | ' + (offer.y3 != null ? money(offer.y3) : '—') + ' | ' + (link ? link + (shop ? ' at ' + md(shop) : '') : '—') + ' |',
       '',
       ...(live ? [live] : []),
-      'USD ex. VAT.' + (confirmed ? '' : ' Estimate: the shop shows the final price.'),
+      'USD ex. VAT.' + (confirmed ? '' : (offer.now != null && listDate(result) ? ' List price from ' + listDate(result) + '.' : '')
+        + ' Estimate: the shop shows the final price.'),
       ...(result.eligibility ? [eligibilityLine(result)] : []),
       neverBuys,
     ];
@@ -118,8 +124,15 @@ function exactDisplay(result) {
   const shop = Object.keys(result.buyUrlTemplate ?? {})[0];
   const link = templateLink(result.buyUrlTemplate, shop, domain);
   const live = result.liveCheck?.domain === domain ? liveCheckLine(result, !link) : '';
+  const estimate = result.listPrices?.[ending];
+  const date = listDate(result);
+  const hasEstimate = estimate?.now != null && date;
   return ['**' + domain + ': not settled.** The registry did not settle it' + (why ? ' (' + md(why) + ')' : '')
-    + '. Check at shop' + (link ? ': ' + link : '') + '. No price yet.' + checked,
+    + '. Check at shop' + (link ? ': ' + link : '') + '.' + (hasEstimate ? '' : ' No price yet.') + checked,
+    ...(hasEstimate ? [
+      priced('.' + ending, estimate) + ' at ' + md(estimate.shop) + ' (USD ex. VAT, list price from ' + date + ').',
+      ...(result.eligibility ? [eligibilityLine(result)] : []),
+    ] : []),
     ...(live ? [live] : []),
     '', 'For domains with a checkout link:', neverBuys].join('\n');
 }
@@ -133,6 +146,7 @@ export function checkDisplay(result) {
   for (const row of rows) {
     const cells = checkRow(row);
     cells.usesStandard.forEach(d => standard.add(d));
+    for (const d of row.shop_check ?? []) if (listPrices[d]?.now != null) standard.add(d);
     const key = JSON.stringify([cells.free, cells.taken, cells.check]);
     if (!groups.has(key)) groups.set(key, { names: [], ...cells });
     groups.get(key).names.push(cells.name);
@@ -141,7 +155,8 @@ export function checkDisplay(result) {
     .map(d => priced('.' + d, listPrices[d])).join(' · ');
   const lines = [
     '**Domain check, ' + rows.length + (rows.length === 1 ? ' name' : ' names') + '** (USD ex. VAT, today/renewal; '
-      + 'estimates unless ✓ shop-confirmed; 2y = two-year payments)',
+      + 'estimates unless ✓ shop-confirmed' + (listDate(result) ? '; list price from ' + listDate(result) : '')
+      + '; 2y = two-year payments)',
   ];
   if (shared) lines.push('Standard prices: ' + shared);
   if (result.eligibility) lines.push(eligibilityLine(result));

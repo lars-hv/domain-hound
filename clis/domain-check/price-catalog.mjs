@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdir, open, stat, unlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -62,6 +63,35 @@ export function isCatalogStale(checkedAt, now) {
 export function isListPriceUsable(checkedAt, now = new Date()) {
   const age = now - Date.parse(checkedAt);
   return age >= 0 && age <= 8 * day;
+}
+
+// The package ships a dated copy of the first-party list prices for every ending. A fresh install shows these
+// as estimates with their date while the first background refresh fills the user's own cache.
+function readBundledCatalog() {
+  try {
+    const value = JSON.parse(readFileSync(new URL('./price-snapshot.json', import.meta.url), 'utf8'));
+    return validCatalog(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export const bundledCatalog = readBundledCatalog();
+
+// List prices for one ending, best evidence first:
+// 1. cached rows inside the eight-day window (a live refresh or a recent one);
+// 2. otherwise the bundled snapshot as a dated estimate, or older cached rows if they are at least as new.
+// Without a snapshot for the ending, an older cached price is never shown. Rows from the snapshot carry
+// bundled: true. A live or shop-confirmed quote replaces all of these later.
+export function datedListPrices(catalog, tld, now = new Date(), bundled = bundledCatalog) {
+  const cached = listedPrices(catalog, tld);
+  const fresh = cached.filter(row => isListPriceUsable(row.checkedAt, now));
+  if (fresh.length) return fresh;
+  const snapshot = listedPrices(bundled, tld).map(row => ({ ...row, bundled: true }));
+  if (!snapshot.length) return [];
+  const older = cached.filter(row => now - Date.parse(row.checkedAt) >= 0);
+  const newest = rows => rows.reduce((date, row) => row.checkedAt > date ? row.checkedAt : date, '');
+  return older.length && newest(older) >= newest(snapshot) ? older : snapshot;
 }
 
 async function startRefresh(directory) {
@@ -302,10 +332,10 @@ export async function refreshPrices({
     reason: refreshedShops.length ? 'Price cache could not be written.' : 'The shops did not return a valid price catalog.' };
 }
 
-export function catalogOffers(catalog, tld, domain) {
-  return listedPrices(catalog, tld).map(row => offer(row.id, domain, {
+export function catalogOffers(catalog, tld, domain, rows = listedPrices(catalog, tld)) {
+  return rows.map(row => offer(row.id, domain, {
     firstYear: row.firstYear, regularFirstYear: row.firstYear, renewal: row.renewal,
     transferPrice: row.transfer, regularTransferPrice: row.transfer,
-    evidence: 'shop', source: 'saved', checkedAt: row.checkedAt,
+    evidence: 'shop', source: row.bundled ? 'bundled' : 'saved', checkedAt: row.checkedAt,
   }));
 }

@@ -1,0 +1,176 @@
+{
+  "checkedAt": "2026-11-24T18:15:47.403Z",
+  "catalogs": {
+    "spaceship": {
+      "checkedAt": "2026-11-24T18:15:47.403Z",
+      "prices": {
+        "com": {
+          "shop": "Spaceship",
+          "firstYear": 9.48,
+          "renewal": 10.68,
+          "transfer": 10.18
+        },
+        "ai": {
+          "shop": "Spaceship",
+          "firstYear": 79.98,
+          "renewal": 79.98,
+          "transfer": 79.98
+        },
+        "io": {
+          "shop": "Spaceship",
+          "firstYear": 31.98,
+          "renewal": 51.75,
+          "transfer": 51.75
+        },
+        "me": {
+          "shop": "Spaceship",
+          "firstYear": 8.7,
+          "renewal": 15.53,
+          "transfer": 15.53
+        },
+        "co": {
+          "shop": "Spaceship",
+          "firstYear": 3.11,
+          "renewal": 31.05,
+          "transfer": 31.05
+        },
+        "dev": {
+          "shop": "Spaceship",
+          "firstYear": 8.28,
+          "renewal": 12.42,
+          "transfer": 12.42
+        },
+        "app": {
+          "shop": "Spaceship",
+          "firstYear": 8.28,
+          "renewal": 14.49,
+          "transfer": 14.49
+        },
+        "si": {
+          "shop": "Spaceship",
+          "firstYear": 10.98,
+          "renewal": 11.98,
+          "transfer": null
+        }
+      }
+    },
+    "porkbun": {
+      "checkedAt": "2026-11-24T18:15:47.403Z",
+      "prices": {
+        "com": {
+          "shop": "Porkbun",
+          "firstYear": 11.81,
+          "renewal": 11.81,
+          "transfer": 11.81
+        },
+        "ai": {
+          "shop": "Porkbun",
+          "firstYear": 82.7,
+          "renewal": 82.7,
+          "transfer": 165.09
+        },
+        "io": {
+          "shop": "Porkbun",
+          "firstYear": 20.91,
+          "renewal": 51.8,
+          "transfer": 51.8
+        },
+        "me": {
+          "shop": "Porkbun",
+          "firstYear": 17.27,
+          "renewal": 17.27,
+          "transfer": 17.27
+        },
+        "co": {
+          "shop": "Porkbun",
+          "firstYear": 15.76,
+          "renewal": 31.2,
+          "transfer": 31.2
+        },
+        "dev": {
+          "shop": "Porkbun",
+          "firstYear": 8.75,
+          "renewal": 12.87,
+          "transfer": 12.87
+        },
+        "app": {
+          "shop": "Porkbun",
+          "firstYear": 8.75,
+          "renewal": 14.93,
+          "transfer": 14.93
+        },
+        "si": {
+          "shop": "Porkbun",
+          "firstYear": 19.95,
+          "renewal": 17.13,
+          "transfer": null
+        }
+      }
+    },
+    "dynadot": {
+      "checkedAt": "2026-11-24T18:15:47.403Z",
+      "prices": {
+        "com": {
+          "shop": "Dynadot",
+          "firstYear": 11.62,
+          "renewal": 11.62,
+          "transfer": 11.62
+        },
+        "co": {
+          "shop": "Dynadot",
+          "firstYear": 15.5,
+          "renewal": 31.2,
+          "transfer": 31.2
+        },
+        "io": {
+          "shop": "Dynadot",
+          "firstYear": 21.4,
+          "renewal": 53.5,
+          "transfer": 53.5
+        },
+        "me": {
+          "shop": "Dynadot",
+          "firstYear": 9.16,
+          "renewal": 16.8,
+          "transfer": 16.8
+        },
+        "so": {
+          "shop": "Dynadot",
+          "firstYear": 57.5,
+          "renewal": 57.5,
+          "transfer": 57.5
+        },
+        "app": {
+          "shop": "Dynadot",
+          "firstYear": 8,
+          "renewal": 14.5,
+          "transfer": 13.99
+        },
+        "dev": {
+          "shop": "Dynadot",
+          "firstYear": 8,
+          "renewal": 12.5,
+          "transfer": 11.99
+        },
+        "ai": {
+          "shop": "Dynadot",
+          "firstYear": 85.6,
+          "renewal": 85.6,
+          "transfer": 171.2
+        },
+        "si": {
+          "shop": "Dynadot",
+          "firstYear": 11.24,
+          "renewal": 11.24,
+          "transfer": null
+        },
+        "no": {
+          "shop": "Dynadot",
+          "firstYear": 7.91,
+          "renewal": 7.91,
+          "transfer": null
+        }
+      }
+    }
+  }
+}

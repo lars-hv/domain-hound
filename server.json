@@ -4,12 +4,12 @@
   "title": "Domain Hound",
   "description": "Check domains, compare registrar prices, and screen product names.",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "transport": { "type": "stdio" }
     }
   ]

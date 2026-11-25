@@ -6,9 +6,10 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { agentResult } from './index.mjs';
+import { checkDisplay } from '../../display.mjs';
 import { listQuote } from './name-search.mjs';
 import { confirmDomain } from './confirm.mjs';
-import { dynadotPrices, gandiPrice, getNameCatalog, loadCachedCatalog, refreshPrices, spaceshipPrice, targetEndings, validCatalog } from './price-catalog.mjs';
+import { bundledCatalog, dynadotPrices, gandiPrice, getNameCatalog, listedPrices, loadCachedCatalog, refreshPrices, spaceshipPrice, targetEndings, validCatalog } from './price-catalog.mjs';
 import { spaceshipFeedQuote, watchSpaceshipFeed } from './spaceship-feed.mjs';
 
 const checkedAt = '2026-11-24T12:00:00.000Z';
@@ -110,7 +111,7 @@ test('ranks posted prices by first payment and picks the cheapest shop that can 
   assert.equal(listQuote(value, { tld: 'so', domain: 'example.so' }, now).shop, 'Gandi');
 });
 
-test('uses only dated list prices at most eight days old, including in a batch', async t => {
+test('without a bundled snapshot uses only cached list prices at most eight days old, including in a batch', async t => {
   const directory = await testCache(t);
   const day = 86_400_000;
   const value = await refreshPrices({ directory, now, spaceship: () => spaceship, gandi: () => gandi,
@@ -118,19 +119,19 @@ test('uses only dated list prices at most eight days old, including in a batch',
     dynadot: () => vendorPrices('Dynadot', { firstYear: 1, renewal: 25 }),
   });
   const row = { tld: 'me', domain: 'example.me' };
-  assert.equal(listQuote(value, row, new Date(+now + 8 * day)).price, 1);
-  assert.equal(listQuote(value, row, new Date(+now + 8 * day + 1)).price, undefined);
-  assert.equal(listQuote(null, row, now).price, undefined);
+  assert.equal(listQuote(value, row, new Date(+now + 8 * day), null).price, 1);
+  assert.equal(listQuote(value, row, new Date(+now + 8 * day + 1), null).price, undefined);
+  assert.equal(listQuote(null, row, now, null).price, undefined);
   const recentlyRefreshed = {
     ...value, catalogs: { ...value.catalogs, dynadot: { ...value.catalogs.dynadot, checkedAt: new Date(+now + day).toISOString() } },
   };
-  assert.equal(listQuote(recentlyRefreshed, row, new Date(+now + 9 * day)).shop, 'Dynadot');
+  assert.equal(listQuote(recentlyRefreshed, row, new Date(+now + 9 * day), null).shop, 'Dynadot');
 
   const options = {
     directory, resolveNs: async domain => domain === row.domain ? [] : ['ns.example.net'],
     fetcher: async () => new Response(null, { status: 404 }),
     confirm: async () => ({ status: 'could-not-confirm' }),
-    cachedOnly: true,
+    cachedOnly: true, bundledCatalog: null,
   };
   const fresh = await agentResult(['example'], { ...options, now });
   assert.deepEqual(fresh.names[0].free, [{ d: 'me', s: 'nc' }]);
@@ -141,6 +142,90 @@ test('uses only dated list prices at most eight days old, including in a batch',
   assert.deepEqual(stale.names[0].free, [{ d: 'me', s: 'nc' }]);
   assert.deepEqual(stale.listPrices.me, { shop: 'Spaceship' });
   assert.equal(stale.priceListDate, undefined);
+});
+
+test('the shipped snapshot is a valid dated first-party list price for every ending', () => {
+  assert.equal(validCatalog(bundledCatalog), true);
+  assert.ok(Number.isFinite(Date.parse(bundledCatalog.checkedAt)));
+  for (const tld of targetEndings) {
+    const rows = listedPrices(bundledCatalog, tld);
+    assert.ok(rows.length, 'no bundled price for .' + tld);
+    for (const row of rows) assert.ok(Number.isFinite(Date.parse(row.checkedAt)) && row.firstYear > 0 && row.renewal > 0);
+  }
+});
+
+test('a fresh install with an empty cache shows a dated list price for all ten endings and still refreshes', async t => {
+  const directory = await testCache(t);
+  const date = bundledCatalog.checkedAt.slice(0, 10);
+  // Weeks after the snapshot, past the eight-day window for cached prices.
+  const later = new Date(Date.parse(bundledCatalog.checkedAt) + 40 * 86_400_000);
+  let scheduled = 0;
+  assert.equal(await getNameCatalog({ directory, now: later, coldWaitMs: 0, scheduleRefresh: () => { scheduled++; } }), null);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(scheduled, 1);
+  const options = {
+    directory, now: later, cachedOnly: true, skipComSite: true, queryWhois: async () => '',
+    resolveNs: async () => [], fetcher: async () => new Response(null, { status: 404 }),
+    confirm: async () => ({ status: 'could-not-confirm' }),
+  };
+  const batch = await agentResult(['example'], options);
+  assert.equal(batch.priceListDate, date);
+  assert.deepEqual(Object.keys(batch.listPrices).sort(), [...targetEndings].sort());
+  for (const tld of targetEndings) {
+    assert.ok(batch.listPrices[tld].now > 0 && batch.listPrices[tld].renew > 0, '.' + tld + ' has no list price');
+  }
+  assert.match(checkDisplay(batch), new RegExp('list price from ' + date));
+  const exact = await agentResult('example.me', options);
+  const me = exact.names[0].free?.find(row => row.d === 'me');
+  assert.ok(me?.now > 0);
+  assert.equal(exact.priceListDate, date);
+  assert.match(checkDisplay(exact), new RegExp('List price from ' + date));
+  const unsettled = await agentResult('example.dev', {
+    ...options, fetcher: async () => new Response(null, { status: 403 }),
+  });
+  assert.deepEqual(unsettled.names[0].shop_check, ['dev']);
+  assert.ok(unsettled.listPrices.dev.now > 0);
+  assert.match(checkDisplay(unsettled), new RegExp('list price from ' + date));
+  // The snapshot is read from the package and never copied into the user's cache.
+  assert.equal((await readdir(directory)).includes('prices.json'), false);
+  assert.equal(await loadCachedCatalog(directory), null);
+});
+
+test('fresh cached prices win over the bundled snapshot, which fills in only as the newest dated estimate', async t => {
+  const directory = await testCache(t);
+  const day = 86_400_000;
+  const value = await refreshPrices({ directory, now, spaceship: () => spaceship, gandi: () => gandi,
+    porkbun: () => vendorPrices('Porkbun', { firstYear: 12, renewal: 11 }),
+    dynadot: () => vendorPrices('Dynadot', { firstYear: 1, renewal: 25 }),
+  });
+  const snapshot = at => ({ checkedAt: at, catalogs: { porkbun: { checkedAt: at, prices: {
+    com: { shop: 'Porkbun', firstYear: 5, renewal: 6 }, io: { shop: 'Porkbun', firstYear: 5, renewal: 6 },
+    me: { shop: 'Porkbun', firstYear: 5, renewal: 6 },
+  } } } });
+  const older = snapshot(new Date(+now - 30 * day).toISOString());
+  const newer = snapshot(new Date(+now + 2 * day).toISOString());
+  const row = { tld: 'me', domain: 'example.me' };
+  // Inside the window the cache wins, even over a newer snapshot.
+  assert.equal(listQuote(value, row, now, newer).price, 1);
+  assert.equal(listQuote(value, row, now, newer).priceCheckedAt, checkedAt);
+  const late = new Date(+now + 9 * day);
+  // Past the window a newer snapshot replaces the old cache; a cache newer than the snapshot stays.
+  assert.equal(listQuote(value, row, late, newer).price, 5);
+  assert.equal(listQuote(value, row, late, newer).priceCheckedAt, newer.checkedAt);
+  assert.equal(listQuote(value, row, late, older).price, 1);
+  // An ending the snapshot does not cover keeps the old rule: no stale number.
+  assert.equal(listQuote(value, { tld: 'dev', domain: 'example.dev' }, late, newer).price, undefined);
+  // A shop-confirmed quote still replaces the list estimate.
+  const options = {
+    directory, now: late, cachedOnly: true, bundledCatalog: newer, skipComSite: true,
+    resolveNs: async domain => domain === row.domain ? [] : ['ns.example.net'],
+    fetcher: async () => new Response(null, { status: 404 }),
+    confirm: async () => ({ status: 'confirmed', shopName: 'Spaceship', price: 8.7, renewal: 15.53,
+      buyUrl: 'https://www.spaceship.com/domain-search/?query=example.me', checkedAt: late.toISOString() }),
+  };
+  const confirmed = await agentResult(['example'], options);
+  assert.deepEqual(confirmed.names[0].free, [{ d: 'me', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship' }]);
+  assert.equal(confirmed.best.priceNow, 8.7);
 });
 
 test('retains an exact confirmed price for 15 minutes and never caches an inconclusive result', async t => {

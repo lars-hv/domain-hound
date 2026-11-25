@@ -1,6 +1,6 @@
 import { checkDomainSite } from './com-site.mjs';
 import { confirmingShops } from './confirm.mjs';
-import { getNameCatalog, isListPriceUsable, listedPrices, loadCachedCatalog, targetEndings } from './price-catalog.mjs';
+import { bundledCatalog, datedListPrices, getNameCatalog, loadCachedCatalog, targetEndings } from './price-catalog.mjs';
 import { shopSearchUrl } from './prices.mjs';
 import { lookupRegistrations } from './registry.mjs';
 
@@ -108,8 +108,8 @@ export function registrationStatus(registry) {
   return registry.status === 'taken' ? 'taken' : 'check-at-shop';
 }
 
-export function listQuote(catalog, { domain, tld }, now) {
-  const prices = listedPrices(catalog, tld).filter(row => isListPriceUsable(row.checkedAt, now)).sort((a, b) =>
+export function listQuote(catalog, { domain, tld }, now, bundled = bundledCatalog) {
+  const prices = datedListPrices(catalog, tld, now, bundled).sort((a, b) =>
     a.firstYear - b.firstYear || a.renewal - b.renewal);
   const best = prices[0];
   const confirmShop = prices.find(row => confirmingShops.includes(row.id))?.id ??
@@ -139,6 +139,8 @@ export async function searchCandidates(groups, options = {}) {
   const budgetMs = options.budgetMs ?? 2700;
   const timeLeft = () => Math.max(0, Math.floor(start + budgetMs - performance.now()));
   const now = options.now ?? new Date();
+  // Tests may inject another snapshot; null turns the bundled fallback off.
+  const bundled = options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog;
   const candidates = new Map(groups.flatMap(({ candidates }) => candidates.map(row => [row.domain, row])));
   const sites = new Map();
   const siteEndings = options.siteEndings ?? (options.skipComSite ? [] : ['com']);
@@ -157,7 +159,7 @@ export async function searchCandidates(groups, options = {}) {
     }).catch(() => {}) });
   };
   const loadCatalog = options.cachedOnly ? loadCachedCatalog(options.directory)
-    : getNameCatalog({ ...options, now, coldWaitMs: Math.min(1900, budgetMs) });
+    : getNameCatalog({ ...options, now, coldWaitMs: bundled ? 0 : Math.min(1900, budgetMs) });
   const work = Promise.all([
     lookupRegistrations([...candidates.values()], { ...options, now, timeLeft, onResult }),
     loadCatalog.then(value => { catalog = value; }),
@@ -175,9 +177,9 @@ export async function searchCandidates(groups, options = {}) {
     const rows = rankName(group.candidates.map(row => {
       const lookup = lookedUp.get(row.domain);
       if (!lookup) return { ...row, status: 'check-at-shop', registryReason: 'Registry lookup timed out',
-        ...listQuote(catalog, row, now) };
+        ...listQuote(catalog, row, now, bundled) };
       const status = registrationStatus(lookup);
-      const quote = listQuote(catalog, row, now);
+      const quote = listQuote(catalog, row, now, bundled);
       const listPrice = status === 'taken' && quote.price != null
         ? { shop: quote.shop, checkedAt: quote.priceCheckedAt, ...termCosts(row.tld, quote.price, quote.renewal),
           renewalJump: quote.renewal > 2 * quote.price }
@@ -195,7 +197,7 @@ export async function searchCandidates(groups, options = {}) {
     }
     return { ...group, results: rows, comSite: checkedSites.com ?? null, sites: checkedSites };
   });
-  return { groups: results, complete, priceDate: catalog?.checkedAt ?? null, ms: Math.round(performance.now() - start) };
+  return { groups: results, complete, priceDate: catalog?.checkedAt ?? bundled?.checkedAt ?? null, ms: Math.round(performance.now() - start) };
 }
 
 export async function searchName(input, options = {}) {

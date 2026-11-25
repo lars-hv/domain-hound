@@ -1,7 +1,7 @@
 import './test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -86,7 +86,7 @@ test('initializes with the client version, accepts notification and replies to p
   const responses = await exchange([...handshake('2024-11-05'), request('ping', 'ping')]);
   assert.deepEqual(responses.map(({ id }) => id), [1, 'ping']);
   assert.deepEqual(resultOf(responses, 1), {
-    protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: '0.1.0' },
+    protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: '0.1.1' },
   });
   assert.deepEqual(resultOf(responses, 'ping'), {});
 });
@@ -201,7 +201,7 @@ test('passes 20 names to one native batch invocation and preserves partial compa
   const result = callData(responses, 2);
   // Identical outcomes share one table row that still names every input.
   assert.equal(result.display, [
-    '**Domain check, 20 names** (USD ex. VAT, today/renewal; estimates unless ✓ shop-confirmed; 2y = two-year payments)',
+    '**Domain check, 20 names** (USD ex. VAT, today/renewal; estimates unless ✓ shop-confirmed; list price from 2026-11-24; 2y = two-year payments)',
     '',
     '| Names | Free | Taken | Check at shop |',
     '|---|---|---|---|',
@@ -768,11 +768,24 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
     for (const entry of [bin, server]) {
       const responses = await runServer([fileURLToPath(entry)],
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
-      assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version: '0.1.0' });
+      assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version: '0.1.1' });
       assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_method', 'broker_find']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
   } finally {
     await rm(elsewhere, { recursive: true, force: true });
   }
+});
+
+test('the package, lockfile, server and every manifest carry one version, and the price snapshot ships', async () => {
+  const read = async path => JSON.parse(await readFile(new URL(path, import.meta.url), 'utf8'));
+  const pkg = await read('./package.json');
+  const lock = await read('./package-lock.json');
+  const server = await read('./server.json');
+  const versions = [lock.version, lock.packages[''].version, server.version, ...server.packages.map(row => row.version),
+    (await read('./plugin.json')).version, (await read('./.claude-plugin/plugin.json')).version];
+  assert.deepEqual(versions, versions.map(() => pkg.version));
+  const responses = await exchange(handshake());
+  assert.equal(resultOf(responses, 1).serverInfo.version, pkg.version);
+  assert.ok(pkg.files.includes('clis/domain-check/price-snapshot.json'));
 });

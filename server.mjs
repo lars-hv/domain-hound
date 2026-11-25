@@ -1,6 +1,7 @@
 import { geoInstruction, googleSearchInstruction, namingRecipe, showAsIs } from './clis/domain-check/naming-method.mjs';
 import { normalizeName, restrictedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
@@ -9,7 +10,8 @@ import { attributed, checkText, errorText, triageText } from './display.mjs';
 const runFile = promisify(execFile);
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
-const serverVersion = '0.1.0';
+// One version for the server, package and manifests; the release workflow checks the tag against it.
+const serverVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
 const timeoutMs = 14_950;
 const timeoutMessage = 'Domain Hound timed out after 15 seconds.';
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];

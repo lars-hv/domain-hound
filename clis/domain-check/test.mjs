@@ -48,7 +48,7 @@ function mock({
     return response(status, { events: [{ eventAction: 'expiration', eventDate: expires }] });
   };
   return {
-    now, fetcher, directory: null, queryWhois,
+    now, fetcher, directory: null, queryWhois, bundled: null,
     env: confirm ? { DOMAIN_HOUND_PORKBUN_API_KEY: 'example-key', DOMAIN_HOUND_PORKBUN_SECRET_KEY: 'example-secret' } : {},
   };
 }
@@ -162,6 +162,27 @@ test('shows shop links with unknown prices when first-party price sources fail',
   assert.equal(result.nok, null);
   assert.equal(result.transfer, undefined);
   assert.ok(result.offers.every(row => row.firstYear === null && row.renewal === null && row.threeYear === null));
+});
+
+test('a plain domain check falls back to the dated bundled snapshot and live shop prices win over it', async () => {
+  const snapshotAt = '2026-10-01T00:00:00.000Z';
+  const bundled = { checkedAt: snapshotAt, catalogs: { dynadot: { checkedAt: snapshotAt, prices: {
+    com: { shop: 'Dynadot', firstYear: 1.5, renewal: 2, transfer: 2 },
+    io: { shop: 'Dynadot', firstYear: 1.5, renewal: 2, transfer: 2 },
+    me: { shop: 'Dynadot', firstYear: 1.5, renewal: 2, transfer: 2 },
+  } } } };
+  const offline = await checkDomain('example.me', { ...mock({ pricing: null, dynadot: null, nok: null }), bundled });
+  assert.equal(offline.best.shop, 'Dynadot');
+  assert.equal(offline.best.firstYear, 1.5);
+  assert.equal(offline.best.source, 'bundled');
+  assert.equal(offline.priceDate, '2026-10-01');
+  assert.equal(offline.stale, true);
+  assert.equal(offline.transfer, undefined);
+  const live = await checkDomain('example.me', { ...mock(), bundled });
+  const dynadot = live.offers.find(row => row.shop === 'Dynadot');
+  assert.equal(dynadot.source, 'live');
+  assert.notEqual(dynadot.firstYear, 1.5);
+  assert.equal(live.offers.filter(row => row.source === 'bundled').length, 0);
 });
 
 test('chooses the cheaper first payment even when its renewal costs more', async () => {
