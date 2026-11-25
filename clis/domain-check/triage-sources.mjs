@@ -1,14 +1,18 @@
 import { anySignal, cacheDir, readCache, writeCache } from './cache.mjs';
 import { checkSocialHandles, handlePlatforms } from './handles.mjs';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const uspto = 'https://tmsearch.uspto.gov';
 const githubState = 'triage-github-limit.json';
 export const day = 86_400_000;
 const userAgent = 'DomainHound/1.0 (public name lookup)';
+// Relevant Nice classes per category, shared by every trademark office. Software covers 9, 35 and 42.
 const niceClasses = new Map(Object.entries({
-  travel: ['039', '043'], software: ['009', '042'], finance: ['036'], retail: ['035'],
+  travel: ['039', '043'], software: ['009', '035', '042'], finance: ['036'], retail: ['035'],
   health: ['044'], education: ['041'], food: ['043', '030'], media: ['038', '041'],
 }));
+const techClasses = ['009', '042'];
+export const relevantClasses = category => niceClasses.get(String(category ?? '').trim().toLowerCase()) ?? niceClasses.get('software');
 const wikidataHeaders = { 'User-Agent': 'DomainHound/0.1 (https://domainhound.dev)' };
 const brandTypes = new Set([
   'Q783794', 'Q4830453', 'Q891723', 'Q167037', // Companies
@@ -52,7 +56,7 @@ export async function readJson(url, options, init) {
   return null;
 }
 
-function exactPhrases(label, input) {
+export function exactPhrases(label, input) {
   const spaced = input.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
     .replace(/[^a-z0-9]+/g, ' ').trim();
   // A glued name can have an unknown word boundary. Try each two-word spelling in one request.
@@ -89,7 +93,7 @@ export function matchTier(a, b) {
 }
 
 export async function searchMarks(name, input, options = {}) {
-  const relevant = niceClasses.get(options.category?.trim().toLowerCase()) ?? niceClasses.get('software');
+  const relevant = relevantClasses(options.category);
   const variants = exactPhrases(letters(name), input);
   const matches = variants.map(query => ({ match_phrase: { wordmark: { query, boost: 3 } } }));
   const key = variants[0];
@@ -120,17 +124,24 @@ export async function searchMarks(name, input, options = {}) {
       .map(value => String(value).match(/\b\d{3}\b/)?.[0]).filter(Boolean);
     const owner = String([].concat(row.ownerName ?? []).at(-1) ?? '')
       .replace(/\s+\([^;]*;\s*[A-Z ,.-]+\)$/, '').replace(/\s+\([^)]*\)$/, '');
-    return [{ name: compactText(row.wordmark, 65), owner: compactText(owner, 70),
+    const serial = /^\d{8}$/.test(row.id) ? row.id : null;
+    return [{ office: 'US', name: compactText(row.wordmark, 65), owner: compactText(owner, 70),
       classes, relevant: classes.some(value => relevant.includes(value)), relevantClasses: classes.filter(value => relevant.includes(value)),
-      tier, registered: row.registered === true,
-      serial: /^\d{8}$/.test(row.id) ? row.id : null }];
-  }).sort((a, b) => markWeight(b, key) - markWeight(a, key) || Number(b.registered) - Number(a.registered));
+      tier, registered: row.registered === true, live: true, status: row.registered === true ? 'registered' : 'applied',
+      serial, url: serial ? usptoRecord(serial) : null }];
+  }).sort(markOrder(key));
 }
+
+export const usptoRecord = serial => 'https://tsdr.uspto.gov/#caseNumber=' + serial
+  + '&caseSearchType=US_APPLICATION&caseType=DEFAULT&searchType=statusSearch';
+
+// Strongest mark first: closer tier, then a relevant class, then a registered mark.
+export const markOrder = key => (a, b) => markWeight(b, key) - markWeight(a, key) || Number(b.registered) - Number(a.registered);
 
 function markWeight(mark, key) {
   const tier = ['Fuzzy', 'Near-identical', 'Exact'].indexOf(mark.tier);
   const firstLetter = Number(letters(mark.name)[0] === key[0]);
-  const tech = Number(mark.classes.some(value => niceClasses.get('software').includes(value)));
+  const tech = Number(mark.classes.some(value => techClasses.includes(value)));
   return 10 * tier + (mark.relevant ? tier ? 25 : 5 : 0) + firstLetter + 0.2 * tech;
 }
 
@@ -158,7 +169,7 @@ export function searchApps(name, input, options = {}) {
 async function fetchApps(name, input, options) {
   const data = await readJson('https://itunes.apple.com/search?' + new URLSearchParams({
     term: input, country: 'us', entity: 'software', limit: '25',
-  }), options);
+  }), options, { timeout: 5000 });
   if (!Array.isArray(data?.results)) return null;
   const rows = data.results.flatMap(row => {
     if (typeof row?.trackName !== 'string' || !/^\d{4,}$/.test(row.trackId) || !appNameMatches(name, row.trackName)) return [];
@@ -184,18 +195,34 @@ export function searchEntities(name, input, options = {}) {
   return cacheTractionSource('wikidata', name, options, () => fetchEntities(name, input, options));
 }
 
+// Wikidata can return a "too busy" error inside an HTTP 200 when searches overlap.
+let wikidataSearches = Promise.resolve();
+function searchWikidata(url, options) {
+  const turn = wikidataSearches.then(async () => {
+    for (const wait of [0, 250, 500]) {
+      if (wait) await delay(wait);
+      if (options.signal?.aborted) return null;
+      const data = await readJson(url, options, { timeout: 5000, headers: wikidataHeaders });
+      if (data?.error?.code !== 'cirrussearch-too-busy-error') return data;
+    }
+    return null;
+  });
+  wikidataSearches = turn.catch(() => {});
+  return turn;
+}
+
 async function fetchEntities(name, input, options) {
   const api = 'https://www.wikidata.org/w/api.php?';
-  const data = await readJson(api + new URLSearchParams({
+  const data = await searchWikidata(api + new URLSearchParams({
     action: 'wbsearchentities', search: input, language: 'en', format: 'json', limit: '15',
-  }), options, { headers: wikidataHeaders });
+  }), options);
   if (!Array.isArray(data?.search)) return null;
   const key = letters(name);
   const exact = data.search.filter(row => /^Q\d+$/.test(row.id) && letters(row.label) === key);
   if (!exact.length) return [];
   const getClaims = async (ids, props = 'claims') => (await readJson(api + new URLSearchParams({
     action: 'wbgetentities', ids: ids.join('|'), props, format: 'json',
-  }), options, { timeout: 1200, headers: wikidataHeaders }))?.entities;
+  }), options, { timeout: options.detailTimeoutMs ?? 3000, headers: wikidataHeaders }))?.entities;
   // The same request returns sitelinks and the official website (P856) for traction.
   const details = await getClaims(exact.map(row => row.id), 'claims|sitelinks');
   if (!details && options.cacheLifetime) return null;

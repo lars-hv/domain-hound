@@ -2,13 +2,15 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canRecommend, defaultEndings, domainEnding, eligibilityNeed, normalizeName } from './clis/domain-check/name-search.mjs';
 import { handlePriorities, handleStates, handleSummary } from './clis/domain-check/handles.mjs';
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
+import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { safeLink } from './display.mjs';
 import { receiptStyle } from './results-style.mjs';
+import { shareUrl } from './share.mjs';
 
 const cash = value => Number.isFinite(value) ? '$' + value.toFixed(2) : null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
@@ -20,10 +22,36 @@ const markdown = value => plain(value).replace(/[\\|<>\[\]`*]/g, '\\$&');
 const shopIds = new Map(Object.entries(shops).map(([id, { name }]) => [name, id]));
 const fallbackShop = ending => ending === 'no' ? 'dynadot' : ending === 'so' ? 'namecheap' : 'spaceship';
 const markOf = row => row.competition?.US;
-const marksText = row => {
-  const mark = markOf(row);
-  return 'US marks: ' + (typeof mark === 'string' ? evidenceText(mark) : mark == null ? 'not checked' : 'no match found');
+// A check still running in the follow-up reads "still checking"; one that never answered reads "check incomplete".
+const waitingOn = (row, source) => Array.isArray(row.waiting) && row.waiting.includes(source);
+const notScreened = row => row.competition?.sameName?.summary === 'Not screened';
+const missing = (row, source) => waitingOn(row, source) ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete';
+// EU and Norway marks appear once their key is set: a hit, [] for none, null for check yourself.
+const offices = [['EU', 'EU', 'EUIPO'], ['NO', 'Norway', 'Patentstyret']];
+const officeText = (row, office, name) => {
+  const mark = row.competition?.[office];
+  if (typeof mark === 'string') return evidenceText(mark);
+  if (mark === true) return 'match found';
+  if (mark != null) return 'no match found';
+  return waitingOn(row, name) ? 'still checking' : 'check yourself';
 };
+const marksText = (row, skip = []) => {
+  const mark = markOf(row);
+  return [...(skip.includes('US') ? [] : ['US marks: ' + (typeof mark === 'string' ? evidenceText(mark) : mark == null ? missing(row, 'USPTO') : 'no match found')]),
+    ...offices.filter(([office]) => Object.hasOwn(row.competition ?? {}, office) && !skip.includes(office))
+      .map(([office, label, name]) => label + ' marks: ' + officeText(row, office, name))].join('; ');
+};
+// Record links only to the offices' own record pages.
+const recordHosts = new Set(['euipo.europa.eu', 'services.patentstyret.no', 'tsdr.uspto.gov']);
+const recordLink = value => {
+  const url = httpsLink(value);
+  return url && recordHosts.has(new URL(url).hostname) ? url : null;
+};
+const officeMarks = row => (Array.isArray(row.competition?.marks) ? row.competition.marks : [])
+  .filter(entry => entry && typeof entry === 'object' && typeof entry.mark === 'string');
+const markLabel = entry => plain(entry.office) + ' mark: ' + plain(entry.tier) + ' ' + plain(entry.mark) + ', ' + plain(entry.status)
+  + ', classes ' + ((Array.isArray(entry.classes) ? entry.classes : []).map(plain).join('/') || 'unavailable')
+  + (entry.checkedAt ? ', earlier answer from ' + plain(entry.checkedAt) : '');
 const watchLink = domain => 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(domain);
 const verdictOrder = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
 
@@ -58,7 +86,7 @@ function resultGroups(data, eligibleEndings) {
         : reserved ? 'Not offered for registration' : confirmed ? 'Confirmed at shop'
           : premium ? (risk ? 'May be premium, price at shop' : 'Premium, price at shop')
           : option ? 'Free at the registry' : likely ? 'Check at shop, ' + likely
-            : data.pending && !match(row.shop_check) ? 'Still checking' : 'Check at shop';
+            : data.pending && !data.failed && !match(row.shop_check) ? 'Still checking' : 'Check at shop';
       const usd = includePrice ? { now: quote.now, renew: quote.renew, y3: quote.y3, term: quote.term,
         jump: quote.jump, shop: quote.shop } : {};
       const term = usd.term ?? 1;
@@ -69,7 +97,7 @@ function resultGroups(data, eligibleEndings) {
       const eligible = canRecommend(ending, eligibleEndings ?? data.eligible);
       const shopUrl = shopSearchUrl(shopIds.get(shop) ?? fallbackShop(ending), domain);
       const checkout = taken || reserved || !eligible ? null : [raw?.checkout, shopUrl].find(url => safeLink(url, domain)) ?? null;
-      return { domain, ending, state, status, ...usd, total, shop, checkout, eligible, source,
+      return { domain, ending, state, status, ...usd, total, shop, checkout, eligible, source, ...(raw?.savings && { savings: raw.savings }),
         priceLabel: usd.now != null || usd.renew != null ? (confirmed ? 'Shop quote' : taken ? 'Standard list price benchmark' : 'List price') : '',
         checkedAt: raw?.checkedAt ?? data.checkedAt, priceAt: confirmed ? raw?.checkedAt ?? data.checkedAt : raw?.priceAt ?? data.priceListDate,
         site: raw?.site ?? detail.details?.sites?.[ending] ?? row.details?.sites?.[ending] };
@@ -93,12 +121,13 @@ function offerText(offer, linked = false) {
     + (priceLabel ? ' ' + priceLabel.toLowerCase() + priceDate(offer) : '');
 }
 
-function appFinding(value) {
-  if (value == null) return 'check incomplete';
+function appFinding(value, row, source) {
+  if (value == null) return missing(row, source);
   return Array.isArray(value) && !value.length ? 'no app with this name' : 'same-name app found';
 }
 
-function signals(group) {
+// check_domains never screens apps, so its lines show the web signal only.
+function signals(group, triage = true) {
   const { row, records } = group;
   const comp = row.competition ?? {};
   const site = records.map(record => record.site).find(site => site?.state === 'live')?.host;
@@ -107,20 +136,24 @@ function signals(group) {
   const web = site ? 'live site at ' + plain(site) : states.some(state => /live/i.test(state)) ? 'live site'
     : states.some(state => /parked|for sale|for-sale/i.test(state)) ? 'parked'
       : row.traction?.domain ? 'rival listed at ' + plain(row.traction.domain)
-        : checked ? 'no live site found on checked endings' : 'not checked';
-  return 'iOS: ' + appFinding(comp.AppStore) + ' | Android: ' + appFinding(comp.GooglePlay) + ' | web: ' + web;
+        : waitingOn(row, 'websites') ? 'still checking' : states.includes('unknown') ? 'check incomplete'
+          : checked ? 'no live site found on checked endings' : 'not checked';
+  if (!triage) return 'web: ' + web;
+  return 'iOS: ' + appFinding(comp.AppStore, row, 'App Store') + ' | Android: ' + appFinding(comp.GooglePlay, row, 'Google Play') + ' | web: ' + web;
 }
 
-function summary(groups, args, triage) {
-  const [wanted] = groups;
+// One selection feeds the receipt lines and the share link: preferred endings, budget, eligibility, verdict and
+// confirmed quotes decide the candidates; best value compares payments due in 3 years (y3 quote or term-aware sum).
+// names[i] is the same choice made inside groups[i] alone: its first candidate, its best value and its taken rows,
+// preferred endings first in the user's order (.com first by default).
+function receiptSelection(groups, args, triage) {
   const preferred = args.endings ?? [];
   const budget = args.budget;
-  const isExact = !triage && groups.length === 1 && wanted.row.name.includes('.');
-  const constraints = [...(!isExact && preferred.length ? [preferred.map(ending => '.' + ending).join(', ') + ' first'] : []),
-    ...(budget != null ? ['Up to ' + cash(budget) + ' today'] : [])];
+  const exact = !triage && groups.length === 1 && groups[0].row.name.includes('.');
   const inScope = record => record.eligible && (!preferred.length || preferred.includes(record.ending))
     && (budget == null || (record.now ?? Infinity) <= budget);
-  const candidates = groups.flatMap(group => group.row.verdict === 'Avoid' ? [] : group.records
+  // An exact lookup reports its one domain and never recommends.
+  const candidates = exact ? [] : groups.flatMap(group => group.row.verdict === 'Avoid' ? [] : group.records
     .filter(record => inScope(record) && (record.state === 'free' || record.priceLabel === 'Shop quote'))
     .map(record => ({ group, record })));
   const cost = item => item.record.now ?? Infinity;
@@ -128,11 +161,33 @@ function summary(groups, args, triage) {
   const position = item => preferred.length ? preferred.indexOf(item.record.ending) : 0;
   candidates.sort((a, b) => (verdictOrder[a.group.row.verdict] ?? 0) - (verdictOrder[b.group.row.verdict] ?? 0)
     || position(a) - position(b) || compareCost(a, b) || a.record.domain.localeCompare(b.record.domain));
-  const best = candidates[0];
-  const picks = [...new Map(candidates.toReversed().map(item => [item.group, item])).values()].reverse().slice(0, 3);
-  const cheapest = candidates.filter(item => item.record.now != null).sort(compareCost)[0];
-  const value = candidates.filter(item => item.record.total != null)
+  const bestValue = items => items.filter(item => item.record.total != null)
     .sort((a, b) => a.record.total - b.record.total || compareCost(a, b))[0];
+  const order = preferred.length ? preferred : ['com'];
+  const takenRank = record => {
+    const index = order.indexOf(record.ending);
+    return index < 0 ? order.length : index;
+  };
+  return {
+    exact, preferred, budget,
+    best: candidates[0],
+    picks: [...new Map(candidates.toReversed().map(item => [item.group, item])).values()].reverse().slice(0, 3),
+    cheapest: candidates.filter(item => item.record.now != null).sort(compareCost)[0],
+    value: bestValue(candidates),
+    names: groups.map(group => {
+      const own = candidates.filter(item => item.group === group);
+      return { pick: own[0]?.record ?? null, value: bestValue(own)?.record ?? null,
+        taken: group.records.filter(record => record.state === 'taken' && (!preferred.length || preferred.includes(record.ending)))
+          .sort((a, b) => takenRank(a) - takenRank(b)) };
+    }),
+  };
+}
+
+function summary(groups, args, triage, selection) {
+  const [wanted] = groups;
+  const { exact: isExact, preferred, budget, best, picks, cheapest, value } = selection;
+  const constraints = [...(!isExact && preferred.length ? [preferred.map(ending => '.' + ending).join(', ') + ' first'] : []),
+    ...(budget != null ? ['Up to ' + cash(budget) + ' today'] : [])];
   const target = wanted.records.find(record => record.ending === (preferred[0] ?? 'com')) ?? wanted.records[0];
   const watch = target?.state === 'taken' ? 'Want it anyway? [Watch ' + target.domain + '](' + watchLink(target.domain) + ').' : null;
   if (isExact) {
@@ -147,41 +202,81 @@ function summary(groups, args, triage) {
     const intro = picked.domain + ': ' + picked.status.toLowerCase() + '.' + price + (overBudget ? ' Over budget.' : '');
     const step = overBudget ? 'Next: try a cheaper domain.' : picked.checkout
       ? 'Next: [check at ' + plain(picked.shop) + '](' + picked.checkout + ').' : watch ?? 'Next: check another domain.';
-    return [...constraints, intro, ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []), step];
+    return { lines: [...constraints, intro, ...(args.purchase ? ['This check leaves checkout to you.'] : []), step], savings: [] };
   }
   const reason = evidenceText(wanted.row.reason).replace('David vs Goliath: ', 'Established rival: ');
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
     + reason.replaceAll(' · ', '. ') + '.'
-    + (typeof markOf(wanted.row) === 'string' && reason.includes(markOf(wanted.row)) ? ' US trademark screen.' : ' ' + marksText(wanted.row) + '.')
+    + markScreen(wanted.row, reason)
     + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best free rename: ' : ' Next name to check: ')
       + plain(best.group.row.name) + '.' : '')
-    + (picks.some(item => item.group === wanted) ? '' : ' | ' + signals(wanted)) : null;
-  const next = watch ?? (args.shortlist ? 'Next: screen the best names.' : best ? 'Next: check your pick at the shop.' : 'Next: try another name.');
+    + (picks.some(item => item.group === wanted) ? '' : ' | ' + signals(wanted, triage)) : null;
+  const next = watch ?? (!triage && args.shortlist ? 'Next: screen the best names.' : best ? 'Next: check your pick at the shop.' : 'Next: try another name.');
   const caution = item => item.group.row.verdict === 'Check first' ? ' (Check first)' : '';
   const label = item => offerText(item.record, true) + caution(item);
   const offerLines = picks.map(({ group, record }, index) =>
     (budget != null && index === 0 ? 'Pick: ' : (index + 1) + '. ') + offerText(record) + ' (' + plain(record.status.toLowerCase()) + ') | '
-    + (triage ? plain(group.row.verdict) + ' | ' + marksText(group.row) + ' | ' : '') + signals(group));
+    + (triage ? plain(group.row.verdict) + ' | ' + marksText(group.row) + ' | ' : '') + signals(group, triage));
   const scope = constraints.length ? constraints.join(' | ') + '. ' : '';
   const leadPick = scope && offerLines.length ? scope + offerLines.shift() : null;
   const eligibility = args.eligible?.includes('no') || cheapest?.record.ending === 'no'
     || value?.record.ending === 'no' || preferred.includes('no')
     ? ' .no needs a Norwegian address and organization or personal ID.' : '';
   const waiting = Array.isArray(wanted.row.handles) && wanted.row.handles.filter(row => row.why === 'still checking').map(row => row.platform);
-  const handles = !triage ? null : waiting?.length
-    ? 'still checking ' + waiting.join(', ') + '. Check links on the page'
-    : handleSummary(wanted.row.handles, { ordered: true });
+  const handles = !triage || waiting?.length ? null : handleSummary(wanted.row.handles, { ordered: true });
+  // One line for every check still running after the first answer; the results page fills in by itself.
+  const running = !triage ? [] : [...new Set([...waiting?.length ? ['handles'] : [],
+    ...groups.flatMap(group => Array.isArray(group.row.waiting) ? group.row.waiting : [])])];
   const lines = [
     leadPick || (scope ? scope + 'All endings are on the page.' : null),
     keep,
     handles && 'Handles for ' + evidenceText(wanted.row.name) + ': ' + plain(handles) + '.',
+    running.length ? 'Still checking ' + running.join(', ') + '. The results page updates by itself.' : null,
     ...offerLines,
     'Cheapest: ' + (cheapest ? label(cheapest) : 'none found in scope.'),
     'Best value: ' + (value ? value.record.domain + ', ' + cash(value.record.total) + ' in payments due in 3 years'
       + ' (' + value.record.priceLabel.toLowerCase() + priceDate(value.record) + ')' + caution(value) : 'needs a shop quote') + '.',
-    (args.purchase ? 'Domain Hound cannot buy or complete checkout. ' : '') + next + eligibility,
+    (args.purchase ? 'This check leaves checkout to you. ' : '') + next + eligibility,
   ];
-  return lines.filter(Boolean);
+  // Savings are page-only proof for each pick: dated list prices from at least three shops, never a pitch.
+  const savings = picks.map(({ record }) => savingsLine(record)).filter(Boolean);
+  const shortLines = args.shortlist && triage ? [
+    constraints.length ? constraints.join(' | ') + '.' : null,
+    ...picks.map(({ group, record }) => offerText(record) + '. ' + plain(group.row.verdict) + '.'),
+    picks.length ? null : 'No available pick in scope.',
+    running.length ? 'Still checking ' + running.join(', ') + '. The results page updates.' : null,
+    args.purchase ? 'Domain Hound cannot buy or complete checkout.' : null,
+  ].filter(Boolean) : null;
+  return { lines: lines.filter(Boolean), savings, shortLines };
+}
+
+// "lanternbay.xyz: 3 years here (Dynadot): $30.40 vs $36.45 at Spaceship, the median of 3 shops' list prices from 2026-11-25."
+// Shown only when the pick is the compared list price and the difference is real and positive.
+export function savingsLine(record) {
+  const value = record?.savings;
+  if (!value || record.priceLabel !== 'List price' || record.state !== 'free' || (record.term ?? 1) !== 1 || value.years !== 3) return null;
+  const here = record.now != null && record.renew != null ? Math.round((record.now + 2 * record.renew) * 100) / 100 : null;
+  const saved = Math.round((value.median - value.here) * 100) / 100;
+  if (here == null || Math.abs(here - value.here) > 0.005 || record.shop !== value.shop || !(value.shops >= 3)
+    || !(saved > 0) || Math.abs(saved - value.saved) > 0.005 || value.medianShop === value.shop
+    || ![value.checkedFrom, value.checkedTo].every(date => /^\d{4}-\d{2}-\d{2}$/.test(date ?? ''))) return null;
+  const dates = value.checkedFrom === value.checkedTo ? value.checkedFrom : value.checkedFrom + ' to ' + value.checkedTo;
+  return record.domain + ' at ' + plain(value.shop) + '. 3 years here: ' + cash(value.here) + ' vs ' + cash(value.median) + ' at '
+    + plain(value.medianShop) + ', the median of ' + value.shops + ' shops\' list prices from ' + dates + '.';
+}
+
+// The trademark part of the kept name's line: offices whose hit the reason already names are not repeated,
+// and the strongest EU or Norwegian hit links to its record.
+function markScreen(row, reason) {
+  const named = ['US', ...offices.map(([office]) => office)].filter(office =>
+    typeof row.competition?.[office] === 'string' && reason.includes(evidenceText(row.competition[office])));
+  const manual = offices.filter(([office, , name]) => row.competition?.[office] == null && !waitingOn(row, name));
+  const rest = marksText(row, [...named, ...manual.map(([office]) => office)]);
+  const [hit] = officeMarks(row);
+  const link = hit && recordLink(hit.url);
+  return (named.length ? ' ' + named.map(office => office === 'NO' ? 'Norway' : office).join(' and ') + ' trademark screen.' : '')
+    + (rest ? ' ' + rest + '.' : '') + (link ? ' [' + plain(hit.office) + ' record](' + link + ').' : '')
+    + manual.map(([, label, name]) => ' [' + name + '](' + trademarkSearches[label] + '): check yourself.').join('');
 }
 
 function httpsLink(value) {
@@ -202,15 +297,28 @@ function details(group) {
   const ios = Array.isArray(comp.AppStore) ? comp.AppStore : comp.AppStore ? [comp.AppStore] : [];
   const android = Array.isArray(comp.GooglePlay) ? comp.GooglePlay : comp.GooglePlay ? [comp.GooglePlay] : [];
   const matches = [
-    ['US marks: ' + (typeof markOf(row) === 'string' ? plain(markOf(row)) : markOf(row) == null ? 'check incomplete' : 'no match found'), httpsLink(comp.mark)],
+    ['US marks: ' + (typeof markOf(row) === 'string' ? plain(markOf(row)) : markOf(row) == null ? missing(row, 'USPTO') : 'no match found'), httpsLink(comp.mark)],
+    ...officeMarks(row).map(entry => [markLabel(entry), recordLink(entry.url)]),
+    // An office without a key, or one that did not answer in full, reads check yourself with its search.
+    ...offices.filter(([office]) => typeof comp[office] !== 'string').map(([office, label, name]) => [
+      label + ' marks: ' + (!Object.hasOwn(comp, office) ? 'not checked automatically, check yourself'
+        : waitingOn(row, name) ? 'still checking'
+           : comp[office] == null ? 'check yourself, ' + name + ' did not answer in full' : 'no match found'),
+      Array.isArray(comp[office]) ? null : trademarkSearches[label]]),
+    ['WIPO marks: check yourself', trademarkSearches.WIPO],
+    ...(row.meaning ? [['Meaning: ' + plain(row.meaning)]] : []),
+    ...(comp.AppStore == null ? [['iOS: ' + missing(row, 'App Store')]] : []),
+    ...(comp.GooglePlay == null ? [['Android: ' + missing(row, 'Google Play')]] : []),
     ...ios.map(value => ['iOS: ' + titleAndLink(value)[0], titleAndLink(value)[1]]),
     ...android.map(value => ['Android: ' + titleAndLink(value)[0], titleAndLink(value)[1]]),
     ...[...(comp.sameName?.Norway ?? []), ...(comp.sameName?.EDGAR ?? [])].map(company => [plain(
       [company.name, company.employees != null ? company.employees + ' employees' : null].filter(Boolean).join(', ')), httpsLink(company.url)]),
     ...group.records.filter(row => row.site).map(({ domain, site }) => [
-      (site.host ?? domain) + ': ' + plain(site.state ?? site) + (site.title ? ', ' + plain(site.title) : ''),
+      (site.host ?? domain) + ': ' + (site.state === 'unknown' ? 'site did not answer in time' : plain(site.state ?? site))
+        + (site.title ? ', ' + plain(site.title) : ''),
       httpsLink('https://' + (site.host ?? domain))]),
-    ['Web search: ' + plain(row.google?.result ?? 'check incomplete'), httpsLink(row.google?.link)],
+    ['Web search: ' + plain(row.google?.why === 'still checking' ? 'still checking' : row.google?.result ?? 'check incomplete'), httpsLink(row.google?.link)],
+    ...(waitingOn(row, 'websites') ? [['Websites on taken endings: still checking']] : []),
     ['iOS search', 'https://apps.apple.com/us/iphone/search?term=' + encodeURIComponent(row.name)],
     ['Android search', 'https://play.google.com/store/search?q=' + encodeURIComponent(row.name) + '&c=apps'],
     ...(row.traction ? [[plain(row.traction.rival ?? row.traction.name ?? ''),
@@ -234,8 +342,17 @@ function handleLines(group) {
   });
 }
 
+function trademarkSnapshot(row) {
+  const comp = row.competition ?? {};
+  const keyed = offices.filter(([office]) => Object.hasOwn(comp, office));
+  const found = value => value === true || (typeof value === 'string' && value.length > 0);
+  if (found(comp.US) || keyed.some(([office]) => found(comp[office]))) return 'match found';
+  if (['USPTO', ...keyed.map(([, , name]) => name)].some(name => waitingOn(row, name))) return 'still checking';
+  if (comp.US == null || keyed.some(([office]) => comp[office] == null)) return notScreened(row) ? 'not screened' : 'check incomplete';
+  return 'no ' + ['US', ...keyed.map(([, label]) => label)].join(' or ') + ' match';
+}
+
 function nameSnapshot({ row, records }) {
-  const mark = row.competition?.US;
   const apps = [row.competition?.AppStore, row.competition?.GooglePlay];
   const open = records.filter(record => record.state === 'free' && record.eligible).length;
   const blocked = records.filter(record => record.state === 'taken').length;
@@ -245,8 +362,10 @@ function nameSnapshot({ row, records }) {
   const checks = handles.filter(handle => handle.state === 'check').length;
   return [
     'Domains ' + open + ' open' + (blocked ? ', ' + blocked + ' taken' : ''),
-    'Trademark ' + (mark == null ? 'check incomplete' : mark.length ? 'match found' : 'no US match'),
-    'Apps ' + (apps.some(value => value?.length) ? 'same-name listing' : apps.some(value => value == null) ? 'check incomplete' : 'no match'),
+    'Trademark ' + trademarkSnapshot(row),
+    ...(row.meaning ? ['Meaning: check first'] : []),
+    'Apps ' + (apps.some(value => value?.length) ? 'same-name listing' : apps.some(value => value == null)
+      ? (waitingOn(row, 'App Store') || waitingOn(row, 'Google Play') ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete') : 'no match'),
     'Handles ' + (handles.length ? [taken ? taken + ' taken' : null,
       absent + taken ? absent + ' of ' + (absent + taken) + ' with no public match' : null, checks ? checks + ' to check' : null].filter(Boolean).join(', ')
       : 'outside top three'),
@@ -279,8 +398,20 @@ function rowNote(row) {
     row.source, row.checkedAt, row.priceAt ? 'Price checked ' + row.priceAt : null].filter(Boolean).join(' · ');
 }
 
-function render(groups, lines, checkedAt, coverage, watch, companyType) {
+// Who saw what in this lookup, in one short paragraph for the page footer. Every clause matches a request the code makes.
+export function disclosure(data, triage) {
+  const shop = Array.isArray(data.shopAsked) && data.shopAsked.length
+    ? 'This lookup sent ' + data.shopAsked.slice(0, 4).map(plain).join(', ') + ' to a registrar for a quote.'
+    : 'No direct shop quote was requested. List prices come from public catalogs.';
+  if (!triage) return 'Domain checks use registries and DNS. We may visit candidate sites to verify an answer. ' + shop;
+  return 'Domain checks use registries, DNS and candidate sites. Up to five names go to public trademark, app, company and web sources. '
+    + 'Up to three go to public handle APIs. Domain Hound uses your brief locally. ' + shop;
+}
+
+function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [] } = {}) {
   const title = watch ? 'Domain watch' : 'Domain results';
+  const shared = shareUrl(groups, checkedAt, shareFacts);
+  const shareLabel = groups.length > 5 ? 'Share first five names' : 'Share';
   const [intro, ...body] = lines;
   const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
   const before = body.filter(line => !comparison.includes(line)).slice(0, comparison.length ? -1 : undefined);
@@ -310,14 +441,18 @@ function render(groups, lines, checkedAt, coverage, watch, companyType) {
   });
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
     + '<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'">'
+    // While checks still run, the open page reloads itself to pick up the rewritten file.
+    + (refresh ? '<meta http-equiv="refresh" content="8">' : '')
     + '<title>' + title + ' | Domain Hound</title><style>' + receiptStyle + '</style></head><body><main>'
-    + '<header><small>Domain Hound</small><h1>' + title + '</h1><time>' + escape(checkedAt) + '</time></header><section>'
+    + '<header>' + (shared ? '<a class="share" href="' + escape(shared) + '">' + shareLabel + '</a>' : '')
+    + '<small>Domain Hound</small><h1>' + title + '</h1><time>' + escape(checkedAt) + '</time></header><section>'
     + [intro, ...before].filter(Boolean).map(paragraph).join('')
     + (comparison.length ? '<div class="comparison">' + comparison.map(paragraph).join('') + '</div>' : '')
-    + after.map(paragraph).join('') + '</section>'
+    + after.map(paragraph).join('') + savings.map(paragraph).join('') + '</section>'
     + (groups.length > 1 ? '<nav aria-label="Jump to a name">' + groups.map(({ row }, index) => anchor(row.name, '#name-' + index)).join(' ') + '</nav>' : '')
-    + articles.join('') + '<footer>' + (sources ? paragraph(sources) : '') + '<p>You hold the leash.</p></footer></main></body></html>\n';
-  const md = ['# ' + title, '', 'Domain Hound · ' + checkedAt, '', ...lines, '',
+    + articles.join('') + '<footer>' + (sources ? paragraph(sources) : '') + (note ? paragraph(note) : '')
+    + '<p>You hold the leash.</p></footer></main></body></html>\n';
+  const md = ['# ' + title, '', 'Domain Hound · ' + checkedAt, '', ...lines, ...(savings.length ? ['', ...savings] : []), '',
     ...groups.flatMap(group => ['## ' + markdown(group.row.name), '',
       ...(group.row.verdict ? [markdown(group.row.verdict + '. ' + group.row.reason), markdown(nameSnapshot(group)), ''] : []),
       '| Ending | Today (USD) | Renewal (USD) | Evidence | Shop |', '| --- | --- | --- | --- | --- |',
@@ -326,7 +461,7 @@ function render(groups, lines, checkedAt, coverage, watch, companyType) {
       '', ...(group.row.verdict ? details(group).map(([label, url]) => '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label))) : []),
       ...(handleLines(group).length ? ['', '### Handles', '', ...(handlePriority(group, companyType) ? [markdown(handlePriority(group, companyType)), ''] : []), ...handleLines(group).map(([label, url]) =>
         '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label)))] : []), '']),
-    ...(sources ? [markdown(sources), ''] : []), 'You hold the leash.', ''].join('\n');
+    ...(sources ? [markdown(sources), ''] : []), ...(note ? [markdown(note), ''] : []), 'You hold the leash.', ''].join('\n');
   return { html, md };
 }
 
@@ -391,27 +526,52 @@ async function prune(directory, current) {
   }
 }
 
+const ownedPage = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-z0-9-]+-[a-f0-9]{8}\.html$/;
+// The page name a lookup already wrote, so a later update keeps the same URL. Anything else gets a new page.
+function reusedBase(reuse, directory) {
+  if (typeof reuse !== 'string') return null;
+  try {
+    const path = fileURLToPath(reuse);
+    return dirname(path) === resolve(directory) && ownedPage.test(basename(path)) ? basename(path).slice(0, -'.html'.length) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function resultsLine(url) {
+  const path = fileURLToPath(url).replaceAll('\\', '/').replace(/[\r\n<>]/g, encodeURIComponent);
+  return 'Results page: [Open results](' + (/[\s()]/.test(path) ? '<' + path + '>' : path) + ')';
+}
+
+// reuse: the resultPage URL of an earlier write for the same lookup; the update keeps that URL and does not open a
+// browser again. refresh: more checks are still running in this server, so the open page reloads itself.
 export function resultPages({ env = process.env,
   directory = env.DOMAIN_HOUND_RESULTS_DIR || join(homedir(), '.domain-hound', 'results') } = {}) {
   const session = randomUUID().slice(0, 8);
+  let sessionBase = null;
   let writes = Promise.resolve();
-  return (data, args, { triage = false, watch = false } = {}) => {
+  return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
       const groups = watch ? [] : resultGroups(data, args.eligible);
-      const lines = watch ? data.say.split('\n') : data.pending ? [
-        'Still checking trademark, app and web sources. Registry answers so far are on the page.',
-        'Repeat the same lookup to collect the rest.',
-        ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []),
-      ] : summary(groups, args, triage);
+      const selection = receiptSelection(groups, args, triage);
+      const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
+        ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
+          : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
+        ...(args.purchase ? ['This check leaves checkout to you.'] : []),
+      ], savings: [] } : summary(groups, args, triage, selection);
+      // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
+      const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);
       const title = watch ? data.domain : groups[0]?.row.name;
       await mkdir(directory, { recursive: true, mode: 0o700 });
       // If a caller points us at a shared directory, don't expose the searched name in its listing.
       const privateListing = process.platform === 'win32' || ((await stat(directory)).mode & 0o077) === 0;
       const slug = (privateListing && normalizeName(String(title).split('.')[0]) || 'results').slice(0, 30);
-      const base = new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
+      const kept = reusedBase(reuse, directory);
+      const base = kept ?? new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
-      const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType);
+      const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType,
+        { savings, note: watch ? '' : disclosure(data, triage), refresh: Boolean(refresh), shareFacts });
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {
@@ -421,11 +581,15 @@ export function resultPages({ env = process.env,
         throw error;
       }
       const exact = !triage && groups.length === 1 && groups[0].row.name.includes('.');
-      if (!watch && !exact) {
-        const latest = resolve(directory, 'session-' + session + '.html');
+      const latest = resolve(directory, 'session-' + session + '.html');
+      if (kept && sessionBase === kept) {
+        // The open tab shows the session copy; update it in place, without opening another tab.
+        await writePrivate(latest, page.html).catch(() => {});
+      } else if (!kept && !watch && !exact) {
         await backgroundCommand(latest, env).then(async command => {
           if (!command) return;
           await writePrivate(latest, page.html);
+          sessionBase = base;
           const [executable, args, launchEnv] = command;
           const browser = spawn(executable, args, { stdio: 'ignore', windowsHide: true, env: launchEnv });
           browser.on('error', () => {});
@@ -434,7 +598,9 @@ export function resultPages({ env = process.env,
       }
       await prune(directory, base).catch(() => {});
       const url = pathToFileURL(filename).href.replaceAll('(', '%28').replaceAll(')', '%29');
-      const say = [...lines, 'All endings: [Results page](' + url + ')'].join('\n');
+      // The link uses the client's local-file Markdown form. Keep the file URI for structured consumers.
+      const say = [resultsLine(url), ...(shortLines ?? lines)].join('\n');
+      if (triage && args.shortlist) return { display: say, say, checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({
         ...row, details: { ...row.details, sites: receiptDetails[index]?.details?.sites ?? {} },

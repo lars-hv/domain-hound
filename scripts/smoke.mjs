@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { resultsLine } from '../results.mjs';
 import { defaultEndings } from '../clis/domain-check/name-search.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier', 'quote_domain', 'buy_domain', 'setup_domain'];
 const endings = defaultEndings;
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
@@ -74,7 +75,7 @@ async function smokeMcp(label, command, args, options) {
     assert.equal(names[0].name, query);
     assert.ok(display.includes(query));
     assert.equal(display, result.structuredContent.say);
-    assert.match(display.split('\n').at(-1), /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/);
+    assert.equal(display.split('\n')[0], resultsLine(result.structuredContent.resultPage));
     const html = await readFile(new URL(result.structuredContent.resultPage), 'utf8');
     assert.ok(endings.every(ending => html.includes(query + '.' + ending)));
 

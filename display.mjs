@@ -4,7 +4,7 @@ import { canRecommend, eligibilityNeed, normalizeName, premiumRisk, unicodeName 
 import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
 export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
-export const neverBuys = 'Domain Hound never buys; open the link to buy.';
+export const neverBuys = 'This check leaves checkout to you; open the link to buy.';
 export const attribution = 'via domainhound.dev';
 
 // Every MCP display carries one attribution line. The blank line keeps it out of a preceding table or list.
@@ -30,7 +30,7 @@ const label = name => normalizeName(String(name ?? '')) ?? String(name ?? '').no
 const fullDomain = (name, d) => d.includes('.') ? d : name + '.' + d;
 const suffix = domain => domain.endsWith('.co.uk') || domain === 'co.uk' ? 'co.uk' : domain.split('.').at(-1);
 const registered = (row, ending) => row.taken?.includes(ending) || row.resale?.includes(ending);
-const checkoutLimitation = 'Domain Hound cannot buy or complete checkout.';
+const checkoutLimitation = 'This check leaves checkout to you.';
 const mayBePremium = 'may be premium, price at shop';
 
 // A name or domain in its own spelling with the ASCII form registrars use beside it: "grønn.no (xn--grnn-zua.no)".
@@ -176,7 +176,7 @@ function exactDisplay(result) {
     const benchmark = showBenchmark
       ? ['Standard .' + ending + ' list price (benchmark' + (date ? ' from ' + date : '') + ', USD ex. VAT): ' + renewal + '.']
       : [];
-    return ['**' + name + ' is taken, and ' + checkoutLimitation + '**' + resale + checked, ...benchmark, ...tail].join('\n');
+    return ['**' + name + ' is taken. ' + checkoutLimitation + '**' + resale + checked, ...benchmark, ...tail].join('\n');
   }
   const free = row.free?.find(option => option.d === ending);
   if (free?.s === 'prem') {
@@ -591,7 +591,8 @@ export function progressText(progress, { rows = [], elapsedMs = 0, budgetMs = 0,
       + (row._groups.checking.length ? ', ask again' : '')),
     ...(progressStage[progress?.stage] ? [progressStage[progress.stage]] : []),
     'Prices, ' + (triage ? 'verdicts, ' : '') + 'links and every ending come with the finished result. '
-      + 'Call the same tool again with the same input to collect it from this lookup.',
+      + (triage ? 'The results page fills in by itself; a repeat call with the same input returns it in chat.'
+        : 'Call the same tool again with the same input to collect it from this lookup.'),
   ];
   for (const row of names) {
     delete row._groups;
@@ -721,8 +722,11 @@ export function triageText(result, prior, { purchase = false, preferred } = {}) 
     row => {
       if (!row.competition) return;
       row.competition.mark = null;
+      delete row.competition.marks;
       if (typeof row.competition.sameName === 'object') row.competition.sameName = row.competition.sameName?.level ?? null;
-      if (typeof row.competition.US === 'string') row.competition.US = row.competition.US.split(':', 1)[0];
+      for (const office of ['US', 'EU', 'NO']) {
+        if (typeof row.competition[office] === 'string') row.competition[office] = row.competition[office].split(':', 1)[0];
+      }
       for (const source of ['AppStore', 'GooglePlay', 'Wikidata']) {
         const match = row.competition[source];
         if (Array.isArray(match) && match.length) row.competition[source] = match[0].name;

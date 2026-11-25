@@ -1,5 +1,5 @@
 export const showAsIs = 'Show `display` exactly as written, then add at most two sentences of advice below it.';
-export const purchaseLine = 'Domain Hound cannot buy or complete checkout; use the link above.';
+export const purchaseLine = 'This check leaves checkout to you; use the link above.';
 
 export const googleSearchInstruction = 'Before answering, use your built-in web search for each name marked google.search (up to 3). '
   + 'Search "<name>" and "<name>" app once each. Review the first 10 returned results of each search, or all results if fewer are returned. '
@@ -12,10 +12,12 @@ export const geoInstruction = 'GEO (presence in AI answers): for each name, answ
   + 'whether you know a specific brand, company or product by that exact name: "known: <what it is, a few words>" or "unknown". '
   + 'Say unknown for a plain dictionary word or when unsure. Do not guess.';
 
+// One screening call: triage_names checks every ending for all the names it gets and screens the first five, so the
+// recipe skips the preliminary check_domains batch (check_domains with shortlist still works for existing callers).
 export const namingRecipe = (about = '') => 'Naming recipe (intermediate). Use the final triage display.\n'
   + (about ? '1. Brief: ' + about.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim()
     + '.\n' : '1. Brief: product, audience and preferences.\n')
   + '2. Generate about 30 words. Pair one with a familiar animal or object. Default to English unless the person asked for another language. Avoid category-generic names.\n'
-  + '3. Check: call check_domains ONCE with seven bare names and shortlist: true (Quiet Otter → quietotter). No spaces or dots.\n'
-  + '4. Triage: call triage_names ONCE on the best FIVE with free endings, a short about and geo from memory. Pass the same endings and budget to both calls.\n'
-  + '5. Answer: Relay say as written. Let the person choose from the complete local results page.';
+  + '3. Screen: call triage_names ONCE with your best EIGHT names, strongest first (all get domains; the first five get marks, apps and rivals). '
+  + 'Add a short about, geo from memory, and any endings or budget the person gave. Skip check_domains.\n'
+  + '4. Answer: Relay say as written, starting with its results page line. Do not call again; the complete local results page fills in by itself.';

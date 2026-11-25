@@ -224,7 +224,7 @@ test('an exact .com adds one list-price line for the other endings and a benchma
   assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'net', 'org', 'xyz', 'tech']);
   assert.deepEqual(result.otherEndings.ai, { now: 159.96, renew: 159.96, y3: 319.92, term: 2, shop: 'Dynadot' });
   const display = displayOf(result);
-  assert.match(display, /^\*\*lanternbay\.com is taken, and Domain Hound cannot buy or complete checkout\.\*\*/);
+  assert.match(display, /^\*\*lanternbay\.com is taken\. This check leaves checkout to you\.\*\*/);
   assert.match(display, new RegExp('^Standard \\.com list price \\(benchmark from ' + day + ', USD ex\\. VAT\\): \\$9\\.48/\\$10\\.68\\.$', 'm'));
   const other = display.split('\n').filter(line => line.startsWith('Other endings'));
   assert.equal(other.length, 1);

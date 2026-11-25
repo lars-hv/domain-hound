@@ -14,11 +14,12 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain'];
+const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier',
+  'quote_domain', 'buy_domain', 'setup_domain'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');
 const published = flag >= 0 ? process.argv[flag + 1] : null;
-if (flag >= 0 && !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(published ?? '')) throw new Error('Use --published <version>, such as 0.1.5.');
+if (flag >= 0 && !/^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(published ?? '')) throw new Error('Use --published <version>, such as ' + packageVersion + '.');
 const version = published ?? packageVersion;
 // npm and npx are .cmd files on Windows and need a shell there.
 const npm = (args, options) => exec(windows ? 'npm.cmd' : 'npm', args, { ...options, shell: windows });
@@ -34,8 +35,9 @@ try {
     const [packed] = JSON.parse(stdout);
     const paths = packed.files.map(file => file.path);
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
-      'watch.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/handles.mjs',
-      'clis/domain-check/price-snapshot.json']) {
+      'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
+      'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
+      'share.mjs', 'site/r/share-format.mjs', 'clis/spaceship/tools.mjs']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
     assert.ok(!paths.some(file => /\.test\.mjs$|^fixtures\/|^test-support\/|^scripts\/|^\.github\//.test(file)), 'Tarball ships test or build files');
@@ -63,6 +65,7 @@ try {
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
     const listed = await request(2, 'tools/list');
     assert.deepEqual(listed.tools.map(tool => tool.name), tools);
+    console.log('MCP tools: ' + listed.tools.map(tool => tool.name).join(', '));
     if (published) {
       console.log(`Published npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, `
         + `${Math.round(performance.now() - started)} ms`);
@@ -73,7 +76,9 @@ try {
       assert.equal(names[0].name, 'example.com');
       assert.deepEqual(names[0].taken, ['com'], JSON.stringify(names[0]));
       assert.ok(display.includes('example.com'));
-      assert.match(display.split('\n').at(-1), /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/);
+      const lines = display.split('\n');
+      assert.ok(/^Results page: \[Open results\]\(.+\.html>?\)$/.test(lines[0])
+        || /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/.test(lines.at(-1)), display);
       console.log(`Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken, `
         + `${Math.round(performance.now() - started)} ms`);
     }

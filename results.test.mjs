@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { searchCandidates, defaultEndings } from './clis/domain-check/name-search.mjs';
-import { backgroundCommand, resultPages } from './results.mjs';
+import { backgroundCommand, resultPages, resultsLine } from './results.mjs';
 import { newsQuestion, watchDomain } from './watch.mjs';
 
 const at = '2026-11-24T12:00:00.000Z';
@@ -32,13 +32,13 @@ test('the short recommendation obeys scope while both receipts retain every endi
   const result = await pages(fixtures, { budget: 20, endings: ['com'] }, { triage: true });
   const lines = result.say.split('\n');
   assert.ok(lines.length <= 8);
-  assert.match(lines[0], /^\.com first.*\$20\.00 today.*cedarheron\.com \$12\.00, then \$14\.00/);
+  assert.match(lines[1], /^\.com first.*\$20\.00 today.*cedarheron\.com \$12\.00, then \$14\.00/);
   assert.match(result.say, /Keep Paper Heron\? Avoid\./);
   assert.match(result.say, /iOS: no app with this name \| Android: check incomplete/);
   assert.match(result.say, /Best free rename: Cedar Heron/);
   assert.match(result.say, /Want it anyway\? \[Watch paperheron\.com\]/);
   assert.doesNotMatch(result.say, /[—–]|paperheron\.io|cedarheron\.no/);
-  assert.equal(lines.at(-1), 'All endings: [Results page](' + result.resultPage + ')');
+  assert.equal(lines[0], resultsLine(result.resultPage));
 
   const path = fileURLToPath(result.resultPage);
   const [html, md] = await Promise.all([readFile(path, 'utf8'), readFile(path.replace(/\.html$/, '.md'), 'utf8')]);
@@ -86,7 +86,7 @@ test('a partial shop quote keeps renewal unknown and an exact offer above budget
   assert.doesNotMatch(html, /query=reserved\.com/);
 
   const exact = await pages({ ...data, names: [data.names[0]] }, { budget: 10, purchase: true });
-  assert.match(exact.say, /Over budget\.\nDomain Hound cannot buy or complete checkout\.\nNext: try a cheaper domain\./);
+  assert.match(exact.say, /Over budget\.\nThis check leaves checkout to you\.\nNext: try a cheaper domain\./);
   assert.doesNotMatch(exact.say, /https:\/\//);
 });
 
