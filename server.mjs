@@ -320,7 +320,7 @@ function readProgress(progress, line) {
 // Start one capability run. It ends on its own; only the maximum lookup time or server shutdown stops it.
 // A name screen answers first with the checks done so far ({"followUp":true} on its first line) and keeps running
 // the slow checks; the re-assessed result on its next line resolves lookup.later (null when there is none).
-function startLookup(args, cwd, maxMs) {
+function startLookup(args, cwd, maxMs, onLookupEvent) {
   const triage = args[0] === '--triage';
   const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false, exited: false,
     collect: false, outcome: null };
@@ -360,7 +360,10 @@ function startLookup(args, cwd, maxMs) {
       settle(() => parseOutput(firstLine, false, 0));
     }
   });
-  createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', line => readProgress(lookup.progress, line));
+  createInterface({ input: child.stderr, crlfDelay: Infinity }).on('line', line => {
+    readProgress(lookup.progress, line);
+    onLookupEvent?.('progress', lookup.progress);
+  });
   let stopped = false;
   const limit = setTimeout(() => {
     stopped = true;
@@ -385,7 +388,11 @@ function startLookup(args, cwd, maxMs) {
     later(next);
   };
   child.once('error', () => finish(true));
-  child.once('close', code => finish(code !== 0));
+  child.once('close', code => {
+    finish(code !== 0);
+    onLookupEvent?.('exited');
+  });
+  onLookupEvent?.('started');
   return lookup;
 }
 
@@ -415,6 +422,7 @@ function pendingTriage(progress, rows) {
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
   pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
+  onLookupEvent,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -439,7 +447,7 @@ export async function serve({
     const key = JSON.stringify([cliArgs, presentation]);
     let lookup = lookups.get(key);
     if (!lookup) {
-      lookup = startLookup(cliArgs, cwd, maxLookup);
+      lookup = startLookup(cliArgs, cwd, maxLookup, onLookupEvent);
       lookups.set(key, lookup);
       lookup.done.then(() => {
         if (lookups.get(key) !== lookup) return;

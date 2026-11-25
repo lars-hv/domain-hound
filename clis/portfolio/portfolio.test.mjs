@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { registryFacts } from '../domain-check/dossier.mjs';
 import { bootstrapUrl } from '../domain-check/registry.mjs';
 import { resultsLine } from '../../results.mjs';
@@ -309,11 +310,21 @@ test('sorts by urgency and keeps the say short, with only the two next-step line
   assert.doesNotMatch(lines.join('\n'), /silent\.com/);
 });
 
-test('a domain that outlives the budget is shown with unknown checks instead of holding up the rest', async () => {
-  const checker = domain => domain === 'slow.com' ? new Promise(() => {}) : Promise.resolve(row(domain));
-  const started = performance.now();
-  const rows = await checkAll(['fast.com', 'slow.com'], { checker, now, budgetMs: 200, catalog });
-  assert.ok(performance.now() - started < 2000);
+test('a domain that outlives the budget is shown with unknown checks instead of holding up the rest', async t => {
+  const clock = deadlineClock(t);
+  let slowSignal;
+  const checker = (domain, { signal }) => {
+    if (domain === 'fast.com') return Promise.resolve(row(domain));
+    slowSignal = signal;
+    return new Promise(() => {});
+  };
+  const checking = checkAll(['fast.com', 'slow.com'], { checker, now, budgetMs: 200, catalog });
+  clock.tick(199);
+  assert.equal(slowSignal.aborted, false);
+  clock.tick(1);
+  assert.equal(slowSignal.aborted, true);
+  clock.tick(500);
+  const rows = await checking;
   assert.equal(rows[0].site.state, 'ok');
   assert.equal(rows[1].registry.state, 'unknown');
   assert.equal(rows[1].site.state, 'unknown');

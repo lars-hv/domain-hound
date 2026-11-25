@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { domainToASCII, fileURLToPath, pathToFileURL } from 'node:url';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { checkText, triageText } from '../../display.mjs';
 import { writeCache } from './cache.mjs';
 import { parseDynadot } from './confirm.mjs';
@@ -77,6 +78,7 @@ test('a name with æøå is checked as its punycode label and shown in its own s
 
 test('the name screen checks æøå names as punycode, matches rivals by Latin letters and links the real domain', async t => {
   const directory = await pricedDirectory(t);
+  deadlineClock(t);
   const ascii = domainToASCII('grønnstue');
   assert.equal(searchKey('Grønnstue'), 'gronnstue');
   const registry = [];
@@ -281,6 +283,7 @@ test('a throttled registry host gets no queued requests, stays cooled down for t
   assert.ok(second.every(row => row.status === 'unknown' && row.likelySource === 'dns'));
 
   // An agent row with a DNS likelihood stays a shop check: never free without the registry or a shop.
+  deadlineClock(t);
   const agent = await agentResult(['openfive'], { ...options, env: {}, endings: ['app', 'dev'], bundledCatalog: null,
     budgetMs: 3000, cachedOnly: true });
   assert.deepEqual(agent.names[0].shop_check, ['dev', 'app']);
@@ -316,12 +319,20 @@ test('a throttled ending falls back to the registry WHOIS that IANA documents, a
   assert.ok(hosts.includes('whois.nic.me'));
 
   // A resolver that never answers cannot hold the lookup past its deadline.
-  const started = performance.now();
-  const [slow] = await lookupRegistrations([{ domain: 'open3.app', tld: 'app' }], {
+  const clock = deadlineClock(t);
+  let resolverStarted;
+  const started = new Promise(resolve => { resolverStarted = resolve; });
+  const checking = lookupRegistrations([{ domain: 'open3.app', tld: 'app' }], {
     directory: null, fetcher, pause: async () => {}, queryWhois: async () => '', resolveNs: async () => { throw notFound(); },
-    timeLeft: () => 1600 - (performance.now() - started), authoritativeNs: () => new Promise(() => {}),
+    timeLeft: () => 1600 - performance.now(),
+    authoritativeNs: (_domain, budget) => {
+      resolverStarted(budget);
+      return new Promise(() => {});
+    },
   });
-  assert.ok(performance.now() - started < 2500);
+  assert.equal(await started, 900);
+  clock.tick(950);
+  const [slow] = await checking;
   assert.equal(slow.status, 'unknown');
   assert.equal(slow.likely, 'free', 'the recursive NXDOMAIN still gives the likelihood');
 });
@@ -361,14 +372,13 @@ function stepRun(workflow, name) {
 
 function run(command, args, options) {
   return new Promise((resolve, reject) => {
-    const started = performance.now();
     const child = spawn(command, args, { ...options, timeout: 12_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
     child.stderr.on('data', chunk => { stderr += chunk; });
     child.on('error', reject);
-    child.on('close', code => resolve({ code, stdout, stderr, ms: performance.now() - started }));
+    child.on('close', code => resolve({ code, stdout, stderr }));
   });
 }
 
@@ -406,9 +416,14 @@ async function fixtureBin(t, plan) {
   }
   // macOS ships no coreutils timeout; a minimal stand-in keeps the shell runnable there. Linux CI uses the real one.
   if (spawnSync('sh', ['-c', 'command -v timeout']).status !== 0) {
-    await writeFile(join(dir, 'timeout'), '#!/bin/sh\n[ "$1" = "-s" ] && shift 2\nsecs=$1; shift\n'
-      + 'exec perl -e \'alarm shift; exec @ARGV or die\' "$secs" "$@"\n');
-    await chmod(join(dir, 'timeout'), 0o755);
+    await fixtureCommand(dir, 'timeout', `import { spawn } from 'node:child_process';
+const [flag, signal, seconds, command, ...args] = process.argv.slice(2);
+if (flag !== '-s' || signal !== 'KILL') throw new Error('Expected timeout -s KILL');
+const child = spawn(command, args, { stdio: 'inherit' });
+let expired = false;
+const timer = setTimeout(() => { expired = true; child.kill('SIGKILL'); }, Number(seconds) * 1000);
+child.once('close', code => { clearTimeout(timer); process.exitCode = expired ? 137 : code ?? 1; });
+`);
   }
   const calls = async () => (await readFile(join(dir, 'calls.jsonl'), 'utf8').catch(() => ''))
     .split('\n').filter(Boolean).map(line => JSON.parse(line));
@@ -470,8 +485,7 @@ test('the readiness wait gives up at its deadline even when npm view hangs', she
   const result = await waitStep(t, ['hang'], { READY_TIMEOUT_SECONDS: '3', READY_ATTEMPT_SECONDS: '1', READY_POLL_SECONDS: '0' });
   assert.equal(result.code, 1);
   assert.match(result.stderr, /was not listed by npm view 3 times in a row within 3 s/);
-  assert.match(result.stdout, /not listed yet/);
-  assert.ok(result.ms < 9000, 'ends near its deadline: ' + Math.round(result.ms) + ' ms');
+  assert.match(result.stdout, /not listed yet \(npm view did not answer within 1 s\)/);
 });
 
 // The fake npx fails like npm while the version is missing, then serves this checkout's MCP server.
@@ -523,23 +537,20 @@ test('the published smoke fails at once on any other npx error and stops retryin
   assert.match(other.stderr, /npm error code EACCES/);
 
   const stale = await publishedSmoke(t, ['etarget'], { PACKAGE_SMOKE_WINDOW_MS: '1500', PACKAGE_SMOKE_RETRY_DELAY_MS: '200' });
-  assert.notEqual(stale.code, 0);
+  assert.equal(stale.code, 1);
   assert.ok(stale.calls.length >= 2, 'retried within the window');
   assert.match(stale.stderr, /npm error code ETARGET/);
   // The overall cap can expire while the last retry is in flight.
   assert.match(stale.stderr, /npx still could not find domain-hound@[\d.]+ after \d+ attempts|npx smoke timed out after [12] s/);
-  assert.ok(stale.ms < 8000, Math.round(stale.ms) + ' ms');
 
   // A hanging npx is cut off at the overall cap, not after the full per-attempt allowance.
   const hung = await publishedSmoke(t, ['hang'], { PACKAGE_SMOKE_WINDOW_MS: '1500' });
-  assert.notEqual(hung.code, 0);
+  assert.equal(hung.code, 1);
   assert.equal(hung.calls.length, 1);
   assert.match(hung.stderr, /npx smoke timed out after 2 s/);
-  assert.ok(hung.ms < 8000, Math.round(hung.ms) + ' ms');
 
   const hungAfterReply = await publishedSmoke(t, ['hang-after-reply'], { PACKAGE_SMOKE_WINDOW_MS: '1500' });
   assert.equal(hungAfterReply.code, 1);
   assert.match(hungAfterReply.stderr, /npx smoke timed out after 2 s/);
   assert.doesNotMatch(hungAfterReply.stdout, /Published npx smoke/);
-  assert.ok(hungAfterReply.ms < 8000, Math.round(hungAfterReply.ms) + ' ms');
 });

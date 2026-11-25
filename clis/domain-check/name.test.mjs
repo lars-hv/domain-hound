@@ -1,6 +1,7 @@
 import '../../test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -157,7 +158,8 @@ test('requires an eligibility opt-in before picking a restricted ending', () => 
   assert.equal(pickName([norway]), undefined);
 });
 
-test('serializes concurrent Spaceship confirmations and allows the next shop after a failed check', async () => {
+test('serializes concurrent Spaceship confirmations and allows the next shop after a failed check', async t => {
+  deadlineClock(t);
   let inSpaceship = 0;
   const calls = [];
   const deadline = performance.now() + 1000;
@@ -165,7 +167,7 @@ test('serializes concurrent Spaceship confirmations and allows the next shop aft
     calls.push([domain, shop]);
     if (shop !== 'spaceship') return { available: true };
     assert.equal(inSpaceship++, 0);
-    await delay(8);
+    await new Promise(setImmediate);
     inSpaceship--;
     return { available };
   };
@@ -274,11 +276,18 @@ test('the batch shop check stops after one storefront when that shop cannot conf
   assert.deepEqual(openings.map(url => url.hostname), ['www.spaceship.com']);
 });
 
-test('agent returns partial rows at the registry deadline and preserves completed checks', async () => {
-  const result = await agentResult(['example', 'sample'], {
+test('agent returns partial rows at the registry deadline and preserves completed checks', async t => {
+  const clock = deadlineClock(t);
+  let recorded;
+  const completed = new Promise(resolve => { recorded = resolve; });
+  const checking = agentResult(['example', 'sample'], {
     ...registryOptions, budgetMs: 80,
     resolveNs: async domain => domain === 'example.com' ? new Promise(() => {}) : ['ns.example.net'],
+    onProgress: event => { if (event.domain === 'sample.com') recorded(); },
   });
+  await completed;
+  clock.tick(80);
+  const result = await checking;
   assert.equal(result.complete, false);
   assert.deepEqual(result.names.map(row => row.name), ['example', 'sample']);
   assert.ok(result.names[0].shop_check.includes('com'));
@@ -286,16 +295,23 @@ test('agent returns partial rows at the registry deadline and preserves complete
   assert.ok(Number.isFinite(Date.parse(result.checkedAt)));
 });
 
-test('agent returns the registry result when the one live shop check runs out of time', async () => {
+test('agent returns the registry result when the one live shop check runs out of time', async t => {
+  const clock = deadlineClock(t);
+  let confirming;
+  const started = new Promise(resolve => { confirming = resolve; });
   const seen = [];
-  const result = await agentResult(['example'], {
+  const checking = agentResult(['example'], {
     ...registryOptions, budgetMs: 1200, browser: true,
     resolveNs: async domain => domain.endsWith('.me') ? [] : ['ns.example.net'],
     confirm: async (_shop, domain) => {
       seen.push(domain);
+      confirming();
       return new Promise(() => {});
     },
   });
+  await started;
+  clock.tick(1200);
+  const result = await checking;
   assert.deepEqual(seen, ['example.me']);
   assert.equal(result.complete, false);
   assert.equal(result.best, undefined);
@@ -421,13 +437,12 @@ test('agent checks all twelve endings for 20 names and keeps the priced output u
   const queries = [' Example One ', ...Array.from({ length: 19 }, (_, index) => 'a'.repeat(61) + index)];
   const attempted = [];
   const started = [];
-  const start = performance.now();
+  deadlineClock(t);
   const result = await agentResult(queries, {
     ...registryOptions, directory, now, cachedOnly: true, browser: true,
     comSite: async () => assert.fail('Batch mode checks registry and shops only'),
     resolveNs: async domain => {
       attempted.push(domain);
-      await delay(5);
       return domain.startsWith('exampleone.') && domain.endsWith('.io') ? ['ns1.atom.com'] : [];
     },
     confirm: async (shop, domain, options) => {
@@ -437,7 +452,6 @@ test('agent checks all twelve endings for 20 names and keeps the priced output u
       return { status: 'confirmed', shopName: 'Spaceship', price: 9.48, renewal: 10.68 };
     },
   });
-  assert.ok(performance.now() - start < 15_000);
   assert.equal(result.complete, true);
   assert.deepEqual(result.names.map(row => row.name), queries.map(normalizeName));
   assert.equal(attempted.length, 240);

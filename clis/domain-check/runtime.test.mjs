@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { attribution, checkText, purchaseLine } from '../../display.mjs';
 import { cacheDir, userCacheDir, writeCache } from './cache.mjs';
 import { confirmDomain } from './confirm.mjs';
@@ -60,9 +61,8 @@ function withoutPlaywright(t) {
 test('by default an exact free domain needs no browser and labels its list price', async t => {
   withoutPlaywright(t);
   const options = await pricedRegistry(t);
-  const started = performance.now();
+  deadlineClock(t);
   const result = await agentResult('example.me', { ...options, env: {} });
-  assert.ok(performance.now() - started < 2000);
   assert.equal(result.complete, true);
   assert.equal(result.best, undefined);
   assert.equal(result.liveCheck, undefined);
@@ -78,9 +78,8 @@ test('by default an exact free domain needs no browser and labels its list price
 test('with the explicit confirm flag and no Playwright, an exact free domain keeps its list price and asks for a shop check', async t => {
   withoutPlaywright(t);
   const options = { ...await pricedRegistry(t), browser: true };
-  const started = performance.now();
+  deadlineClock(t);
   const result = await agentResult('example.me', options);
-  assert.ok(performance.now() - started < 5000);
   assert.equal(result.complete, true);
   assert.equal(result.best, undefined);
   assert.deepEqual(result.names, [{ name: 'example.me',

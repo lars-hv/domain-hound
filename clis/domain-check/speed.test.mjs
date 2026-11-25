@@ -11,6 +11,7 @@ import { triageWithFollowUp } from './index.mjs';
 import { listSavings } from './name-search.mjs';
 import { searchEntities } from './triage-sources.mjs';
 import { withSocial } from '../../test-support/social-fixture.mjs';
+import { deadlineClock } from '../../test-support/deadline-clock.mjs';
 import { resultPages, savingsLine } from '../../results.mjs';
 
 const now = new Date('2026-11-24T12:00:00Z');
@@ -83,7 +84,7 @@ test('Wikidata searches go one at a time and a busy answer is asked again', asyn
     seen.set(search, (seen.get(search) ?? 0) + 1);
     active++;
     most = Math.max(most, active);
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(setImmediate);
     active--;
     // The first search per name meets the HTTP 200 busy answer Wikidata gives to parallel searches.
     return Response.json(seen.get(search) === 1
@@ -97,7 +98,9 @@ test('Wikidata searches go one at a time and a busy answer is asked again', asyn
   assert.deepEqual([...seen.values()], [2, 2]);
 });
 
-test('a slow Google Play search gets the time left instead of a 2.8 second attempt', async () => {
+test('a slow Google Play search gets the time left instead of a 2.8 second attempt', async t => {
+  const clock = deadlineClock(t);
+  const timeouts = [];
   const launch = async () => ({
     async newContext() {
       return { async newPage() {
@@ -105,8 +108,10 @@ test('a slow Google Play search gets the time left instead of a 2.8 second attem
         return {
           goto: async value => { url = value; return { ok: () => true }; },
           url: () => url,
-          waitForFunction: async () => {
-            await new Promise(resolve => setTimeout(resolve, 2900));
+          waitForFunction: async (_read, _input, { timeout }) => {
+            timeouts.push(timeout);
+            clock.tick(2900);
+            if (timeout < 2900) throw new Error('Search timed out');
             return { jsonValue: async () => [] };
           },
           close: async () => {},
@@ -118,20 +123,20 @@ test('a slow Google Play search gets the time left instead of a 2.8 second attem
   const seen = [];
   const results = await searchAndroidApps(new Map([['quietfern', 'Quiet Fern']]),
     { directory: null, playBudgetMs: 6000, launch, onResult: name => seen.push(name) });
+  assert.deepEqual(timeouts, [6000]);
   assert.deepEqual(results.get('quietfern'), []);
   assert.deepEqual(seen, ['quietfern']);
 });
 
-test('Wikidata entity details get more than 1.2 seconds', async () => {
+test('Wikidata entity details get more than 1.2 seconds', async t => {
+  const clock = deadlineClock(t);
   const fetcher = async (value, init) => {
     const url = new URL(value);
     if (url.searchParams.get('action') === 'wbsearchentities') {
       return Response.json({ search: [{ id: 'Q1', label: 'Quiet Fern', description: 'software' }] });
     }
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, 1500);
-      init.signal.addEventListener('abort', () => { clearTimeout(timer); reject(init.signal.reason); }, { once: true });
-    });
+    clock.tick(1500);
+    init.signal.throwIfAborted();
     return Response.json({ entities: { Q1: { claims: { P31: [{ mainsnak: { datavalue: { value: { id: 'Q7397' } } } }] }, sitelinks: {} } } });
   };
   const rows = await searchEntities('quietfern', 'Quiet Fern', { fetcher, cacheLifetime: 1, directory: null });
@@ -141,6 +146,16 @@ test('Wikidata entity details get more than 1.2 seconds', async () => {
 test('a name screen reports slow app and EUIPO checks as pending, then reuses their answers', async t => {
   const directory = await directoryFor(t);
   await writeCache(directory, 'prices.json', catalog([['dynadot', 'Dynadot', 9, 11]]));
+  const clock = deadlineClock(t);
+  let slowChecksStarted;
+  let releaseSlowChecks;
+  const started = new Promise(resolve => { slowChecksStarted = resolve; });
+  const finishing = new Promise(resolve => { releaseSlowChecks = resolve; });
+  let slowChecks = 0;
+  const hold = () => {
+    if (++slowChecks === 2) slowChecksStarted();
+    return finishing;
+  };
   const calls = new Map();
   const count = host => calls.set(host, (calls.get(host) ?? 0) + 1);
   const options = {
@@ -154,14 +169,13 @@ test('a name screen reports slow app and EUIPO checks as pending, then reuses th
       count(url.hostname);
       if (url.hostname === 'data.iana.org') return Response.json({ services: [[['com'], ['https://rdap.example.test/']]] });
       if (url.hostname === 'itunes.apple.com') {
-        // The App Store answers after the first answer is due.
-        await new Promise(resolve => setTimeout(resolve, 600));
+        await hold();
         return Response.json({ results: [] });
       }
       if (url.hostname === 'tmsearch.uspto.gov') return Response.json({ hits: { hits: [] } });
       if (url.hostname === 'euipo.europa.eu') return Response.json({ access_token: 'fixture-token' });
       if (url.hostname === 'api.euipo.europa.eu') {
-        await new Promise(resolve => setTimeout(resolve, 600));
+        await hold();
         return Response.json({ trademarks: [], totalElements: 0 });
       }
       if (url.hostname === 'www.wikidata.org') return Response.json({ search: [] });
@@ -175,7 +189,13 @@ test('a name screen reports slow app and EUIPO checks as pending, then reuses th
     }),
   };
   let first;
-  const final = await triageWithFollowUp(['Quiet Fern'], options, { followUp: true, answerMs: 150, print: value => { first = value; } });
+  const checking = triageWithFollowUp(['Quiet Fern'], options, {
+    followUp: true, answerMs: 150,
+    print: value => { first = value; releaseSlowChecks(); },
+  });
+  await started;
+  clock.tick(150);
+  const final = await checking;
   assert.equal(first.followUp, true);
   assert.equal(first.names[0].verdict, 'Check first');
   assert.match(first.names[0].reason, /^still checking\b.*\bApp Store\b/);

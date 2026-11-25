@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { PassThrough } from 'node:stream';
 import { createInterface } from 'node:readline';
+import { deadlineClock } from './test-support/deadline-clock.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
 import { serve } from './server.mjs';
 import { publicAddress } from './clis/domain-check/com-site.mjs';
@@ -278,32 +279,35 @@ test('alternatives use the name engine with cached prices only and keep evidence
   }
 });
 
-test('the whole dossier keeps its deadline when every source hangs', async () => {
+test('the whole dossier keeps its deadline when every source hangs', async t => {
+  const timer = deadlineClock(t);
   const never = () => new Promise(() => {});
-  const started = performance.now();
-  const data = await buildDossier(domain, { clock, budgetMs: 400, registry: never, site: never, alternatives: never, renewal: never,
+  const building = buildDossier(domain, { clock, budgetMs: 400, registry: never, site: never, alternatives: never, renewal: never,
     listings: never, screen: never });
-  assert.ok(performance.now() - started < 1500);
+  timer.tick(400);
+  const data = await building;
   assert.equal(data.track, 'unknown');
   assert.equal(data.fairRange, null);
   assert.equal(data.listings.absence, 'unknown');
   assert.equal(data.listings.unavailable.length, providers.length);
 });
 
-test('siteFacts falls back to http when https gives no answer, with a per-hop timeout', async () => {
+test('siteFacts falls back to http when https gives no answer, with a per-hop timeout', async t => {
+  const timer = deadlineClock(t);
+  let httpsSignal;
   const load = async (url, signal) => {
     if (url.protocol === 'https:') return new Promise((_, reject) => {
-      const network = setTimeout(() => reject(new Error('network closed')), 1000);
-      signal.addEventListener('abort', () => {
-        clearTimeout(network);
-        reject(new Error('timeout'));
-      }, { once: true });
+      httpsSignal = signal;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     });
     return page('<p>Our team builds tools.</p>');
   };
-  const started = performance.now();
-  const result = await siteFacts(domain, { load, clock, hopMs: 200 });
-  assert.ok(performance.now() - started < 1500);
+  const checking = siteFacts(domain, { load, clock, hopMs: 200 });
+  timer.tick(199);
+  assert.equal(httpsSignal.aborted, false);
+  timer.tick(1);
+  assert.equal(httpsSignal.reason.name, 'TimeoutError');
+  const result = await checking;
   assert.equal(result.state, 'live');
   assert.equal(result.url, 'http://example.com/');
 });
@@ -440,12 +444,15 @@ test('a Cloudflare-priced alternative says it needs Cloudflare DNS and links the
   assert.match(display, /example\.uk \(pick for the exact name\): \$5\.30 first year, renews at \$5\.30\/year, \$15\.90 over 3 years \(needs cloudflare dns\)\. \[Cloudflare\]\(<https:\/\/pricing\.registrar\.cloudflare\.com\/>\)/);
 });
 
-test('a hanging name screen still returns the priced alternatives and any settled screen', async () => {
-  const started = performance.now();
-  const data = await buildDossier(domain, { ...quick, budgetMs: 700, alternatives: threeAlternatives,
+test('a hanging name screen still returns the priced alternatives and any settled screen', async t => {
+  const timer = deadlineClock(t);
+  const building = buildDossier(domain, { ...quick, budgetMs: 700, alternatives: threeAlternatives,
     screen: label => label === 'example' ? Promise.resolve({ state: 'settled', verdict: 'No conflict found',
       reason: 'No US mark, same-name app or active company found in the sources checked', appEvidence: [] }) : new Promise(() => {}) });
-  assert.ok(performance.now() - started < 1500);
+  // These sources only use promises. Drain them so the priced rows and the fast screen are ready before the deadline.
+  await new Promise(setImmediate);
+  timer.tick(700);
+  const data = await building;
   assert.deepEqual(data.alternatives.map(row => [row.domain, row.price]), [['example.dev', 12], ['getexample.com', 10], ['example.app', 14]]);
   assert.equal(data.screens.example.state, 'settled');
   assert.equal(data.screens.getexample.state, 'pending');
