@@ -14,8 +14,94 @@ const rdapRateLimit = 'Registry RDAP returned HTTP 429';
 // A rate-limited registry host is left alone for its Retry-After in this process and the next.
 const legacyIdentityCooldown = 'rdap-identity-digital-cooldown.json';
 const cooldownFile = origin => 'rdap-cooldown-' + new URL(origin).hostname + '.json';
+
+export async function registryCooldown(origin, directory) {
+  const current = await readCache(directory, cooldownFile(origin));
+  const legacy = new URL(origin).origin === identityDigital ? await readCache(directory, legacyIdentityCooldown) : null;
+  return Math.max(current?.until || 0, legacy?.until || 0);
+}
 // The fallback steps (registry WHOIS, then DNS) keep this much of the lookup time.
 const fallbackReserve = 800;
+
+// Registry WHOIS servers as listed in the IANA Root Zone Database, so the fallback needs no whois.iana.org referral:
+// https://www.iana.org/domains/root/db/ai.html, https://www.iana.org/domains/root/db/io.html and
+// https://www.iana.org/domains/root/db/me.html (Identity Digital runs all three; checked 2026-11-25).
+export const documentedWhois = new Map([
+  ['ai', 'whois.nic.ai'],
+  ['io', 'whois.nic.io'],
+  ['me', 'whois.nic.me'],
+]);
+// Queries to one WHOIS host start at least this far apart. Identity Digital's hosts get the wider gap: they stand in
+// for an RDAP service that is already rate limiting this machine.
+export const whoisSpacing = { identity: 400, other: 150 };
+// A WHOIS host that answers with a rate-limit notice is left alone this long, in this process and the next.
+export const whoisCooldownMs = 15 * 60_000;
+const whoisCooldownFile = host => 'whois-cooldown-' + host + '.json';
+const whoisLimitWords = /\b(?:rate limit|limit exceeded|exceeded (?:the |your )?(?:query |request )?(?:limit|quota)|too many (?:queries|requests))\b/i;
+const whoisTurns = new Map();
+
+function whoisPacer(host) {
+  if (!whoisTurns.has(host)) whoisTurns.set(host, { nextStart: 0, limitedUntil: 0 });
+  return whoisTurns.get(host);
+}
+
+// Run one registry query at a time per host, spacing starts on a monotonic clock.
+async function queryRegistryWhois(host, domain, query, timeLeft, pause, directory) {
+  const pacer = whoisPacer(host);
+  if (!pacer.loaded) {
+    pacer.loaded = readCache(directory, whoisCooldownFile(host)).then(saved => {
+      pacer.limitedUntil = Math.max(pacer.limitedUntil, saved?.until || 0);
+    });
+  }
+  const previous = pacer.tail ?? Promise.resolve();
+  let release;
+  pacer.tail = new Promise(resolve => { release = resolve; });
+  try {
+    await Promise.all([pacer.loaded, previous]);
+    const spacing = [...documentedWhois.values()].includes(host) ? whoisSpacing.identity : whoisSpacing.other;
+    let waitForSlot = pause;
+    let timeout;
+    while (true) {
+      if (pacer.limitedUntil > Date.now()) return { reason: 'Registry WHOIS rate limit' };
+      const wait = Math.max(0, pacer.nextStart - performance.now());
+      const remaining = timeLeft();
+      // Leave at least 300 ms for the query itself, even after a late wake-up.
+      if (wait + 300 > remaining) return { reason: 'Registry WHOIS timed out' };
+      if (wait === 0) {
+        timeout = Math.min(1500, remaining);
+        break;
+      }
+      await waitForSlot(Math.ceil(wait));
+      // An early wake-up still needs a timer until the slot opens.
+      waitForSlot = delay;
+    }
+    let response;
+    try {
+      response = query(host, domain, timeout);
+    } finally {
+      // Start the gap once the query has been dispatched, before waiting for its reply.
+      pacer.nextStart = performance.now() + spacing;
+    }
+    const reply = String(await response ?? '');
+    if (await whoisLimited(host, reply, directory)) return { reason: 'Registry WHOIS rate limit' };
+    return { reply };
+  } finally {
+    release();
+  }
+}
+
+async function whoisLimited(host, reply, directory) {
+  if (!whoisLimitWords.test(reply.split(/^\s*Terms of Use:/im, 1)[0])) return false;
+  const pacer = whoisPacer(host);
+  pacer.limitedUntil = Math.max(pacer.limitedUntil, Date.now() + whoisCooldownMs);
+  await writeCache(directory, whoisCooldownFile(host), { until: pacer.limitedUntil }).catch(() => {});
+  return true;
+}
+
+// For tests: forget the pacing state of earlier lookups in this process.
+export function resetWhoisPacing() {
+  whoisTurns.clear();
+}
 
 const overrides = new Map([
   ['co', 'https://rdap.registry.co/co/'],
@@ -26,6 +112,7 @@ const overrides = new Map([
 ]);
 
 export function rdapBase(tld, services) {
+  if (tld === 'co.uk') tld = 'uk';
   const urls = services?.find(([tlds]) => tlds.includes(tld))?.[1];
   return overrides.get(tld) ?? urls?.find(url => url.startsWith('https://')) ?? urls?.[0];
 }
@@ -170,23 +257,29 @@ export function systemQueryWhois(host, query, timeout) {
   });
 }
 
-async function lookupWhois(domain, tld, query, timeLeft, referrals) {
-  if (!referrals.has(tld)) referrals.set(tld, query('whois.iana.org', tld, Math.min(1150, timeLeft())));
-  const iana = await referrals.get(tld);
-  const host = iana.match(/^(?:refer|whois):[ \t]*([a-z\d.-]+)[ \t\r]*$/im)?.[1];
+async function lookupWhois(domain, tld, query, timeLeft, referrals, { pause = delay, directory } = {}) {
+  if (tld === 'co.uk') tld = 'uk';
+  let host = documentedWhois.get(tld);
+  if (!host) {
+    if (!referrals.has(tld)) referrals.set(tld, query('whois.iana.org', tld, Math.min(1150, timeLeft())));
+    const iana = await referrals.get(tld);
+    host = iana.match(/^(?:refer|whois):[ \t]*([a-z\d.-]+)[ \t\r]*$/im)?.[1];
+  }
   if (!host) return unknown('whois', 'IANA WHOIS has no registry referral');
-  const timeout = Math.min(1500, timeLeft());
-  if (timeout <= 0) return unknown('whois', 'Registry WHOIS timed out');
-  const result = await query(host, domain, timeout);
-  const name = result.match(/^\s*Domain Name:[ \t]*(\S+)/im)?.[1];
-  if (name?.toLowerCase() === domain) {
+  const { reply: result, reason } = await queryRegistryWhois(host, domain, query, timeLeft, pause, directory);
+  if (reason) return unknown('whois', reason);
+  const name = result.match(/^\s*Domain(?: Name)?:[ \t]*(\S+)/im)?.[1];
+  // DENIC and EURid echo the queried name on negative answers.
+  const statusFree = /^\s*Status:[ \t]*free\s*$/im.test(result)
+    || tld === 'eu' && name?.toLowerCase() === domain && /^\s*Status:[ \t]*available\s*$/im.test(result);
+  if (name?.toLowerCase() === domain && !statusFree) {
     const expiry = result.match(/^Registry Expiry Date:[ \t]*(\S+)/im)?.[1];
     const expires = Number.isFinite(Date.parse(expiry)) ? new Date(expiry).toISOString() : null;
     return { status: 'taken', source: 'whois', ...(expires && { expires }) };
   }
   const signal = registrySignal(result);
   if (signal) return signalled('whois', signal);
-  if (/^\s*(?:(?:%|>>>|#)\s*)?(?:no (?:match|entries found|data found|object found)|(?:domain\s+)?not found|no such domain|the queried object does not exist)/im.test(result)) {
+  if (statusFree || /^\s*(?:(?:%|>>>|#)\s*)?(?:no (?:match|entries found|data found|object found)|(?:domain\s+)?not found|no such domain|the queried object does not exist|domain "[^"\s]+" not found)/im.test(result)) {
     return { status: 'free', source: 'whois' };
   }
   return unknown('whois', 'Registry WHOIS returned no definitive answer');
@@ -343,9 +436,7 @@ export async function lookupRegistrations(candidates, {
   const unsettled = [];
   await Promise.all([...registries].map(async ([origin, registry]) => {
     if (origin.startsWith('https:')) {
-      const saved = await readCache(directory, cooldownFile(origin));
-      const legacy = origin === identityDigital ? await readCache(directory, legacyIdentityCooldown) : null;
-      registry.limitedUntil = Math.max(saved?.until || 0, legacy?.until || 0);
+      registry.limitedUntil = await registryCooldown(origin, directory);
     }
     return mapLimit(registry.jobs, registry.limit, async ({ base, entry }) => {
       const row = await entry;
@@ -359,11 +450,13 @@ export async function lookupRegistrations(candidates, {
         record(row, { ...cached.result, checkedAt: new Date(cached.at).toISOString() });
         return;
       }
-      const result = base ? await lookupRdap(base, domain, fetcher, rdapLeft, readExpiry, pause, registry, rdapAttempts, directory)
-        : await services ? await lookupWhois(domain, tld, whois, timeLeft, referrals)
+      const coolingDown = registry.identity && registry.limitedUntil > Date.now() && documentedWhois.has(tld) && fallbackWhois;
+      const result = coolingDown || !base && await services
+        ? await lookupWhois(domain, tld, coolingDown ? fallbackWhois : whois, timeLeft, referrals, { pause, directory })
           .catch(() => unknown('whois', 'Registry WHOIS did not respond'))
+        : base ? await lookupRdap(base, domain, fetcher, rdapLeft, readExpiry, pause, registry, rdapAttempts, directory)
           : unknown('rdap', 'IANA RDAP bootstrap is unavailable');
-      if (result.status === 'unknown' && !result.signal) unsettled.push({ row, result, filename, viaWhois: !base });
+      if (result.status === 'unknown' && !result.signal) unsettled.push({ row, result, filename, viaWhois: !base || coolingDown });
       else await finish(row, result, filename);
     });
   }));
@@ -375,7 +468,7 @@ export async function lookupRegistrations(candidates, {
     const query = ['app', 'dev'].includes(tld) ? null : fallbackWhois;
     const [answer, likely] = await Promise.all([
       query && !viaWhois && timeLeft() > 600
-        ? lookupWhois(domain, tld, query, () => timeLeft() - 300, referrals)
+        ? lookupWhois(domain, tld, query, () => timeLeft() - 300, referrals, { pause, directory })
           .catch(() => unknown('whois', 'Registry WHOIS did not respond')) : null,
       dnsLikely(row),
     ]);

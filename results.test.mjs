@@ -161,3 +161,41 @@ test('watch sends only an explicit news pre-flag and never puts contact details 
   assert.match(html, /Check your inbox to start watching/);
   assert.doesNotMatch(JSON.stringify(result) + html, /rowan@example\.com|Rowan Example/);
 });
+
+test('say names the handles of the person’s own name in three states and the page lists every platform with its link', async t => {
+  const { pages } = await tempPages(t);
+  const handles = [
+    ['YouTube', 'check', 'https://www.youtube.com/@paperheron'], ['X', 'check', 'https://x.com/paperheron'],
+    ['GitHub', 'taken', 'https://github.com/paperheron'], ['npm', 'not-found', 'https://www.npmjs.com/package/paperheron'],
+    ['PyPI', 'check', 'https://pypi.org/project/paperheron/'], ['Bluesky', 'check', 'https://bsky.app/profile/paperheron.bsky.social'],
+  ].map(([platform, state, link]) => ({ platform, handle: 'paperheron', state, link,
+    ...(platform === 'GitHub' && { variants: [{ handle: 'getpaperheron', state: 'not-found', link: 'https://github.com/getpaperheron' }] }) }));
+  const data = { ...fixtures, names: [{ ...fixtures.names[0], free: ['no', 'ai', 'io', 'de'] }, fixtures.names[1]],
+    receiptDetails: [{ handles }, { handles: null }] };
+  const result = await pages(data, {}, { triage: true });
+  const line = result.say.split('\n').find(text => text.startsWith('Handles for Paper Heron:'));
+  assert.equal(line, 'Handles for Paper Heron: YouTube check yourself, X check yourself, GitHub taken, npm no public profile found (2 more on the page).');
+  assert.doesNotMatch(line, /free|available/i);
+  const path = fileURLToPath(result.resultPage);
+  const [html, md] = await Promise.all([readFile(path, 'utf8'), readFile(path.replace(/\.html$/, '.md'), 'utf8')]);
+  assert.match(html, /<summary>Handles<\/summary>/);
+  assert.match(html, /<a href="https:\/\/github\.com\/paperheron">GitHub @paperheron: Taken<\/a>/);
+  assert.match(html, /GitHub alternative @getpaperheron: No public profile found/);
+  assert.match(html, /YouTube @paperheron: Check yourself/);
+  assert.match(md, /### Handles/);
+  assert.match(html, /Handles: checked for the top three names\./);
+  // An ending on request (.de) that the lookup returned is on the page beside the default endings.
+  assert.match(html, /paperheron\.de(?![a-z])/);
+  assert.match(md, /paperheron\.de(?![a-z])/);
+  assert.doesNotMatch(html, /cedarheron\.de(?![a-z])/);
+});
+
+test('the progress frame names the handle stage while the top names are checked', async () => {
+  const { progressText } = await import('./display.mjs');
+  const text = JSON.parse(progressText({ answers: new Map([['quietotter.com', 'taken']]), stage: 'handles' },
+    { rows: [{ name: 'Quiet Otter', domains: ['quietotter.com', 'quietotter.de'] }], elapsedMs: 14000, budgetMs: 14000, triage: true }));
+  assert.equal(text.stage, 'handles');
+  assert.equal(text.pending, true);
+  assert.match(text.display, /handles for the top three names are being checked/);
+  assert.match(text.display, /still checking \.de, ask again/);
+});

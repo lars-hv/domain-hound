@@ -1,7 +1,7 @@
 {
   "name": "domain-hound",
-  "version": "0.1.4",
-  "description": "Check domains, compare registrar prices, and screen product names from your MCP client.",
+  "version": "0.1.5",
+  "description": "Find a startup name and domain you can actually buy: availability, prices, app names, trademarks. MCP for Claude Code and Codex.",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -17,9 +17,21 @@
   },
   "keywords": [
     "mcp",
-    "domains",
+    "mcp-server",
     "claude",
-    "codex"
+    "claude-code",
+    "codex",
+    "domain",
+    "domain-availability",
+    "domain-name",
+    "startup-name",
+    "naming",
+    "trademark",
+    "app-name",
+    "whois",
+    "rdap",
+    "registrar",
+    "domain-prices"
   ],
   "mcpName": "dev.domainhound/domain-hound",
   "files": [
@@ -35,6 +47,7 @@
     "clis/domain-check/confirm.mjs",
     "clis/domain-check/google-play.mjs",
     "clis/domain-check/google-search.mjs",
+    "clis/domain-check/handles.mjs",
     "clis/domain-check/index.mjs",
     "clis/domain-check/name-search.mjs",
     "clis/domain-check/naming-method.mjs",

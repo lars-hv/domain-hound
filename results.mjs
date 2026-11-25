@@ -4,7 +4,8 @@ import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promise
 import { homedir, userInfo } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { canRecommend, defaultEndings, normalizeName } from './clis/domain-check/name-search.mjs';
+import { canRecommend, defaultEndings, domainEnding, eligibilityNeed, normalizeName } from './clis/domain-check/name-search.mjs';
+import { handlePriorities, handleStates, handleSummary } from './clis/domain-check/handles.mjs';
 import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { safeLink } from './display.mjs';
 import { receiptStyle } from './results-style.mjs';
@@ -17,7 +18,6 @@ const evidenceText = value => plain(value).replace(/\[([^\]]*)\]\([^)]*\)/g, '$1
   .replace(/https?:\/\/[^\s)]+/gi, '').replace(/[\[\]<>]/g, '').replace(/\s{2,}/g, ' ').trim();
 const markdown = value => plain(value).replace(/[\\|<>\[\]`*]/g, '\\$&');
 const shopIds = new Map(Object.entries(shops).map(([id, { name }]) => [name, id]));
-const endingOf = value => value.split('.').at(-1);
 const fallbackShop = ending => ending === 'no' ? 'dynadot' : ending === 'so' ? 'namecheap' : 'spaceship';
 const markOf = row => row.competition?.US;
 const marksText = row => {
@@ -27,16 +27,19 @@ const marksText = row => {
 const watchLink = domain => 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(domain);
 const verdictOrder = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
 
-function resultGroups(data) {
+function resultGroups(data, eligibleEndings) {
   return data.names.map((row, index) => {
     const detail = data.receiptDetails?.[index] ?? {};
     const exact = row.name.includes('.');
     const label = exact ? row.name : normalizeName(row.name);
-    const variants = [...(row.free ?? []), ...(row.taken ?? []), ...(row.shop_check ?? []), ...(row.resale ?? [])]
-      .map(value => value.d ?? value).filter(value => value.includes('.'));
-    const targets = exact ? [row.name] : [...new Set([...defaultEndings.map(ending => label + '.' + ending), ...variants])];
+    const listed = [...(row.free ?? []), ...(row.taken ?? []), ...(row.shop_check ?? []), ...(row.resale ?? []),
+      ...(row.premium ?? []), ...(row.reserved ?? [])].map(value => value.d ?? value).filter(value => typeof value === 'string');
+    const variants = listed.filter(value => value.includes('.') && value !== 'co.uk');
+    // Endings on request (such as .de or .uk) join the default endings when the lookup returned them.
+    const extra = listed.filter(value => (!value.includes('.') || value === 'co.uk') && !defaultEndings.includes(value));
+    const targets = exact ? [row.name] : [...new Set([...[...defaultEndings, ...extra].map(ending => label + '.' + ending), ...variants])];
     const records = targets.map(domain => {
-      const ending = endingOf(domain);
+      const ending = domainEnding(domain);
       const lookupKey = domain === label + '.' + ending || exact ? ending : domain;
       const match = list => list?.find(value => (value.d ?? value) === domain || (value.d ?? value) === lookupKey);
       const option = match(row.free);
@@ -54,7 +57,8 @@ function resultGroups(data) {
       const status = taken ? (match(row.resale) ? 'Taken, possible resale' : 'Taken')
         : reserved ? 'Not offered for registration' : confirmed ? 'Confirmed at shop'
           : premium ? (risk ? 'May be premium, price at shop' : 'Premium, price at shop')
-          : option ? 'Free at the registry' : likely ? 'Check at shop, ' + likely : 'Check at shop';
+          : option ? 'Free at the registry' : likely ? 'Check at shop, ' + likely
+            : data.pending && !match(row.shop_check) ? 'Still checking' : 'Check at shop';
       const usd = includePrice ? { now: quote.now, renew: quote.renew, y3: quote.y3, term: quote.term,
         jump: quote.jump, shop: quote.shop } : {};
       const term = usd.term ?? 1;
@@ -62,12 +66,12 @@ function resultGroups(data) {
       const source = ({ web: 'Live site', dns: 'DNS', rdap: 'Registry RDAP', whois: 'Registry WHOIS',
         shop: 'Shop', list: 'Price list' })[raw?.source] ?? (confirmed ? 'Shop' : likely ? 'DNS' : 'Registry');
       const shop = usd.shop ?? raw?.shop ?? shops[fallbackShop(ending)]?.name;
-      const eligible = canRecommend(ending, data.eligible);
+      const eligible = canRecommend(ending, eligibleEndings ?? data.eligible);
       const shopUrl = shopSearchUrl(shopIds.get(shop) ?? fallbackShop(ending), domain);
       const checkout = taken || reserved || !eligible ? null : [raw?.checkout, shopUrl].find(url => safeLink(url, domain)) ?? null;
       return { domain, ending, state, status, ...usd, total, shop, checkout, eligible, source,
         priceLabel: usd.now != null || usd.renew != null ? (confirmed ? 'Shop quote' : taken ? 'Standard list price benchmark' : 'List price') : '',
-        checkedAt: raw?.checkedAt ?? data.checkedAt, priceAt: raw?.priceAt ?? option?.at ?? data.priceListDate,
+        checkedAt: raw?.checkedAt ?? data.checkedAt, priceAt: confirmed ? raw?.checkedAt ?? data.checkedAt : raw?.priceAt ?? data.priceListDate,
         site: raw?.site ?? detail.details?.sites?.[ending] ?? row.details?.sites?.[ending] };
     });
     records.sort((a, b) => Number(b.state === 'free' || b.priceLabel === 'Shop quote')
@@ -76,13 +80,17 @@ function resultGroups(data) {
   });
 }
 
+function priceDate(offer) {
+  return offer.priceAt ? ' checked ' + offer.priceAt.slice(0, 10) : '';
+}
+
 function offerText(offer, linked = false) {
   const { domain, checkout, now, renew, term, jump, priceLabel } = offer;
   const price = now != null ? cash(now) + (renew != null ? ', then ' + cash(renew) : ', renewal at shop')
     : renew != null ? cash(renew) + ' renewal' : 'price at shop';
   return (linked && checkout ? '[' + domain + '](' + checkout + ')' : domain) + ' ' + price
     + (term > 1 ? ' every ' + term + ' years' : '') + (jump ? ' (renewal jumps)' : '')
-    + (priceLabel ? ' ' + priceLabel.toLowerCase() : '');
+    + (priceLabel ? ' ' + priceLabel.toLowerCase() + priceDate(offer) : '');
 }
 
 function appFinding(value) {
@@ -133,7 +141,7 @@ function summary(groups, args, triage) {
     let price = hasPrice ? ' ' + offerText(picked).slice(picked.domain.length + 1) + '.' : '';
     if (picked.state === 'taken' && picked.renew != null) {
       price = ' Standard list renewal: ' + cash(picked.renew) + (picked.term > 1
-        ? ' every ' + picked.term + ' years (' + cash(picked.renew / picked.term) + ' a year)' : ' a year') + '.';
+        ? ' every ' + picked.term + ' years (' + cash(picked.renew / picked.term) + ' a year)' : ' a year') + priceDate(picked) + '.';
     }
     const overBudget = budget != null && picked.now != null && picked.now > budget && picked.state !== 'taken';
     const intro = picked.domain + ': ' + picked.status.toLowerCase() + '.' + price + (overBudget ? ' Over budget.' : '');
@@ -159,13 +167,18 @@ function summary(groups, args, triage) {
   const eligibility = args.eligible?.includes('no') || cheapest?.record.ending === 'no'
     || value?.record.ending === 'no' || preferred.includes('no')
     ? ' .no needs a Norwegian address and organization or personal ID.' : '';
+  const waiting = Array.isArray(wanted.row.handles) && wanted.row.handles.filter(row => row.why === 'still checking').map(row => row.platform);
+  const handles = !triage ? null : waiting?.length
+    ? 'still checking ' + waiting.join(', ') + '. Check links on the page'
+    : handleSummary(wanted.row.handles, { ordered: true });
   const lines = [
     leadPick || (scope ? scope + 'All endings are on the page.' : null),
     keep,
+    handles && 'Handles for ' + evidenceText(wanted.row.name) + ': ' + plain(handles) + '.',
     ...offerLines,
     'Cheapest: ' + (cheapest ? label(cheapest) : 'none found in scope.'),
     'Best value: ' + (value ? value.record.domain + ', ' + cash(value.record.total) + ' in payments due in 3 years'
-      + caution(value) : 'needs a shop quote') + '.',
+      + ' (' + value.record.priceLabel.toLowerCase() + priceDate(value.record) + ')' + caution(value) : 'needs a shop quote') + '.',
     (args.purchase ? 'Domain Hound cannot buy or complete checkout. ' : '') + next + eligibility,
   ];
   return lines.filter(Boolean);
@@ -208,6 +221,46 @@ function details(group) {
   return matches.filter(([text, href]) => text && (href || !/ search$/.test(text)));
 }
 
+// One line per platform in display order: Taken, No public profile found or Check yourself, with the profile link.
+function handleLines(group) {
+  const rows = Array.isArray(group.row.handles) ? group.row.handles : [];
+  return rows.flatMap(row => {
+    const label = row.platform + ' @' + plain(row.handle) + ': ' + (handleStates[row.state] ?? handleStates.check);
+    const detail = row.why === 'still checking' ? ' · still checking' : row.checkedAt ? ' · checked ' + plain(row.checkedAt) : '';
+    return [[label + detail, httpsLink(row.link)], ...(row.variants ?? []).map(variant => [
+      row.platform + ' alternative @' + plain(variant.handle) + ': ' + (handleStates[variant.state] ?? handleStates.check),
+      httpsLink(variant.link),
+    ])];
+  });
+}
+
+function nameSnapshot({ row, records }) {
+  const mark = row.competition?.US;
+  const apps = [row.competition?.AppStore, row.competition?.GooglePlay];
+  const open = records.filter(record => record.state === 'free' && record.eligible).length;
+  const blocked = records.filter(record => record.state === 'taken').length;
+  const handles = Array.isArray(row.handles) ? row.handles : [];
+  const taken = handles.filter(handle => handle.state === 'taken').length;
+  const absent = handles.filter(handle => handle.state === 'not-found').length;
+  const checks = handles.filter(handle => handle.state === 'check').length;
+  return [
+    'Domains ' + open + ' open' + (blocked ? ', ' + blocked + ' taken' : ''),
+    'Trademark ' + (mark == null ? 'check incomplete' : mark.length ? 'match found' : 'no US match'),
+    'Apps ' + (apps.some(value => value?.length) ? 'same-name listing' : apps.some(value => value == null) ? 'check incomplete' : 'no match'),
+    'Handles ' + (handles.length ? [taken ? taken + ' taken' : null,
+      absent + taken ? absent + ' of ' + (absent + taken) + ' with no public match' : null, checks ? checks + ' to check' : null].filter(Boolean).join(', ')
+      : 'outside top three'),
+  ].join(' / ');
+}
+
+function handlePriority({ row }, companyType) {
+  if (!Array.isArray(row.handles) || !row.handles.length || !Object.hasOwn(handlePriorities, companyType)) return '';
+  return 'Handles to secure for this business: ' + handlePriorities[companyType].map(platform => {
+    const entry = row.handles.find(handle => handle.platform === platform);
+    return platform + ' ' + (entry?.why === 'still checking' ? 'still checking' : handleStates[entry?.state ?? 'check'].toLowerCase());
+  }).join(', ') + '.';
+}
+
 const anchor = (label, url) => '<a href="' + escape(url) + '">' + escape(label) + '</a>';
 function summaryHtml(line) {
   return Array.from(line.matchAll(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g)).reduce(({ html, offset }, match) =>
@@ -222,11 +275,11 @@ const amountsFor = ({ now, renew }) => [cash(now) ?? 'No price', cash(renew) ?? 
 
 function rowNote(row) {
   return [row.status, row.priceLabel, row.term > 1 ? row.term + ' years per payment' : null,
-    row.jump ? 'Renewal jumps' : null, !row.eligible ? '.no buyer eligibility required' : null,
+    row.jump ? 'Renewal jumps' : null, !row.eligible ? '.' + row.ending + ' needs ' + eligibilityNeed(row.ending) : null,
     row.source, row.checkedAt, row.priceAt ? 'Price checked ' + row.priceAt : null].filter(Boolean).join(' · ');
 }
 
-function render(groups, lines, checkedAt, coverage, watch) {
+function render(groups, lines, checkedAt, coverage, watch, companyType) {
   const title = watch ? 'Domain watch' : 'Domain results';
   const [intro, ...body] = lines;
   const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
@@ -236,6 +289,8 @@ function render(groups, lines, checkedAt, coverage, watch) {
     Object.entries(coverage ?? {}).map(([name, count]) => name + ' ' + count + '% answered').join(' · ');
   const articles = groups.map((group, index) => {
     const { row } = group;
+    const handles = handleLines(group);
+    const priority = handlePriority(group, companyType);
     const rows = group.records.map(record => {
       const [now, renew] = amountsFor(record);
       return '<tr><th scope="row"><code>' + escape(record.domain) + '</code><small>' + escape(rowNote(record))
@@ -243,11 +298,14 @@ function render(groups, lines, checkedAt, coverage, watch) {
         + '</small></th><td>' + escape(now) + '</td><td>' + escape(renew) + '</td></tr>';
     });
     return '<article id="name-' + index + '"><h2>' + escape(row.name) + '</h2>'
-      + (row.verdict ? paragraph(plain(row.verdict) + '. ' + evidenceText(row.reason).split(' · ')[0]) + paragraph(signals(group)) : '')
+      + (row.verdict ? paragraph(plain(row.verdict) + '. ' + evidenceText(row.reason).split(' · ')[0]) + paragraph(nameSnapshot(group)) : '')
       + '<table><caption>Endings · USD before tax</caption><thead><tr><th scope="col">Ending</th><th scope="col">Today</th><th scope="col">Renewal</th></tr></thead><tbody>'
       + rows.join('') + '</tbody></table>'
       + (row.verdict ? '<details><summary>Trademark, app and web evidence</summary><ul>'
         + details(group).map(([label, url]) => '<li>' + (url ? anchor(label, url) : escape(label)) + '</li>').join('') + '</ul></details>' : '')
+      + (handles.length ? '<details><summary>Handles</summary>' + (priority ? paragraph(priority) : '') + '<ul>'
+        + handles.map(([label, url]) => '<li>' + (url ? anchor(label, url) : escape(label)) + '</li>').join('') + '</ul></details>'
+        : row.verdict ? '<p><small>Handles: checked for the top three names.</small></p>' : '')
       + '</article>';
   });
   const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -261,11 +319,13 @@ function render(groups, lines, checkedAt, coverage, watch) {
     + articles.join('') + '<footer>' + (sources ? paragraph(sources) : '') + '<p>You hold the leash.</p></footer></main></body></html>\n';
   const md = ['# ' + title, '', 'Domain Hound · ' + checkedAt, '', ...lines, '',
     ...groups.flatMap(group => ['## ' + markdown(group.row.name), '',
-      ...(group.row.verdict ? [markdown(group.row.verdict + '. ' + group.row.reason), markdown(signals(group)), ''] : []),
+      ...(group.row.verdict ? [markdown(group.row.verdict + '. ' + group.row.reason), markdown(nameSnapshot(group)), ''] : []),
       '| Ending | Today (USD) | Renewal (USD) | Evidence | Shop |', '| --- | --- | --- | --- | --- |',
       ...group.records.map(record => '| ' + [record.domain, ...amountsFor(record), markdown(rowNote(record)),
         record.checkout ? '[' + markdown(record.shop ?? 'Check at shop') + '](' + record.checkout + ')' : ''].join(' | ') + ' |'),
-      '', ...(group.row.verdict ? details(group).map(([label, url]) => '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label))) : []), '']),
+      '', ...(group.row.verdict ? details(group).map(([label, url]) => '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label))) : []),
+      ...(handleLines(group).length ? ['', '### Handles', '', ...(handlePriority(group, companyType) ? [markdown(handlePriority(group, companyType)), ''] : []), ...handleLines(group).map(([label, url]) =>
+        '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label)))] : []), '']),
     ...(sources ? [markdown(sources), ''] : []), 'You hold the leash.', ''].join('\n');
   return { html, md };
 }
@@ -338,8 +398,12 @@ export function resultPages({ env = process.env,
   return (data, args, { triage = false, watch = false } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
-      const groups = watch ? [] : resultGroups(data);
-      const lines = watch ? data.say.split('\n') : summary(groups, args, triage);
+      const groups = watch ? [] : resultGroups(data, args.eligible);
+      const lines = watch ? data.say.split('\n') : data.pending ? [
+        'Still checking trademark, app and web sources. Registry answers so far are on the page.',
+        'Repeat the same lookup to collect the rest.',
+        ...(args.purchase ? ['Domain Hound cannot buy or complete checkout.'] : []),
+      ] : summary(groups, args, triage);
       const title = watch ? data.domain : groups[0]?.row.name;
       await mkdir(directory, { recursive: true, mode: 0o700 });
       // If a caller points us at a shared directory, don't expose the searched name in its listing.
@@ -347,7 +411,7 @@ export function resultPages({ env = process.env,
       const slug = (privateListing && normalizeName(String(title).split('.')[0]) || 'results').slice(0, 30);
       const base = new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
-      const page = render(groups, lines, at, data.sources, watch ? data : null);
+      const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType);
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {

@@ -20,6 +20,7 @@ const day = now.toISOString().slice(0, 10);
 const listed = {
   com: [9.48, 10.68], ai: [79.98, 79.98], io: [21.4, 53.5], me: [8.7, 15.53], co: [3.11, 31.05],
   dev: [8, 12.5], app: [8, 14.5], si: [10.98, 11.98], so: [57.5, 57.5], no: [7.91, 7.91],
+  net: [7.49, 12.52], org: [7.99, 11.64], xyz: [1.5, 14.45], tech: [6.64, 52.65],
 };
 const notFound = () => Object.assign(new Error('not found'), { code: 'ENOTFOUND' });
 
@@ -58,8 +59,8 @@ test('a name with æøå is checked as its punycode label and shown in its own s
   const result = await agentResult('Grønnstue', options);
   assert.equal(result.names[0].name, ascii);
   assert.equal(result.names[0].unicode, 'grønnstue');
-  // Ten endings, each on the punycode label; no stripped spelling and no prefixed variants.
-  assert.equal(asked.length, 10);
+  // Fourteen endings, each on the punycode label; no stripped spelling and no prefixed variants.
+  assert.equal(asked.length, 14);
   assert.ok(asked.every(domain => domain.startsWith(ascii + '.')), asked.join());
   const display = displayOf(result);
   assert.ok(display.includes('- grønnstue.com (' + ascii + '.com) $9.48/$10.68 list price'), display);
@@ -107,7 +108,7 @@ test('a short name may be premium: no list price, never the cheapest pick, never
   const directory = await pricedDirectory(t);
   const result = await agentResult(['qxvo'], registryOptions(directory));
   const [row] = result.names;
-  assert.ok(row.free.length === 10 && row.free.every(option => option.s === 'prem' && option.risk === true), JSON.stringify(row));
+  assert.ok(row.free.length === 14 && row.free.every(option => option.s === 'prem' && option.risk === true), JSON.stringify(row));
   assert.equal(result.best, undefined);
   assert.equal(result.listPrices, undefined);
   const display = displayOf(result);
@@ -220,7 +221,7 @@ test('an exact .com adds one list-price line for the other endings and a benchma
   const result = await agentResult('lanternbay.com', options);
   assert.deepEqual(asked, ['lanternbay.com']);
   assert.deepEqual(result.names[0], { name: 'lanternbay.com', taken: ['com'] });
-  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so']);
+  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'net', 'org', 'xyz', 'tech']);
   assert.deepEqual(result.otherEndings.ai, { now: 159.96, renew: 159.96, y3: 319.92, term: 2, shop: 'Dynadot' });
   const display = displayOf(result);
   assert.match(display, /^\*\*lanternbay\.com is taken, and Domain Hound cannot buy or complete checkout\.\*\*/);

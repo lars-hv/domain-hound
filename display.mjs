@@ -28,7 +28,7 @@ const money = value => '$' + Number(value).toFixed(2);
 // The DNS label of a screened name: punycode for æøå, never with letters removed.
 const label = name => normalizeName(String(name ?? '')) ?? String(name ?? '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9-]/g, '');
 const fullDomain = (name, d) => d.includes('.') ? d : name + '.' + d;
-const suffix = domain => domain.split('.').at(-1);
+const suffix = domain => domain.endsWith('.co.uk') || domain === 'co.uk' ? 'co.uk' : domain.split('.').at(-1);
 const registered = (row, ending) => row.taken?.includes(ending) || row.resale?.includes(ending);
 const checkoutLimitation = 'Domain Hound cannot buy or complete checkout.';
 const mayBePremium = 'may be premium, price at shop';
@@ -157,7 +157,7 @@ function exactDisplay(result) {
   const row = result.names?.[0] ?? {};
   const domain = row.name;
   const name = shown(domain);
-  const ending = domain.split('.').at(-1);
+  const ending = suffix(domain);
   const checked = result.checkedAt ? ' Checked ' + String(result.checkedAt).slice(0, 16).replace('T', ' ') + ' UTC.' : '';
   const others = otherEndingsLine(result);
   const tail = others ? [others] : [];
@@ -355,7 +355,7 @@ export function checkDisplay(result, level = 0, purchase = false) {
   } else if (rows.length === 1 || purchase) {
     const available = rows.flatMap(row => (row.free ?? []).flatMap(option => {
       const domain = option.d.includes('.') ? option.d : row.name.includes('.') ? row.name : row.name + '.' + option.d;
-      if (!canRecommend(domain.split('.').at(-1), eligible)) return [];
+      if (!canRecommend(suffix(domain), eligible)) return [];
       const price = option.prem || option.s === 'prem' ? option : { ...listPrices[option.d], ...option };
       const link = templateLink(result.buyUrlTemplate, price.shop, domain);
       return link ? [{ link, price: price.now ?? Infinity }] : [];
@@ -526,8 +526,10 @@ function denseDisplay(result, short = false, links = true) {
   const names = results.map(row => '- **' + nameLabel(row.name) + '** — ' + md(row.verdict));
   const individual = names.map((name, index) => name + '  \n  ' + checksFor(results[index]).join('  \n  '));
   const groups = links ? [] : groupRows(results, checksFor);
+  // A long group names its first and last name, so twenty long labels do not repeat in every heading.
   const shared = groups.flatMap(({ names, lines }) => [
-    names.length === results.length ? '**Search checks for every name**' : names.join(', '), ...lines,
+    names.length === results.length ? '**Search checks for every name**'
+      : names.length > 5 ? names.length + ' names, ' + names[0] + ' to ' + names.at(-1) : names.join(', '), ...lines,
   ]);
   const rows = shared.length && bytes([...names, ...shared].join('\n')) < bytes(individual.join('\n'))
     ? [...names, '', ...shared] : individual;
@@ -551,6 +553,7 @@ const progressStage = {
   quotes: 'Registry checks are in; shop prices are being checked.',
   browser: 'The live shop check is running.',
   rivals: 'Domain checks are in; trademark, app and rival checks are still running.',
+  handles: 'Domain checks are in; handles for the top three names are being checked.',
 };
 
 // The answer when a lookup outlasts this call's budget: what the registries have answered so far, the elapsed

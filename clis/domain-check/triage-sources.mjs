@@ -1,4 +1,5 @@
 import { anySignal, cacheDir, readCache, writeCache } from './cache.mjs';
+import { checkSocialHandles, handlePlatforms } from './handles.mjs';
 
 const uspto = 'https://tmsearch.uspto.gov';
 const githubState = 'triage-github-limit.json';
@@ -22,13 +23,8 @@ export const trademarkSearches = {
   WIPO: 'https://branddb.wipo.int/',
   Norway: 'https://search.patentstyret.no/',
 };
-export const handleSearches = {
-  GitHub: 'https://github.com/{name}',
-  npm: 'https://www.npmjs.com/package/{name}',
-  PyPI: 'https://pypi.org/project/{name}/',
-  X: 'https://x.com/{name}',
-  YouTube: 'https://www.youtube.com/@{name}',
-};
+// Handle pages in display order, with {name} for the handle.
+export const handleSearches = Object.fromEntries(handlePlatforms.map(platform => [platform.id, platform.link('{name}')]));
 
 // Latin letters for name matching: accents drop, and letters without a decomposition fold too (ø -> o, æ -> ae).
 const folds = [[/æ/g, 'ae'], [/ø/g, 'o'], [/œ/g, 'oe'], [/ß/g, 'ss'], [/[đð]/g, 'd'], [/þ/g, 'th'], [/ł/g, 'l'], [/ı/g, 'i']];
@@ -225,13 +221,6 @@ async function fetchEntities(name, input, options) {
   });
 }
 
-const handleUrls = {
-  npm: name => 'https://registry.npmjs.org/' + name,
-  PyPI: name => 'https://pypi.org/simple/' + name + '/',
-  X: name => 'https://x.com/' + name,
-  YouTube: name => 'https://www.youtube.com/@' + name,
-};
-
 async function searchGitHub(name, options) {
   const { directory = cacheDir, now = new Date() } = options;
   try {
@@ -269,16 +258,8 @@ async function searchGitHub(name, options) {
   } catch { return { status: 'unknown' }; }
 }
 
-async function checkHandle(service, name, options) {
-  try {
-    if (options.signal?.aborted) return 'unknown';
-    const response = await request(handleUrls[service](name), options, { redirect: 'manual', timeout: 2200 });
-    await response.body?.cancel();
-    if (response.status === 404) return 'free';
-    return response.status === 200 ? 'taken' : 'unknown';
-  } catch { return 'unknown'; }
-}
-
+// Same-name evidence from GitHub and npm: the account or package (GitHub users API, npm registry) and, for small
+// screens, GitHub repositories with the name. options.social may carry this name's handle rows from a shared run.
 export async function checkHandles(name, options = {}) {
   const { directory = cacheDir, now = new Date() } = options;
   const filename = 'triage-handles-' + name + '.json';
@@ -287,22 +268,11 @@ export async function checkHandles(name, options = {}) {
     const age = now.getTime() - entry?.at;
     return age >= 0 && age < day;
   };
+  const social = options.social ? await options.social
+    : (await checkSocialHandles([{ name, platforms: ['GitHub', 'npm'], links: false }], options)).get(name);
+  const state = platform => social?.find(entry => entry.platform === platform)?.state ?? 'check';
   const getGitHub = async () => {
-    let status = saved.githubProfile?.status;
-    if (!fresh(saved.githubProfile) || !['free', 'taken'].includes(status)) {
-      const profile = async () => {
-        try {
-          const response = await request(handleSearches.GitHub.replace('{name}', name), options, {
-            redirect: 'manual', timeout: 2200,
-          });
-          await response.body?.cancel();
-          return response.status === 200 ? 'taken' : response.status === 404 ? 'free' : 'unknown';
-        } catch { return 'unknown'; }
-      };
-      status = await profile();
-      if (status === 'unknown' && options.retryUnavailable && !options.signal?.aborted) status = await profile();
-      if (status !== 'unknown') saved.githubProfile = { status, at: now.getTime() };
-    }
+    const status = state('GitHub');
     if (fresh(saved.githubSearch) && saved.githubSearch.result?.count !== undefined) {
       return { ...saved.githubSearch.result, status };
     }
@@ -311,18 +281,9 @@ export async function checkHandles(name, options = {}) {
     githubTail = turn.catch(() => {});
     const result = await turn;
     if (result.count !== undefined) saved.githubSearch = { result, at: now.getTime() };
-    return { ...result, status: status === 'unknown' && result.status === 'taken' ? 'taken' : status };
+    return { ...result, status: status === 'check' && result.status === 'taken' ? 'taken' : status };
   };
-  const [github, found] = await Promise.all([getGitHub(), Promise.all(Object.keys(handleUrls).map(async service => {
-    const entry = saved[service];
-    if (fresh(entry) && ['taken', 'free'].includes(entry.status)) return [service, entry.status];
-    let status = await checkHandle(service, name, options);
-    if (options.retryUnavailable && status === 'unknown' && !options.signal?.aborted) {
-      status = await checkHandle(service, name, options);
-    }
-    if (status === 'taken' || status === 'free') saved[service] = { status, at: now.getTime() };
-    return [service, status];
-  }))]);
-  await writeCache(directory, filename, saved).catch(() => {});
-  return { github, handles: { GitHub: github.status, ...Object.fromEntries(found) } };
+  const github = await getGitHub();
+  await writeCache(directory, filename, { githubSearch: saved.githubSearch }).catch(() => {});
+  return { github, handles: { GitHub: github.status, npm: state('npm') }, social };
 }

@@ -1,7 +1,7 @@
 import { domainToASCII, domainToUnicode } from 'node:url';
 import { checkDomainSite } from './com-site.mjs';
 import { cachedSignals, confirmingShops } from './confirm.mjs';
-import { bundledCatalog, datedListPrices, getNameCatalog, loadCachedCatalog, targetEndings } from './price-catalog.mjs';
+import { bundledCatalog, datedListPrices, getNameCatalog, loadCachedCatalog, requestEndings, supportedEndings, targetEndings } from './price-catalog.mjs';
 import { linkable, shopSearchUrl } from './prices.mjs';
 import { lookupRegistrations } from './registry.mjs';
 import { foldLatin } from './triage-sources.mjs';
@@ -18,6 +18,12 @@ const facts = {
     eligibility: 'Norwegian organization or eligible individual, with a Norwegian postal address',
     source: 'https://www.norid.no/en/om-domenenavn/regelverk-for-no/', checked,
   },
+  eu: {
+    need: 'EU or EEA eligibility',
+    eligibility: 'EU, Icelandic, Liechtenstein or Norwegian citizenship, residence or establishment',
+    note: 'Registration requires citizenship, residence or establishment in the EU, Iceland, Liechtenstein or Norway',
+    source: 'https://eurid.eu/en/knowledge-centre/rules-for-eu-domains/', checked: '2026-11-25',
+  },
   io: {
     note: 'Long-term registry uncertainty',
     source: 'https://www.icann.org/en/blogs/details/the-chagos-archipelago-and-the-io-domain-14-11-2024-en', checked,
@@ -33,7 +39,9 @@ const facts = {
 };
 
 const label = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+export const domainEnding = domain => domain.endsWith('.co.uk') ? 'co.uk' : domain.split('.').at(-1);
 export const defaultEndings = targetEndings;
+export { requestEndings, supportedEndings };
 export const restrictedEndings = Object.keys(facts).filter(tld => facts[tld].eligibility);
 const firstCost = row => row.firstPayment ?? Infinity;
 
@@ -58,8 +66,8 @@ export function eligibilityNotes(endings) {
 }
 
 export function validEndings(endings) {
-  return Array.isArray(endings) && endings.length > 0 && endings.length <= targetEndings.length
-    && endings.every(ending => targetEndings.includes(ending));
+  return Array.isArray(endings) && endings.length > 0 && endings.length <= supportedEndings.length
+    && new Set(endings).size === endings.length && endings.every(ending => supportedEndings.includes(ending));
 }
 
 // One DNS label for a name. Spaces and punctuation go; letters never do. A name with non-ASCII letters (æ, ø, å, é)
@@ -150,7 +158,7 @@ export function rankName(rows) {
     return { ...row, ...termCosts(tld, price, renewal), reason, terms: facts[tld] ?? null,
       renewalJump: price != null && renewal > 2 * price };
   }).sort((a, b) => Number(b.exact) - Number(a.exact) || firstCost(a) - firstCost(b)
-    || defaultEndings.indexOf(a.tld) - defaultEndings.indexOf(b.tld) || a.domain.localeCompare(b.domain));
+    || supportedEndings.indexOf(a.tld) - supportedEndings.indexOf(b.tld) || a.domain.localeCompare(b.domain));
 }
 
 export function pickName(rows, eligible) {
@@ -247,7 +255,7 @@ export async function searchCandidates(groups, options = {}) {
     // A negative registry answer can be wrong. A real response on the domain beats a free claim.
     // Replay and unit callers that inject registry traffic can inject the site check as well.
     const checkNegative = registry.status === 'free' && (options.fetcher === undefined || options.verifyFreeSite);
-    const checkTaken = registry.status === 'taken' && exact && siteEndings.includes(tld);
+    const checkTaken = registry.status === 'taken' && exact && siteEndings.includes(tld) && (options.siteFilter?.(domain) ?? true);
     if (!checkNegative) publish(registry);
     if (!checkNegative && !checkTaken) return;
     const timeout = Math.min(options.siteTimeout ?? 1200, timeLeft());

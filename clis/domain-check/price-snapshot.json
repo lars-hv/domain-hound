@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-24T18:15:47.403Z",
+  "checkedAt": "2026-11-25T09:07:26.876Z",
   "catalogs": {
     "spaceship": {
       "checkedAt": "2026-11-24T18:15:47.403Z",
@@ -55,7 +55,7 @@
       }
     },
     "porkbun": {
-      "checkedAt": "2026-11-24T18:15:47.403Z",
+      "checkedAt": "2026-11-25T09:07:26.876Z",
       "prices": {
         "com": {
           "shop": "Porkbun",
@@ -104,17 +104,95 @@
           "firstYear": 19.95,
           "renewal": 17.13,
           "transfer": null
+        },
+        "net": {
+          "shop": "Porkbun",
+          "firstYear": 12.52,
+          "renewal": 12.52,
+          "transfer": 12.52
+        },
+        "org": {
+          "shop": "Porkbun",
+          "firstYear": 7.98,
+          "renewal": 11.84,
+          "transfer": 11.84
+        },
+        "xyz": {
+          "shop": "Porkbun",
+          "firstYear": 1.29,
+          "renewal": 14.21,
+          "transfer": 14.21
+        },
+        "tech": {
+          "shop": "Porkbun",
+          "firstYear": 6.99,
+          "renewal": 50.98,
+          "transfer": 50.98
+        },
+        "sh": {
+          "shop": "Porkbun",
+          "firstYear": 31.2,
+          "renewal": 46.65,
+          "transfer": 46.65
+        },
+        "gg": {
+          "shop": "Porkbun",
+          "firstYear": 51.8,
+          "renewal": 51.8,
+          "transfer": 51.8
+        },
+        "studio": {
+          "shop": "Porkbun",
+          "firstYear": 11.84,
+          "renewal": 41.71,
+          "transfer": 41.71
+        },
+        "de": {
+          "shop": "Porkbun",
+          "firstYear": 2.9,
+          "renewal": 4.07,
+          "transfer": 5.1
+        },
+        "uk": {
+          "shop": "Porkbun",
+          "firstYear": 5.66,
+          "renewal": 5.66,
+          "transfer": null
+        },
+        "co.uk": {
+          "shop": "Porkbun",
+          "firstYear": 5.66,
+          "renewal": 5.66,
+          "transfer": null
+        },
+        "eu": {
+          "shop": "Porkbun",
+          "firstYear": 5.88,
+          "renewal": 5.88,
+          "transfer": 5.88
         }
       }
     },
     "dynadot": {
-      "checkedAt": "2026-11-24T18:15:47.403Z",
+      "checkedAt": "2026-11-25T08:46:38.737Z",
       "prices": {
         "com": {
           "shop": "Dynadot",
           "firstYear": 11.62,
           "renewal": 11.62,
           "transfer": 11.62
+        },
+        "xyz": {
+          "shop": "Dynadot",
+          "firstYear": 1.5,
+          "renewal": 14.45,
+          "transfer": 14.45
+        },
+        "org": {
+          "shop": "Dynadot",
+          "firstYear": 7.99,
+          "renewal": 11.64,
+          "transfer": 11.64
         },
         "co": {
           "shop": "Dynadot",
@@ -128,11 +206,41 @@
           "renewal": 53.5,
           "transfer": 53.5
         },
+        "net": {
+          "shop": "Dynadot",
+          "firstYear": 7.49,
+          "renewal": 12.52,
+          "transfer": 12.52
+        },
         "me": {
           "shop": "Dynadot",
-          "firstYear": 9.16,
-          "renewal": 16.8,
-          "transfer": 16.8
+          "firstYear": 9.21,
+          "renewal": 16.88,
+          "transfer": 16.88
+        },
+        "tech": {
+          "shop": "Dynadot",
+          "firstYear": 6.64,
+          "renewal": 52.65,
+          "transfer": 52.65
+        },
+        "eu": {
+          "shop": "Dynadot",
+          "firstYear": 4.21,
+          "renewal": 6.05,
+          "transfer": 6.05
+        },
+        "uk": {
+          "shop": "Dynadot",
+          "firstYear": 6.14,
+          "renewal": 6.14,
+          "transfer": null
+        },
+        "de": {
+          "shop": "Dynadot",
+          "firstYear": 3.84,
+          "renewal": 3.84,
+          "transfer": 3.84
         },
         "so": {
           "shop": "Dynadot",
@@ -146,6 +254,18 @@
           "renewal": 14.5,
           "transfer": 13.99
         },
+        "sh": {
+          "shop": "Dynadot",
+          "firstYear": 32.1,
+          "renewal": 48.15,
+          "transfer": 48.15
+        },
+        "studio": {
+          "shop": "Dynadot",
+          "firstYear": 11.99,
+          "renewal": 43.02,
+          "transfer": 43.02
+        },
         "dev": {
           "shop": "Dynadot",
           "firstYear": 8,
@@ -158,16 +278,28 @@
           "renewal": 85.6,
           "transfer": 171.2
         },
+        "gg": {
+          "shop": "Dynadot",
+          "firstYear": 53.5,
+          "renewal": 53.5,
+          "transfer": 53.5
+        },
+        "dk": {
+          "shop": "Dynadot",
+          "firstYear": 12.76,
+          "renewal": 12.76,
+          "transfer": 10.99
+        },
         "si": {
           "shop": "Dynadot",
-          "firstYear": 11.24,
-          "renewal": 11.24,
+          "firstYear": 11.29,
+          "renewal": 11.29,
           "transfer": null
         },
         "no": {
           "shop": "Dynadot",
-          "firstYear": 7.91,
-          "renewal": 7.91,
+          "firstYear": 7.97,
+          "renewal": 7.97,
           "transfer": null
         }
       }

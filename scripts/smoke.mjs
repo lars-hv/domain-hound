@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { defaultEndings } from '../clis/domain-check/name-search.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
 const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain'];
-const endings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no'];
+const endings = defaultEndings;
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
 async function smokeMcp(label, command, args, options) {
@@ -81,7 +82,7 @@ async function smokeMcp(label, command, args, options) {
     assert.equal((await replies.next()).done, true, 'Unexpected stdout after last response');
     assert.equal(await completion, null);
     console.log(`${label}: initialize ${startup} ms, tools/list ${tools.length}, first check_domains ${firstLookup} ms `
-      + `(10 endings priced, list price from ${batch.priceListDate}), check_domains ${lookup} ms`);
+      + `(${endings.length} endings priced, list price from ${batch.priceListDate}), check_domains ${lookup} ms`);
   } finally {
     clearTimeout(timeout);
     reader.close();

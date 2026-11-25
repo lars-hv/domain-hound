@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import { deflateRawSync } from 'node:zlib';
 import { writeCache } from './cache.mjs';
+import { withSocial } from '../../test-support/social-fixture.mjs';
 import { classifyComSite } from './com-site.mjs';
 import {
   assessRival, autocompleteWords, collectRivals, crawlPages, judgeRivals, parseGeo, refreshTranco, siteDomain,
@@ -54,7 +55,7 @@ function crawlResponse(domain) {
 
 // Free public sources answer from the fixture; every request is counted per host.
 function fetcherFor(calls) {
-  return async value => {
+  return withSocial(async value => {
     const url = new URL(value);
     calls[url.hostname] = (calls[url.hostname] ?? 0) + 1;
     const q = url.searchParams;
@@ -94,7 +95,7 @@ function fetcherFor(calls) {
       case 'www.sec.gov': return Response.json(companies.edgar);
       default: return new Response(null, { status: 404 });
     }
-  };
+  });
 }
 
 async function setUp(t, { tranco = true } = {}) {
