@@ -54,8 +54,15 @@ export function orderBody({ years }, owner) {
     contacts: { registrant: owner, admin: owner, tech: owner, billing: owner } };
 }
 
-// One durable claim per domain, so neither a repeated call nor a second quote can send another order.
+// One durable claim per domain, so neither a repeated call nor a second quote can send another order. Its status:
+// "checking" while the last price check runs (nothing sent yet), "sending" from just before the POST, "sent" once Spaceship
+// accepted the order (also when the order later failed), "uncertain" when the outcome is unknown. Every claim blocks; only
+// "checking" may be cleared by hand. Older and unknown statuses, and unreadable files, count as sent.
 export const claimKey = domain => 'dom-' + digest(domain).slice(0, 20);
+
+// A quote whose expiry cannot be read counts as expired.
+const readableExpiry = quote => typeof quote.expiresAt === 'string' && Number.isFinite(Date.parse(quote.expiresAt));
+const expired = (quote, at) => !readableExpiry(quote) || at.getTime() >= Date.parse(quote.expiresAt);
 
 // Issue a quote: one live check, bound to domain, term, amounts and currency, valid for ten minutes.
 export async function issueQuote(domain, { client, store, registry, years, now = new Date() }) {
@@ -116,6 +123,23 @@ const alreadySent = (domain, prior) => refusal('An order for ' + domain + ' was 
   + '. Domain Hound never sends a second order. ' + checkAccount,
 { alreadySent: true, ...(prior?.operationId && { operationId: prior.operationId }) });
 
+// A claim in "checking" is a live guard: another call holds it and has sent nothing yet. It never clears by itself, since
+// that call may still be running, so the person gets the safe manual recovery.
+const inProgress = (domain, store, path) => refusal('Not ordered: another purchase of this domain is in progress (' + domain + '). '
+  + 'Its claim ' + path + ' says "checking": that purchase is running its last price check and has sent no order. Domain Hound '
+  + 'sends no second order. Wait a minute and ask again. If no purchase is running (say, Domain Hound stopped mid-check): '
+  + 'stop every Domain Hound instance that uses ' + store.directory + ', check that the claim’s status is exactly "checking", '
+  + 'move the file out of that folder, then get a fresh quote. If the status is anything else, leave the file and check orders '
+  + 'in your Spaceship account.', { inProgress: true, claimPath: path });
+
+// The answer for any existing claim: in progress while it is checking, already sent otherwise.
+async function blockedBy(domain, store) {
+  const key = claimKey(domain);
+  const prior = await store.readClaim(key);
+  if (!prior) return null;
+  return prior.status === 'checking' ? inProgress(domain, store, store.claimPath(key)) : alreadySent(domain, prior);
+}
+
 // Guardrails in order: no earlier order, valid unexpired quote, explicit max, cap, strict re-quote. Then, without direct
 // mode, the Spaceship MCP handoff. With direct mode: owner contact, non-premium, registry minimum term, registry free, dry run
 // or order. The earlier order comes first: it needs no key and no quote, so a lost key or an expired quote still ends in
@@ -123,16 +147,16 @@ const alreadySent = (domain, prior) => refusal('An order for ' + domain + ' was 
 export async function buyDomain(input, { client, accountBinding, store, registry, env = process.env,
   now = () => new Date(), sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), polls = 5, pollMs = 3000 }) {
   const { domain, quote_id: quoteId, max_usd: maxUsd, confirm = false } = input;
-  const prior = await store.readClaim(claimKey(domain));
-  if (prior) return alreadySent(domain, prior);
+  const blocked = await blockedBy(domain, store);
+  if (blocked) return blocked;
   const cap = capCents(env);
   const stored = await store.readBound('quotes', 'dhq-', quoteId);
   if (!stored) return refusal('No valid quote with that ID. Call quote_domain, show the person the exact quote, then use its ID.');
   const { accountBinding: quotedAccount, ...quote } = stored;
   if (quote.domain !== domain) return refusal('That quote is for ' + quote.domain + ', not ' + domain + '. Nothing ordered.');
-  if (now().getTime() >= Date.parse(quote.expiresAt)) {
-    return refusal('Quote ' + quoteId + ' expired at ' + quote.expiresAt.slice(11, 16) + ' UTC. Quote again. Nothing ordered.',
-      { expired: true });
+  if (expired(quote, now())) {
+    return refusal('Quote ' + quoteId + (readableExpiry(quote) ? ' expired at ' + quote.expiresAt.slice(11, 16) + ' UTC.' : ' has no readable expiry, so it counts as expired.')
+      + ' Quote again. Nothing ordered.', { expired: true });
   }
   const max = cents(String(maxUsd));
   if (max === null || max <= 0) return refusal('Give max_usd as a positive USD amount in whole cents.');
@@ -145,13 +169,16 @@ export async function buyDomain(input, { client, accountBinding, store, registry
   }
   if (quotedAccount !== await accountBinding()) return refusal('The Spaceship key changed since the quote. Quote again.');
   const fresh = await liveOffer(domain, { client, registry, years: quote.years, now: now() });
-  if (now().getTime() >= Date.parse(quote.expiresAt)) {
+  if (expired(quote, now())) {
     return refusal('The quote expired during the price check. Quote again.');
   }
   const changed = changes(quote, fresh);
   if (changed.length) {
     return refusal('Not ordered: ' + changed.join('; ') + '. Quote again and show the person the new quote.', { changed });
   }
+  // An order claimed by another call while this one re-checked: no handoff, dry run or order may go around it.
+  const claimed = await blockedBy(domain, store);
+  if (claimed) return claimed;
   const summary = offerLine(quote) + ' Re-checked ' + fresh.checkedAt.slice(11, 16) + ' UTC, unchanged. The quote is within the max '
     + 'of ' + usd(max) + ' and the cap of ' + usd(cap) + '.';
   if (!directPurchaseEnabled(env)) {
@@ -190,16 +217,12 @@ async function placeOrder(quote, { client, store, registry, owner, now, sleep, p
   const key = claimKey(domain);
   let record = await store.claim(key, { domain, quoteId: quote.id, quotedAmount: quote.amount, years: quote.years,
     status: 'checking', at: now().toISOString() });
-  if (!record) return alreadySent(domain, await store.readClaim(key));
-  record = { ...record, status: 'sending' };
-  try {
-    await store.updateClaim(key, record);
-  } catch (problem) {
-    await store.release(key);
-    return refusal('Not ordered: Domain Hound could not record the order on disk (' + problem.message + '). Nothing was sent.');
+  if (!record) {
+    return await blockedBy(domain, store) ?? refusal('Not ordered: another purchase of this domain was in progress and has just '
+      + 'ended. This call sent nothing. Get a fresh quote.');
   }
-  // Last check while holding the claim, seconds before the order: the same price, term, availability and a free registry.
-  // These refusals are proven before anything is sent, so they release the claim.
+  // Last check while holding the claim in "checking", seconds before the order: the same price, term, availability and a
+  // free registry. These refusals are proven before anything is sent, so they release the claim.
   let last;
   try {
     last = await liveOffer(domain, { client, registry, years: quote.years, now: now() });
@@ -209,10 +232,18 @@ async function placeOrder(quote, { client, store, registry, owner, now, sleep, p
   }
   const changed = changes(quote, last);
   if (!changed.length && last.registry !== 'free') changed.push('the registry did not confirm availability');
-  if (now().getTime() >= Date.parse(quote.expiresAt)) changed.push('the quote expired');
+  if (expired(quote, now())) changed.push('the quote expired');
   if (changed.length) {
     await store.release(key);
     return refusal('Not ordered: ' + changed.join('; ') + '. Nothing was sent. Quote again and show the person the new quote.', { changed });
+  }
+  // Recorded atomically just before the POST. If it cannot be written, nothing is sent.
+  record = { ...record, status: 'sending' };
+  try {
+    await store.updateClaim(key, record);
+  } catch (problem) {
+    await store.release(key);
+    return refusal('Not ordered: Domain Hound could not record the order on disk (' + problem.message + '). Nothing was sent.');
   }
   // From here the order may exist. Local bookkeeping is best effort: a disk error never hides the outcome, and a failed
   // write leaves the existing claim file in place (writes replace it atomically), so no second order can follow.
@@ -224,17 +255,21 @@ async function placeOrder(quote, { client, store, registry, owner, now, sleep, p
   try {
     ({ operationId } = await client.createDomain(domain, orderBody(quote, owner)));
   } catch (problem) {
-    // Only a refusal before the request left (the client's own gate) is proven unsent. Anything else keeps the claim:
+    // Only the client's own gate and Spaceship's documented refusal are proven unsent. Anything else keeps the claim:
     // no retry, no other path, the person checks the account.
     if (problem.notSent === true) {
       await store.release(key);
+      if (problem.refused === true) {
+        return refusal('Not ordered: ' + problem.message + ' Spaceship placed no order for ' + domain + '. Fix the cause, then '
+          + 'get a fresh quote.', { refused: true });
+      }
       return refusal('Not ordered: ' + problem.message + ' Nothing was sent.');
     }
-    await mark({ status: 'ambiguous', reason: String(problem.message).slice(0, 200) });
+    await mark({ status: 'uncertain', reason: String(problem.message).slice(0, 200) });
     return refusal('The order result for ' + domain + ' is unclear (' + problem.message + '). Domain Hound will not send it again. '
       + checkAccount, { ambiguous: true });
   }
-  await mark({ status: 'submitted', operationId });
+  await mark({ status: 'sent', operationId });
   let operation = null;
   for (let attempt = 0; attempt < polls; attempt++) {
     operation = await client.operation(operationId).catch(() => null);
@@ -242,12 +277,12 @@ async function placeOrder(quote, { client, store, registry, owner, now, sleep, p
     if (attempt < polls - 1) await sleep(pollMs);
   }
   if (operation?.status === 'failed') {
-    await mark({ status: 'failed' });
+    await mark({ status: 'sent', outcome: 'failed' });
     return refusal('Spaceship reports the order for ' + domain + ' failed (operation ' + operationId + '). Domain Hound will not '
       + 'send it again. ' + checkAccount, { failed: true, operationId });
   }
   if (operation?.status !== 'success') {
-    await mark({ status: 'ambiguous' });
+    await mark({ status: 'uncertain' });
     return refusal('Spaceship has not finished the order for ' + domain + ' (operation ' + operationId + '). Domain Hound will not '
       + 'send it again. ' + checkAccount, { ambiguous: true, operationId });
   }
@@ -265,7 +300,7 @@ async function placeOrder(quote, { client, store, registry, owner, now, sleep, p
   } catch (problem) {
     receiptProblem = problem instanceof Error ? problem.message : String(problem);
   }
-  await mark({ status: verified.registered ? 'success' : 'success-unverified', ...(path && { receipt: path }) });
+  await mark({ status: 'sent', outcome: verified.registered ? 'success' : 'success-unverified', ...(path && { receipt: path }) });
   const missing = Object.entries(checks).filter(([, ok]) => !ok).map(([name]) => name);
   return { ok: true, ordered: true, verified: verified.registered, operationId, receipt, receiptPath: path, say: [
     'Ordered ' + domain + ': Spaceship reports the registration succeeded (operation ' + operationId + ').',

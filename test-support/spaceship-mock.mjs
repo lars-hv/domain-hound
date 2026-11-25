@@ -31,7 +31,7 @@ export function productionFetchTo(mockBaseUrl, productionBase = 'https://spacesh
 
 export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secret' } = {}) {
   const state = { offers: new Map(), domains: new Map(), records: new Map(), operations: new Map(), requests: [],
-    createMode: 'success', nextOperation: 1, dnsPageSize: 100, dnsSaveFails: false, beforePricing: null };
+    createMode: 'success', nextOperation: 1, dnsPageSize: 100, dnsSaveFails: false, beforePricing: null, beforeCreate: null };
 
   const server = createServer(async (request, response) => {
     let text = '';
@@ -54,7 +54,7 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
     }
     if ((match = path.match(/^\/v1\/domains\/([^/]+)\/pricing$/)) && request.method === 'GET') {
       const domain = decodeURIComponent(match[1]);
-      state.beforePricing?.(domain, state.requests.filter(row => row.path === path).length);
+      await state.beforePricing?.(domain, state.requests.filter(row => row.path === path).length);
       const offer = state.offers.get(domain);
       if (!offer) return send(404, { detail: 'Not found' });
       return send(200, { domain, priceClass: offer.priceClass,
@@ -67,11 +67,23 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
         return info ? send(200, info) : send(404, { detail: 'Not found' });
       }
       if (request.method === 'POST') {
-        // Failure modes: drop the connection, a server error, a refusal, or an accepted order without an operation ID.
-        if (state.createMode === 'drop') return request.socket.destroy();
-        if (state.createMode === 'error500') return send(500, { detail: 'Internal error' });
-        if (state.createMode === 'reject422') return send(422, { detail: 'Invalid contact' });
-        if (state.createMode === 'noid') return send(202);
+        await state.beforeCreate?.(domain);
+        // Failure modes: drop the connection, a server error, a documented refusal (application/problem+json with a detail
+        // string), an answer whose body breaks off, an accepted order without an operation ID, or any exact answer given
+        // as { status, type, body } with a raw body.
+        let mode = state.createMode;
+        if (mode === 'drop') return request.socket.destroy();
+        if (mode === 'error500') return send(500, { detail: 'Internal error' });
+        if (mode === 'reject422') mode = { status: 422, body: JSON.stringify({ title: 'Unprocessable', status: 422, detail: 'Invalid contact' }) };
+        if (mode === 'truncate') {
+          response.writeHead(422, { 'content-type': 'application/problem+json', 'content-length': '200' });
+          return response.write('{"detail":"Insuf', () => request.socket.destroy());
+        }
+        if (mode && typeof mode === 'object') {
+          response.writeHead(mode.status, mode.type === null ? {} : { 'content-type': mode.type ?? 'application/problem+json' });
+          return response.end(mode.body ?? '');
+        }
+        if (mode === 'noid') return send(202);
         const id = 'op-' + state.nextOperation++;
         state.operations.set(id, { id, status: state.createMode === 'failed' ? 'failed' : state.createMode === 'pending' ? 'pending' : 'success',
           type: 'domains_Create', details: { domain } });
@@ -100,7 +112,9 @@ export async function startSpaceshipMock({ key = 'test-key', secret = 'test-secr
         return send(200, { total: items.length, items: items.slice(skip, skip + Math.min(take, state.dnsPageSize)) });
       }
       if (request.method === 'PUT') {
-        if (state.dnsSaveFails) return send(422, { detail: 'DNS save rejected' });
+        if (state.dnsSaveFails === true || (typeof state.dnsSaveFails === 'function' && state.dnsSaveFails(body))) {
+          return send(422, { detail: 'DNS save rejected' });
+        }
         if (body?.force !== false || !Array.isArray(body.items)) return send(422, { detail: 'Invalid body' });
         for (const item of body.items) {
           const existing = items.find(row => same(row, item));

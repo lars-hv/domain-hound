@@ -24,10 +24,27 @@ export function missingKeyText(tool) {
 }
 
 export class SpaceshipError extends Error {
-  constructor(message, { status = null, ambiguous = false } = {}) {
+  constructor(message, { status = null, ambiguous = false, detail = null } = {}) {
     super(message);
     this.status = status;
     this.ambiguous = ambiguous;
+    this.detail = detail;
+  }
+}
+
+// domainCreate documents 400, 401, 403, 404, 422 and 429 as application/problem+json with a detail string; 402 with the same
+// body is the same definite refusal. Only such an answer proves Spaceship placed no order. A timeout (also HTTP 408), a 5xx,
+// a body that cannot be read or a body without a detail string stays unclear.
+const refusalStatuses = new Set([400, 401, 402, 403, 404, 422, 429]);
+function problemDetail(response, text) {
+  if (!/^application\/problem\+json\s*(?:;|$)/i.test(response.headers.get('content-type') ?? '')) return null;
+  try {
+    const body = JSON.parse(text);
+    const detail = body && typeof body === 'object' && !Array.isArray(body) && typeof body.detail === 'string'
+      ? body.detail.replace(/\p{Cc}+/gu, ' ').trim().slice(0, 200) : '';
+    return detail || null;
+  } catch {
+    return null;
   }
 }
 
@@ -78,12 +95,14 @@ export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher 
       // A write may have reached Spaceship before the connection failed.
       throw new SpaceshipError('Spaceship did not answer in time.', { ambiguous: method !== 'GET' });
     }
-    const text = await response.text().catch(() => '');
+    let readable = true;
+    const text = await response.text().catch(() => { readable = false; return ''; });
     if (!accept.includes(response.status)) {
       const reason = response.status === 401 || response.status === 403 ? 'Spaceship refused the API key or its scope'
         : response.status === 404 ? 'Spaceship has no such item' : response.status === 429 ? 'Spaceship rate limit reached'
           : 'Spaceship answered HTTP ' + response.status;
-      throw new SpaceshipError(reason + '.', { status: response.status, ambiguous: method !== 'GET' && response.status >= 500 });
+      throw new SpaceshipError(reason + '.', { status: response.status, ambiguous: method !== 'GET' && response.status >= 500,
+        detail: readable ? problemDetail(response, text) : null });
     }
     let json = null;
     if (text) {
@@ -125,12 +144,22 @@ export function spaceshipClient({ key, secret, baseUrl = spaceshipBase, fetcher 
     // deleteRecords: removes exact custom records only.
     deleteRecords: (domain, items) => request('DELETE', '/v1/dns/records/' + domainPath(domain), { body: items, accept: [204] }),
     // domainCreate has no price cap or idempotency field. It is sent only when the person set DOMAIN_HOUND_DIRECT_PURCHASE=1,
-    // whatever the host, and exactly once: request() never retries. A refusal here is proven unsent.
+    // whatever the host, and exactly once: request() never retries. The gate below and Spaceship's documented refusal are
+    // proven unsent (notSent); every other failure may have placed the order.
     async createDomain(domain, body) {
       if (!directPurchase(env)) {
         throw Object.assign(new SpaceshipError('Direct purchase is off: DOMAIN_HOUND_DIRECT_PURCHASE is not 1.'), { notSent: true });
       }
-      const { headers } = await request('POST', '/v1/domains/' + domainPath(domain), { body, accept: [202] });
+      let headers;
+      try {
+        ({ headers } = await request('POST', '/v1/domains/' + domainPath(domain), { body, accept: [202] }));
+      } catch (problem) {
+        if (refusalStatuses.has(problem.status) && problem.detail) {
+          throw Object.assign(new SpaceshipError('Spaceship refused the order (HTTP ' + problem.status + ': ' + problem.detail + ').',
+            { status: problem.status, detail: problem.detail }), { notSent: true, refused: true });
+        }
+        throw problem;
+      }
       const operationId = headers.get('spaceship-async-operationid');
       if (!operationId) throw new SpaceshipError('Spaceship accepted the order without an operation ID.', { ambiguous: true });
       return { operationId };

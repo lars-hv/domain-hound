@@ -1,4 +1,4 @@
-import { apiRecord, planChanges, planLifetimeMs, planText, presentIn, recordText, sameChanges } from './dns.mjs';
+import { apiRecord, planChanges, planLifetimeMs, planText, presentIn, recordText, sameChanges, writeSteps } from './dns.mjs';
 
 // DNS records only take effect when the domain uses Spaceship's own (basic) nameservers.
 async function hostedHere(client, domain) {
@@ -32,8 +32,9 @@ export async function previewSetup(domain, choices, { client, store, now = new D
   return { ok: true, planId: saved.id, expiresAt, plan, say: planText(domain, plan, { planId: saved.id, expiresAt }) };
 }
 
-// Apply a previewed plan: recheck it against the live records, delete only the listed custom records when replace is
-// true, add with force false, then read everything back.
+// Apply a previewed plan: recheck it against the live records, write in writeSteps order (additions with force false,
+// deletions of the listed custom records only when replace is true), stop at the first failed write, then read everything
+// back.
 export async function applySetup(domain, { planId, replace = false }, { client, store, now = () => new Date() }) {
   const stored = await store.readBound('plans', 'dhp-', planId);
   if (!stored || stored.domain !== domain || stored.accountBinding !== client.accountBinding) {
@@ -54,11 +55,14 @@ export async function applySetup(domain, { planId, replace = false }, { client, 
     return { ok: false, say: 'DNS for ' + domain + ' changed since the preview. Nothing changed. Preview again.' };
   }
   let writeProblem = false;
-  try {
-    if (stored.deletes.length) await client.deleteRecords(domain, stored.deletes.map(apiRecord));
-    if (stored.adds.length) await client.saveRecords(domain, stored.adds.map(row => ({ ...apiRecord(row), ttl: row.ttl })));
-  } catch {
-    writeProblem = true;
+  for (const { action, rows } of writeSteps(stored)) {
+    try {
+      if (action === 'save') await client.saveRecords(domain, rows.map(row => ({ ...apiRecord(row), ttl: row.ttl })));
+      else await client.deleteRecords(domain, rows.map(apiRecord));
+    } catch {
+      writeProblem = true;
+      break;
+    }
   }
   const records = await client.dnsRecords(domain).catch(() => null);
   if (!records) return { ok: false, say: 'Spaceship could not verify the DNS write for ' + domain + '. Preview again to check the current records.' };
@@ -70,7 +74,7 @@ export async function applySetup(domain, { planId, replace = false }, { client, 
     ...stored.deletes.map(row => (present(row) ? 'Still present: ' : 'Removed: ') + recordText(row))];
   if (missing.length || lingering.length) {
     lines[0] = domain + ' DNS update is incomplete. The readback differs from the plan.';
-    if (writeProblem) lines.push('Spaceship reported a write problem.');
+    if (writeProblem) lines.push('Spaceship reported a write problem. Domain Hound sent no later changes.');
     lines.push('Preview again for the current records.');
   } else lines.push('Readback matches the plan. DNS caches take time to update.');
   return { ok: !missing.length && !lingering.length, say: lines.join('\n') };

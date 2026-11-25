@@ -1,10 +1,12 @@
 import '../../test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
+import { promisify } from 'node:util';
 import { ownerContactId, productionFetchTo, startSpaceshipMock } from '../../test-support/spaceship-mock.mjs';
 import { directPurchaseEnv } from '../../test-support/spaceship-test-registrar.mjs';
 import { capCents, claimKey, directPurchaseEnabled, ownerContact, spaceshipMcp } from './buy.mjs';
@@ -39,10 +41,10 @@ async function harness(t, { env = {}, clientEnv = env, keys = true, wrapStore = 
   const client = spaceshipClient({ key: mock.key, secret: mock.secret, env: clientEnv, fetcher });
   const registryStatus = new Map();
   let clock = start;
-  const handlers = (handlerEnv, envForClient = handlerEnv, withKeys = keys) => purchaseHandlers({ env: handlerEnv,
+  const handlers = (handlerEnv, envForClient = handlerEnv, withKeys = keys, wrap = wrapStore) => purchaseHandlers({ env: handlerEnv,
     credentials: async () => withKeys ? { key: mock.key, secret: mock.secret } : null,
     clientFor: credentials => spaceshipClient({ ...credentials, env: envForClient, fetcher }),
-    store: wrapStore(stateStore(directory)),
+    store: wrap(stateStore(directory)),
     registry: async ([{ domain }]) => [{ status: registryStatus.get(domain) ?? (mock.state.domains.has(domain) ? 'taken' : 'free') }],
     now: () => new Date(clock), sleep: async () => {} });
   return { mock, call: handlers(env, clientEnv), handlers, client, directory, registryStatus, advance: ms => { clock += ms; } };
@@ -50,6 +52,8 @@ async function harness(t, { env = {}, clientEnv = env, keys = true, wrapStore = 
 
 const text = result => result.content[0].text;
 const data = result => result.structuredContent;
+const claimFile = (h, domain = 'lanternbay.com') => join(h.directory, 'claims', claimKey(domain) + '.json');
+const claimOnDisk = async (h, domain) => JSON.parse(await readFile(claimFile(h, domain), 'utf8'));
 
 async function quoted(h, domain = 'lanternbay.com', offer = {}) {
   h.mock.setOffer(domain, offer);
@@ -378,7 +382,7 @@ test('direct mode: parallel and repeated confirmed calls send at most one order'
 });
 
 test('direct mode: every uncertain or refused order stays locked, is never retried, and sends the person to their account', async t => {
-  for (const mode of ['drop', 'error500', 'noid', 'pending', 'failed', 'reject422']) {
+  for (const mode of ['drop', 'error500', 'noid', 'pending', 'failed']) {
     const h = await harness(t, { env: DIRECT });
     h.mock.state.createMode = mode;
     const first = await quoted(h);
@@ -409,7 +413,7 @@ test('direct mode: a lost key after an unclear order still ends in the account c
     const lost = await h.handlers(env, env, false)('buy_domain', buyArgs(quote, { confirm: true }));
     assert.equal(lost.isError, false, text(lost));
     assert.equal(data(lost).alreadySent, true);
-    assert.match(text(lost), /^An order for lanternbay\.com was already sent \(ambiguous\)\. Domain Hound never sends a second order\./);
+    assert.match(text(lost), /^An order for lanternbay\.com was already sent \(uncertain\)\. Domain Hound never sends a second order\./);
     noFallback(text(lost));
     assert.doesNotMatch(text(lost), /No Spaceship API key found/);
     // An expired or unknown quote gets the same answer.
@@ -663,7 +667,7 @@ test('DNS reads every page of records', async t => {
   await assert.rejects(h.client.dnsRecords('many.com'), /incomplete DNS list/);
 });
 
-test('setup reads back a partial change when an approved delete succeeds but the save fails', async t => {
+test('setup adds before it removes, so a failed save leaves the old records in place and reports the partial state', async t => {
   const h = await harness(t);
   const domain = 'lanternbay.com';
   h.mock.setDomain(domain, { records: [{ type: 'A', name: '@', address: '192.0.2.10' }] });
@@ -672,9 +676,48 @@ test('setup reads back a partial change when an approved delete succeeds but the
   const outcome = await h.call('setup_domain', { domain, plan_id: data(preview).planId, apply: true, replace: true });
   assert.equal(data(outcome).ok, false);
   assert.match(text(outcome), /DNS update is incomplete/);
-  assert.match(text(outcome), /Removed: A @ 192\.0\.2\.10/);
+  assert.match(text(outcome), /Still present: A @ 192\.0\.2\.10/);
   assert.match(text(outcome), /Not found after save: A @ 185\.199\.108\.153/);
+  assert.match(text(outcome), /Domain Hound sent no later changes\./);
+  assert.equal(h.mock.sent('DELETE').length, 0);
   assert.equal(h.mock.sent('GET', /^\/v1\/dns\/records\//).length, 3);
+});
+
+const writes = h => h.mock.state.requests.filter(row => row.method === 'PUT' || row.method === 'DELETE')
+  .map(row => row.method + ' ' + (row.method === 'PUT' ? row.body.items : row.body).map(item => item.type + ' ' + item.name).join(', '));
+
+test('setup saves coexisting records first, removes only approved blockers, saves the rest, then removes the others', async t => {
+  const h = await harness(t);
+  const domain = 'lanternbay.com';
+  const records = [{ type: 'A', name: 'www', address: '192.0.2.20' }, { type: 'A', name: '@', address: '192.0.2.10' },
+    { type: 'MX', name: '@', exchange: 'mx.old-host.example', preference: 10 },
+    { type: 'TXT', name: '@', value: 'v=spf1 include:old-host.example ~all' }, { type: 'TXT', name: '_dmarc', value: 'v=DMARC1; p=none' }];
+  const choices = { website: ghPages, mail: { provider: 'google-workspace', dmarc: 'reject' } };
+  h.mock.setDomain(domain, { records });
+  const applied = await h.call('setup_domain', { domain, plan_id: data(await h.call('setup_domain', { domain, ...choices })).planId,
+    apply: true, replace: true });
+  assert.equal(data(applied).ok, true, text(applied));
+  assert.deepEqual(writes(h), ['PUT A @, A @, A @, A @, MX @', 'DELETE A www, TXT @, TXT _dmarc', 'PUT CNAME www, TXT @, TXT _dmarc',
+    'DELETE A @, MX @']);
+  // A save that fails after the blockers went: later steps are not sent, and the readback shows exactly what changed.
+  const failing = await harness(t);
+  failing.mock.setDomain(domain, { records });
+  const plan = data(await failing.call('setup_domain', { domain, ...choices })).planId;
+  failing.mock.state.dnsSaveFails = body => body.items.some(item => item.type === 'CNAME');
+  const partial = await failing.call('setup_domain', { domain, plan_id: plan, apply: true, replace: true });
+  assert.equal(data(partial).ok, false);
+  assert.equal(writes(failing).length, 3);
+  for (const line of ['Added: A @ 185.199.108.153', 'Added: MX @ smtp.google.com 1', 'Removed: A www 192.0.2.20',
+    'Not found after save: CNAME www octo.github.io', 'Still present: A @ 192.0.2.10', 'Still present: MX @ mx.old-host.example 10',
+    'Domain Hound sent no later changes.']) assert.ok(text(partial).includes(line), line + '\n' + text(partial));
+  // An apex ALIAS replaces the apex address: that address goes right before the ALIAS is saved.
+  const alias = await harness(t);
+  alias.mock.setDomain(domain, { records: [{ type: 'A', name: '@', address: '192.0.2.10' }] });
+  const netlify = { website: { provider: 'netlify', target: 'site.netlify.app' } };
+  const done = await alias.call('setup_domain', { domain, plan_id: data(await alias.call('setup_domain', { domain, ...netlify })).planId,
+    apply: true, replace: true });
+  assert.equal(data(done).ok, true, text(done));
+  assert.deepEqual(writes(alias), ['PUT CNAME www', 'DELETE A @', 'PUT ALIAS @']);
 });
 
 test('the server registers the purchase tools and answers buy_domain without a quote locally', async () => {
@@ -697,4 +740,232 @@ test('the server registers the purchase tools and answers buy_domain without a q
   assert.deepEqual(replies.get(2).tools.slice(-3).map(tool => tool.name), ['quote_domain', 'buy_domain', 'setup_domain']);
   assert.match(replies.get(3).content[0].text, /^No valid quote with that ID\./);
   assert.equal(replies.get(4).isError, true);
+});
+
+test('direct mode: the claim says checking during the last check, sending just before the POST, then sent with the operation ID', async t => {
+  const h = await harness(t, { env: DIRECT });
+  const quote = await quoted(h);
+  const seen = [];
+  h.mock.state.beforePricing = async (domain, count) => { if (count === 3) seen.push((await claimOnDisk(h, domain)).status); };
+  h.mock.state.beforeCreate = async domain => { seen.push((await claimOnDisk(h, domain)).status); };
+  const result = await h.call('buy_domain', buyArgs(quote, { confirm: true }));
+  assert.equal(data(result).ordered, true, text(result));
+  assert.deepEqual(seen, ['checking', 'sending']);
+  const claim = await claimOnDisk(h);
+  assert.equal(claim.status, 'sent');
+  assert.equal(claim.operationId, 'op-1');
+});
+
+test('a stale checking claim names its file and the safe recovery, blocks every route, and clears once moved out', async t => {
+  const h = await harness(t, { env: DIRECT });
+  const quote = await quoted(h);
+  await stateStore(h.directory).claim(claimKey(quote.domain), { domain: quote.domain, status: 'checking', at: '2026-11-25T11:00:00.000Z' });
+  const path = claimFile(h);
+  for (const call of [h.call, h.handlers({})]) {
+    const blocked = await call('buy_domain', buyArgs(quote, { confirm: true }));
+    assert.equal(data(blocked).ordered, false);
+    assert.equal(data(blocked).inProgress, true);
+    assert.equal(data(blocked).claimPath, path);
+    const say = text(blocked);
+    assert.match(say, /another purchase of this domain is in progress/);
+    assert.ok(say.includes(path), say);
+    assert.ok(say.includes('stop every Domain Hound instance that uses ' + h.directory), say);
+    assert.match(say, /status is exactly "checking"/);
+    assert.match(say, /move the file out of that folder, then get a fresh quote/);
+    assert.doesNotMatch(say, /already sent|domain_register|Buy it yourself/);
+  }
+  assert.equal(h.mock.sent('POST').length, 0);
+  await rename(path, join(h.directory, 'stale-claim.json'));
+  const fresh = await h.call('buy_domain', buyArgs(await quoted(h), { confirm: true }));
+  assert.equal(data(fresh).ordered, true, text(fresh));
+  assert.equal(h.mock.sent('POST').length, 1);
+});
+
+test('direct mode: a parallel caller that loses the claim while the winner checks hears another purchase is in progress', async t => {
+  const h = await harness(t, { env: DIRECT });
+  const quote = await quoted(h);
+  const args = buyArgs(quote, { confirm: true });
+  // The late caller passes both claim reads and then loses the exclusive create.
+  let claimAttempts = 0;
+  const raceWindow = store => {
+    let reads = 0;
+    return { ...store, readClaim: async key => ++reads <= 2 ? null : store.readClaim(key),
+      claim: async (...args) => {
+        claimAttempts++;
+        return store.claim(...args);
+      } };
+  };
+  let lost;
+  let early;
+  h.mock.state.beforePricing = async (_domain, count) => {
+    if (count !== 3) return;
+    lost = await h.handlers(DIRECT, DIRECT, true, raceWindow)('buy_domain', args);
+    early = await h.call('buy_domain', args);
+  };
+  const winner = await h.call('buy_domain', args);
+  assert.equal(data(winner).ordered, true, text(winner));
+  assert.equal(claimAttempts, 1);
+  for (const loser of [lost, early]) {
+    assert.equal(data(loser).ordered, false);
+    assert.equal(data(loser).inProgress, true);
+    assert.equal(data(loser).claimPath, claimFile(h));
+    assert.match(text(loser), /another purchase of this domain is in progress/);
+    assert.ok(text(loser).includes(claimFile(h)));
+    assert.doesNotMatch(text(loser), /already sent/);
+  }
+  assert.equal(h.mock.sent('POST').length, 1);
+});
+
+test('old, unknown and unreadable claims block every route as already sent, without the checking recovery', async t => {
+  const h = await harness(t, { env: DIRECT });
+  const quote = await quoted(h);
+  const path = claimFile(h);
+  await mkdir(join(h.directory, 'claims'), { recursive: true });
+  const status = value => JSON.stringify({ domain: quote.domain, status: value });
+  const contents = ['submitted', 'failed', 'ambiguous', 'success', 'success-unverified', 'sending', 'sent', 'uncertain', 'later', 'CHECKING']
+    .map(status).concat(['', '{"status":"check', 'null', '[]', '"checking"', JSON.stringify({ domain: quote.domain })]);
+  for (const content of [...contents, null]) {
+    await rm(path, { recursive: true, force: true });
+    // null: the claim path cannot be read at all.
+    if (content === null) await mkdir(path);
+    else await writeFile(path, content);
+    for (const call of [h.call, h.handlers({}), h.handlers(DIRECT, DIRECT, false)]) {
+      const blocked = await call('buy_domain', buyArgs(quote, { confirm: true }));
+      assert.equal(data(blocked).alreadySent, true, String(content) + ': ' + text(blocked));
+      assert.equal(data(blocked).inProgress, undefined);
+      noFallback(text(blocked));
+    }
+  }
+  assert.equal(h.mock.sent('POST').length, 0);
+});
+
+test('a claim is published whole or not at all', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'hound-claim-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = stateStore(directory);
+  const key = claimKey('lanternbay.com');
+  await assert.rejects(store.claim(key, { domain: 'lanternbay.com', status: 'checking', size: 1n }));
+  assert.equal(await store.readClaim(key), null);
+  assert.deepEqual(await readdir(join(directory, 'claims')).catch(() => []), []);
+  assert.equal((await store.claim(key, { domain: 'lanternbay.com', status: 'checking' })).status, 'checking');
+  assert.equal(await store.claim(key, { domain: 'lanternbay.com', status: 'checking' }), null);
+  assert.deepEqual(await readdir(join(directory, 'claims')), [key + '.json']);
+  assert.equal((await store.readClaim(key)).status, 'checking');
+});
+
+test('a claim made by another order during the re-check stops the handoff and the dry run', async t => {
+  for (const env of [{}, DIRECT]) {
+    const h = await harness(t, { env });
+    const quote = await quoted(h);
+    h.mock.state.beforePricing = async (domain, count) => {
+      if (count === 2) await stateStore(h.directory).claim(claimKey(domain), { domain, status: 'sending', at: '2026-11-25T12:00:00.000Z' });
+    };
+    const result = await h.call('buy_domain', buyArgs(quote));
+    assert.equal(data(result).ok, false, text(result));
+    assert.equal(data(result).alreadySent, true);
+    noFallback(text(result));
+    assert.equal(h.mock.sent('POST').length, 0);
+  }
+});
+
+const problem = (status, detail = 'Insufficient funds') => ({ status,
+  body: JSON.stringify({ type: 'about:blank', title: 'Refused', status, detail }) });
+
+test('direct mode: a documented Spaceship refusal is not an order: it says why and releases the claim', async t => {
+  for (const status of [400, 401, 402, 403, 404, 422, 429]) {
+    const h = await harness(t, { env: DIRECT });
+    h.mock.state.createMode = problem(status);
+    const quote = await quoted(h);
+    const result = await h.call('buy_domain', buyArgs(quote, { confirm: true }));
+    assert.equal(data(result).ordered, false, String(status));
+    assert.equal(data(result).refused, true, String(status));
+    assert.match(text(result), new RegExp('^Not ordered: Spaceship refused the order \\(HTTP ' + status + ': Insufficient funds\\)\\. '
+      + 'Spaceship placed no order for lanternbay\\.com\\.'), String(status));
+    assert.doesNotMatch(text(result), /unclear|will not send it again|already sent/);
+    assert.equal(await stateStore(h.directory).readClaim(claimKey(quote.domain)), null, String(status));
+    // Released: once the cause is fixed, a fresh quote can order.
+    h.mock.state.createMode = 'success';
+    assert.equal(data(await h.call('buy_domain', buyArgs(await quoted(h), { confirm: true }))).ordered, true, String(status));
+    assert.equal(h.mock.sent('POST').length, 2);
+  }
+});
+
+test('direct mode: timeouts, 408, 5xx, unreadable or malformed answers stay uncertain; an accepted order that fails stays sent', async t => {
+  const modes = [['drop', 'uncertain'], [problem(408, 'Request timeout'), 'uncertain'], [problem(500), 'uncertain'],
+    [problem(503), 'uncertain'], [{ status: 422, body: 'not json' }, 'uncertain'], [{ status: 422, body: '{"title":"Refused"}' }, 'uncertain'],
+    [problem(422, ''), 'uncertain'], [{ status: 422, body: '["Insufficient funds"]' }, 'uncertain'],
+    [{ ...problem(422), type: 'text/html' }, 'uncertain'], [{ ...problem(422), type: null }, 'uncertain'], ['truncate', 'uncertain'],
+    ['noid', 'uncertain'], ['pending', 'uncertain'], ['failed', 'sent']];
+  for (const [mode, status] of modes) {
+    const label = JSON.stringify(mode);
+    const h = await harness(t, { env: DIRECT });
+    h.mock.state.createMode = mode;
+    const result = await h.call('buy_domain', buyArgs(await quoted(h), { confirm: true }));
+    assert.equal(data(result).ordered, false, label);
+    assert.equal(data(result).refused, undefined, label);
+    assert.match(text(result), /Domain Hound will not send it again\./, label);
+    noFallback(text(result));
+    const claim = await claimOnDisk(h);
+    assert.equal(claim.status, status, label);
+    if (mode === 'pending' || mode === 'failed') assert.equal(claim.operationId, 'op-1', label);
+    const retry = await h.call('buy_domain', buyArgs(await quoted(h), { confirm: true }));
+    assert.equal(data(retry).alreadySent, true, label);
+    assert.equal(h.mock.sent('POST').length, 1, label);
+  }
+});
+
+test('a quote without a readable expiry counts as expired and orders nothing', async t => {
+  const h = await harness(t, { env: DIRECT });
+  const quote = await quoted(h);
+  const { id: _id, nonce: _nonce, ...fields } = JSON.parse(await readFile(join(h.directory, 'quotes', quote.id + '.json'), 'utf8'));
+  for (const expiresAt of ['soon', '', null, 20261125, '2026-13-45T12:10:00.000Z']) {
+    const bad = await stateStore(h.directory).saveBound('quotes', 'dhq-', { ...fields, expiresAt });
+    for (const [call, confirm] of [[h.call, true], [h.call, false], [h.handlers({}), false]]) {
+      const result = await call('buy_domain', { domain: quote.domain, quote_id: bad.id, max_usd: 20, ...(confirm && { confirm }) });
+      assert.equal(data(result).expired, true, JSON.stringify(expiresAt) + ': ' + text(result));
+      assert.match(text(result), /^Quote dhq-[0-9a-f]{20} has no readable expiry, so it counts as expired\. Quote again\. Nothing ordered\./);
+    }
+  }
+  assert.equal(h.mock.sent('POST').length, 0);
+});
+
+test('plugin.json describes the Spaceship MCP default, the direct opt-in and the checkout fallback; the README the claim states', async () => {
+  const plugin = JSON.parse(await readFile(new URL('../../plugin.json', import.meta.url), 'utf8'));
+  const long = plugin.extensions['com.openai'].interface.longDescription;
+  assert.match(long, /through Spaceship’s own MCP/);
+  assert.match(long, /Direct purchase is an opt-in/);
+  assert.match(long, /Spaceship checkout is the fallback/);
+  assert.doesNotMatch(long, /Payment happens at Spaceship checkout/);
+  const readme = await readFile(new URL('../../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /another purchase of this domain is in progress/);
+  assert.match(readme, /exactly `"checking"`/);
+  assert.match(readme, /`DOMAIN_HOUND_PURCHASE_DIR`/);
+});
+
+test('the purchase folder comes from the configured env, resolved to an absolute path when configured', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'hound-configured-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const relative = stateStore('relative-purchases');
+  assert.ok(isAbsolute(relative.directory), relative.directory);
+  await mkdir(join(directory, 'claims'));
+  await writeFile(join(directory, 'claims', claimKey('lanternbay.com') + '.json'), JSON.stringify({ status: 'sent' }));
+  const call = purchaseHandlers({ env: { DOMAIN_HOUND_PURCHASE_DIR: directory }, credentials: async () => null });
+  const result = await call('buy_domain', { domain: 'lanternbay.com', quote_id: 'dhq-00000000000000000000', max_usd: 10 });
+  assert.equal(data(result).alreadySent, true, text(result));
+});
+
+test('a relative DOMAIN_HOUND_PURCHASE_DIR is resolved when the server starts, not after a later change of directory', async t => {
+  const [first, later] = await Promise.all([mkdtemp(join(tmpdir(), 'hound-start-')), mkdtemp(join(tmpdir(), 'hound-later-'))]);
+  t.after(() => Promise.all([rm(first, { recursive: true, force: true }), rm(later, { recursive: true, force: true })]));
+  await mkdir(join(first, 'purchases', 'claims'), { recursive: true });
+  await writeFile(join(first, 'purchases', 'claims', claimKey('lanternbay.com') + '.json'), JSON.stringify({ status: 'sent' }));
+  const tools = new URL('./tools.mjs', import.meta.url).href;
+  const script = 'const { callPurchaseTool } = await import(' + JSON.stringify(tools) + ');\nprocess.chdir(' + JSON.stringify(later) + ');\n'
+    + 'const result = await callPurchaseTool("buy_domain", { domain: "lanternbay.com", quote_id: "dhq-00000000000000000000", max_usd: 10 });\n'
+    + 'process.stdout.write(JSON.stringify(result.structuredContent));';
+  const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script],
+    { cwd: first, env: { ...process.env, DOMAIN_HOUND_PURCHASE_DIR: 'purchases' }, timeout: 20_000 });
+  const reply = JSON.parse(stdout);
+  assert.equal(reply.alreadySent, true, reply.display);
+  assert.deepEqual(await readdir(later), []);
 });

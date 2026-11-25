@@ -13,7 +13,7 @@
       "interface": {
         "displayName": "Domain Hound",
         "shortDescription": "Domain prices and name checks",
-        "longDescription": "Domain Hound checks registry availability, compares upfront and renewal prices, and screens product names for trademarks, app store clashes and web traction. It can watch a domain for release. Connect your own Spaceship account to get a live quote and set up website or mail DNS. Payment happens at Spaceship checkout. Domain Hound runs on your machine and is open source under the MIT license.",
+        "longDescription": "Domain Hound checks registry availability, compares upfront and renewal prices, and screens product names for trademarks, app store clashes and web traction. It can watch a domain for release. Connect your own Spaceship account to get a live quote and set up website or mail DNS. You buy through Spaceship’s own MCP, after you approve Spaceship’s confirmation with the price and payment method. Direct purchase is an opt-in in the server settings, and Spaceship checkout is the fallback. Domain Hound runs on your machine and is open source under the MIT license.",
         "developerName": "Lars Hvinden",
         "category": "Developer Tools",
         "capabilities": [

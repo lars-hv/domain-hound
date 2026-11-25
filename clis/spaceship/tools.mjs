@@ -4,7 +4,7 @@ import { missingKeyText, SpaceshipError, spaceshipClient, spaceshipCredentials }
 import { mailProviders, websiteProviders } from './dns.mjs';
 import { exactDomain, offerLine, quoteTimes } from './quote.mjs';
 import { applySetup, previewSetup } from './setup.mjs';
-import { stateStore } from './store.mjs';
+import { purchaseDir, stateStore } from './store.mjs';
 
 // The three tools that act in the person's own Spaceship account. server.mjs only registers and dispatches them.
 const domainField = { type: 'string', minLength: 3, maxLength: 253, description: 'The exact domain, like example.com.' };
@@ -145,8 +145,10 @@ function checkInput(tool, args) {
 
 // Production dependencies: credentials from the environment or Keychain and the live REST client, which sends a registration
 // only when the server environment sets DOMAIN_HOUND_DIRECT_PURCHASE=1. Tests pass a client factory for the local mock.
+// The purchase folder comes from the same env and is resolved here, once.
 export function purchaseHandlers({ env = process.env, credentials = () => spaceshipCredentials({ env }),
-  clientFor = keys => spaceshipClient({ ...keys, env }), store = stateStore(), registry, now = () => new Date(), sleep } = {}) {
+  clientFor = keys => spaceshipClient({ ...keys, env }), store = stateStore(purchaseDir(env)), registry, now = () => new Date(),
+  sleep } = {}) {
   async function client() {
     const keys = await credentials();
     return keys ? clientFor(keys) : null;
@@ -255,5 +257,8 @@ export function purchaseHandlers({ env = process.env, credentials = () => spaces
   };
 }
 
+// The server's purchase folder is fixed when the server starts (this module loads), so a later change of working directory
+// cannot move the claims.
+const startupStore = stateStore(purchaseDir());
 let production;
-export const callPurchaseTool = (name, args) => (production ??= purchaseHandlers())(name, args);
+export const callPurchaseTool = (name, args) => (production ??= purchaseHandlers({ store: startupStore }))(name, args);

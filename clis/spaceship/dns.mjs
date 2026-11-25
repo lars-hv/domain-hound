@@ -268,6 +268,22 @@ export function planText(domain, plan, { planId, expiresAt } = {}) {
   return lines.join('\n');
 }
 
+// Write order for an approved plan, so a failed write leaves the old records in place wherever the record types allow:
+// save the additions that can sit beside the current records, delete only the approved records that block an addition (a
+// CNAME and anything at its name, an ALIAS and an address at the same name, the one SPF, the one DMARC), save the blocked
+// additions, then delete the rest.
+const addressOrAlias = ['A', 'AAAA', 'ALIAS'];
+const blocks = (old, add) => old.name === add.name && (old.type === 'CNAME' || add.type === 'CNAME'
+  || ((old.type === 'ALIAS' || add.type === 'ALIAS') && addressOrAlias.includes(old.type) && addressOrAlias.includes(add.type))
+  || (isSpf(old) && isSpf(add)) || (isDmarc(old) && isDmarc(add)));
+export function writeSteps({ adds, deletes }) {
+  const blockers = deletes.filter(old => adds.some(add => blocks(old, add)));
+  const blocked = adds.filter(add => deletes.some(old => blocks(old, add)));
+  return [['save', adds.filter(row => !blocked.includes(row))], ['delete', blockers], ['save', blocked],
+    ['delete', deletes.filter(row => !blockers.includes(row))]]
+    .filter(([, rows]) => rows.length).map(([action, rows]) => ({ action, rows }));
+}
+
 export const sameChanges = (a, b) => digest([a.adds.map(identity).sort(), a.deletes.map(identity).sort()])
   === digest([b.adds.map(identity).sort(), b.deletes.map(identity).sort()]);
 export const presentIn = (items, domain) => {
