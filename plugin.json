@@ -1,0 +1,14 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "domain-hound",
+  "version": "0.1.0",
+  "description": "Check domains, compare registrar prices, and screen product names.",
+  "author": { "name": "Lars Hvinden" },
+  "homepage": "https://domainhound.dev",
+  "license": "MIT",
+  "extensions": {
+    "com.openai": {
+      "interface": { "displayName": "Domain Hound" }
+    }
+  }
+}

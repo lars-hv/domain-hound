@@ -1,0 +1,26 @@
+{
+  "brreg": {
+    "_embedded": {
+      "enheter": [
+        {"organisasjonsnummer":"900000001","navn":"CLOUD OTTER AS","konkurs":false},
+        {"organisasjonsnummer":"900000002","navn":"CLOUD OTTERS AS","konkurs":false},
+        {"organisasjonsnummer":"900000003","navn":"CLOUD OTTER AS","konkurs":true},
+        {"organisasjonsnummer":"900000004","navn":"CLOUD OTTER AS","slettedato":"2024-11-01"},
+        {"organisasjonsnummer":"900000005","navn":"CLOUD OTTER AS","underAvvikling":true},
+        {"organisasjonsnummer":"900000006","navn":"CLOUD OTTER WATER PARK AS","konkurs":false}
+      ]
+    },
+    "page":{"size":100,"totalElements":6,"totalPages":1,"number":0}
+  },
+  "edgar": {
+    "data": [
+      [1234561,"CloudOtter, Inc.","COT","Nasdaq"],
+      [1234561,"CloudOtter, Inc.","COTA","Nasdaq"],
+      [1234562,"CLOUD OTTER LABS CORP","COTL","NYSE"],
+      [1234563,"Cloud Otter, LLC","COTF",null],
+      [1234564,"Cloud Otter Holdings Ltd","COTK","OTC"],
+      [1234565,"Cloud Otter Water Park Inc","COTW","NYSE"]
+    ],
+    "fields":["cik","name","ticker","exchange"]
+  }
+}

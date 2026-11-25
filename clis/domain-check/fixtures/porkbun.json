@@ -1,0 +1,26 @@
+{
+  "status": "SUCCESS",
+  "pricing": {
+    "me": {
+      "registration": "17.27",
+      "renewal": "17.27",
+      "transfer": "17.27",
+      "coupons": {
+        "registration": {
+          "code": "AWESOMENESS",
+          "max_per_user": 1,
+          "first_year_only": "yes",
+          "type": "amount",
+          "amount": 1
+        },
+        "transfer": {
+          "code": "EXODUS",
+          "max_per_user": 100,
+          "first_year_only": "no",
+          "type": "amount",
+          "amount": 1
+        }
+      }
+    }
+  }
+}

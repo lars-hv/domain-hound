@@ -1,0 +1,12 @@
+{
+  "name": "domain-hound-marketplace",
+  "description": "Domain Hound for Claude Code.",
+  "owner": { "name": "Lars Hvinden" },
+  "plugins": [
+    {
+      "name": "domain-hound",
+      "source": "./",
+      "description": "Check domains, compare registrar prices, and screen product names."
+    }
+  ]
+}

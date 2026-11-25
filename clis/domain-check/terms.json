@@ -1,0 +1,152 @@
+[
+  {
+    "shop": "Spaceship",
+    "checked": "2026-11-23",
+    "payWithoutCard": ["PayPal", "Apple Pay", "Google Pay"],
+    "vatNorway": "unknown",
+    "privacy": "Free privacy on eligible domains",
+    "transferOut": "No transfer out fee listed",
+    "transferLockDays": 60,
+    "owner": "Built by Namecheap",
+    "sources": [
+      "https://www.spaceship.com/domains/transfer/",
+      "https://www.spaceship.com/legal/domain-registration-agreement/",
+      "https://www.spaceship.com/legal/universal-terms-of-service-agreement/",
+      "https://www.spaceship.com/security/",
+      "https://www.spaceship.com/domains/",
+      "https://www.spaceship.com/domain-search/",
+      "https://docs.spaceship.dev/",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv",
+      "https://en.wikipedia.org/wiki/Namecheap",
+      "https://www.namecheap.com/about/press-releases/23-08-16/plans-for-spaceship-platform/"
+    ]
+  },
+  {
+    "shop": "Cloudflare",
+    "checked": "2026-11-23",
+    "payWithoutCard": [],
+    "vatNorway": "unknown",
+    "privacy": "Free privacy on eligible domains",
+    "transferOut": "No transfer out fee listed",
+    "transferLockDays": 60,
+    "dns": "Must use Cloudflare DNS",
+    "sources": [
+      "https://www.cloudflare.com/products/registrar/",
+      "https://developers.cloudflare.com/registrar/",
+      "https://www.cloudflare.com/domain-registration-agreement/",
+      "https://developers.cloudflare.com/registrar/account-options/transfer-out-from-cloudflare/",
+      "https://developers.cloudflare.com/registrar/account-options/renew-domains/",
+      "https://developers.cloudflare.com/registrar/get-started/transfer-domain-to-cloudflare/",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv"
+    ]
+  },
+  {
+    "shop": "Porkbun",
+    "checked": "2026-11-23",
+    "payWithoutCard": ["PayPal", "Apple Pay"],
+    "vatNorway": "unknown",
+    "privacy": "Free privacy on eligible domains",
+    "transferOut": "No transfer out fee listed",
+    "transferLockDays": 60,
+    "sources": [
+      "https://porkbun.com/about/porkbun-faq",
+      "https://porkbun.com/legal/agreement/domain_name_registration_agreement",
+      "https://kb.porkbun.com/article/27-how-to-transfer-domain-from-porkbun-to-another-registrar",
+      "https://api.porkbun.com/api/json/v3/pricing/get",
+      "https://porkbun.com/support/payment_options",
+      "https://kb.porkbun.com/article/70-how-to-turn-off-auto-renew",
+      "https://kb.porkbun.com/article/37-what-happens-after-a-domain-expires",
+      "https://kb.porkbun.com/article/19-how-to-enable-two-factor-authentication",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv"
+    ]
+  },
+  {
+    "shop": "Namecheap",
+    "checked": "2026-11-23",
+    "payWithoutCard": null,
+    "vatNorway": "unknown",
+    "privacy": "Free privacy on eligible domains",
+    "transferOut": "No transfer out fee listed",
+    "transferLockDays": 60,
+    "sources": [
+      "https://www.namecheap.com/security/domain-privacy-service/",
+      "https://x.com/Namecheap/status/2060980316508987814",
+      "https://www.namecheap.com/legal/",
+      "https://www.namecheap.com/support/knowledgebase/article.aspx/10064/2207/what-happens-to-my-domain-name-after-it-expires/",
+      "https://www.namecheap.com/support/knowledgebase/article.aspx/9253/45/how-can-i-enabledisable-twofactor-authentication/",
+      "https://www.namecheap.com/domain-web-hosting-ssl-deals/black-friday/",
+      "https://en.wikipedia.org/wiki/Namecheap",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv"
+    ]
+  },
+  {
+    "shop": "Dynadot",
+    "checked": "2026-11-23",
+    "payWithoutCard": ["PayPal", "Apple Pay"],
+    "vatNorway": "unknown",
+    "privacy": "Free privacy on eligible domains",
+    "transferOut": "No transfer out fee listed",
+    "transferLockDays": 60,
+    "sources": [
+      "https://www.dynadot.com/domain/security",
+      "https://www.dynadot.com/domain/transfer",
+      "https://teknisk.norid.no/en/registrar/nytt/no-vat-for-registrars-outside-of-norway-en/",
+      "https://www.dynadot.com/domain/tld/me",
+      "https://www.dynadot.com/help/question/payment-methods",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv"
+    ]
+  },
+  {
+    "shop": "NameSilo",
+    "checked": "2026-11-23",
+    "payWithoutCard": null,
+    "vatNorway": "unknown",
+    "trust": "ICANN accredited registrar",
+    "transferLockDays": 60,
+    "sources": [
+      "https://www.namesilo.com/support/v2/articles/ordering/domain-search-results",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv",
+      "https://www.icann.org/compliance/notices"
+    ]
+  },
+  {
+    "shop": "Gandi",
+    "checked": "2026-11-23",
+    "payWithoutCard": null,
+    "vatNorway": "unknown",
+    "trust": "ICANN accredited registrar",
+    "transferLockDays": 60,
+    "sources": [
+      "https://helpdesk.gandi.net/hc/en-us/articles/14003631876764-Check-domain-availability",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv",
+      "https://www.icann.org/compliance/notices"
+    ]
+  },
+  {
+    "shop": "IONOS",
+    "checked": "2026-11-23",
+    "payWithoutCard": null,
+    "vatNorway": "unknown",
+    "trust": "ICANN accredited registrar",
+    "transferLockDays": 60,
+    "sources": [
+      "https://www.ionos.com/domains/domain-names",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv",
+      "https://www.icann.org/compliance/notices"
+    ]
+  },
+  {
+    "shop": "Hover",
+    "checked": "2026-11-23",
+    "payWithoutCard": null,
+    "vatNorway": "unknown",
+    "trust": "Retail service from Tucows, an ICANN accredited registrar",
+    "transferLockDays": 60,
+    "sources": [
+      "https://support.hover.com/support/solutions/articles/201000064720-registering-a-new-domain",
+      "https://www.tucows.com/domains",
+      "https://www.iana.org/assignments/registrar-ids/registrar-ids-1.csv",
+      "https://www.icann.org/compliance/notices"
+    ]
+  }
+]

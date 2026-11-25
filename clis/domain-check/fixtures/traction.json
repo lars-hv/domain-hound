@@ -1,0 +1,72 @@
+{
+  "_source": "Shapes and values from free public sources probed once on 2026-11-24 (Tranco API, Common Crawl CC-MAIN-2026-47, Verisign RDAP, Wikidata, Google autocomplete and Trends). Titles and texts are shortened.",
+  "tranco": "1,google.com\n2,microsoft.com\n1309,notion.com\n2097,notion.so\n9000,presonus.com\n",
+  "collinfo": [{ "id": "CC-MAIN-2026-47", "name": "November 2026 Index" }, { "id": "CC-MAIN-2026-43", "name": "October 2026 Index" }],
+  "crawl": {
+    "notion.so": "limit",
+    "notion.com": 242,
+    "routemender.com": 0,
+    "oakenroom.com": 0,
+    "seatfrog.example": 340
+  },
+  "rdap": {
+    "notion.so": "2013-02-08T00:00:00Z",
+    "notion.com": "1997-11-25T05:00:00Z",
+    "oakenroom.com": "2012-11-07T19:22:38Z"
+  },
+  "sites": {
+    "notion.com": { "state": "live", "title": "Notion – The all-in-one workspace", "description": "A connected workspace for notes, docs and projects.", "host": "www.notion.com" },
+    "notion.ai": { "state": "no-site" },
+    "notion.io": { "state": "parked" },
+    "routemender.com": { "state": "parked" },
+    "oakenroom.com": { "state": "live", "title": "OakenRoom | Home Improvement Guides, Costs, and Tools", "description": "OakenRoom helps homeowners research renovation costs, compare project options, and plan smarter home improvement decisions.", "host": "oakenroom.com", "copyright": 2026 }
+  },
+  "google": {
+    "notion": {
+      "suggestions": ["notion", "notion login", "notion ai", "notion calendar", "notion download", "notion.so"],
+      "topics": [{ "title": "Notion", "type": "Productivity software" }, { "title": "Notion", "type": "Philosophy" }]
+    },
+    "routemender": {
+      "suggestions": ["route mender", "travel patch ideas", "trip example sentence", "route mend", "fixer for travel"],
+      "topics": [{ "mid": "/g/fixture_routemender", "title": "RouteMender AI | Plan your route", "type": "Topic" }]
+    },
+    "oakenroom": {
+      "suggestions": ["oaken room", "oaken room meaning", "the oaken room"],
+      "topics": []
+    }
+  },
+  "wikidata": {
+    "search": {
+      "Notion": [
+        { "id": "Q60747998", "label": "Notion", "description": "productivity software" },
+        { "id": "Q595523", "label": "notion", "description": "reflection in the mind of real objects and phenomena" },
+        { "id": "Q7063047", "label": "Notion", "description": "music notation software program owned by Presonus" },
+        { "id": "Q119771", "label": "Notion", "description": "ancient city of Ionia" }
+      ]
+    },
+    "entities": {
+      "Q60747998": {
+        "claims": {
+          "P31": [{ "mainsnak": { "datavalue": { "value": { "id": "Q7397" } } } }],
+          "P856": [{ "mainsnak": { "datavalue": { "value": "https://www.notion.com" } } }, { "mainsnak": { "datavalue": { "value": "https://www.notion.so" } } }]
+        },
+        "sitelinks": { "enwiki": { "title": "Notion (productivity software)" }, "dewiki": { "title": "Notion (Software)" }, "frwiki": { "title": "Notion (logiciel)" } }
+      },
+      "Q595523": { "claims": { "P31": [] }, "sitelinks": { "enwiki": { "title": "Notion (philosophy)" } } },
+      "Q7063047": {
+        "claims": {
+          "P31": [{ "mainsnak": { "datavalue": { "value": { "id": "Q7397" } } } }],
+          "P856": [{ "mainsnak": { "datavalue": { "value": "http://www.presonus.com/products/notion-5" } } }]
+        },
+        "sitelinks": { "enwiki": { "title": "Notion (music software)" }, "dewiki": { "title": "Notion" } }
+      },
+      "Q119771": { "claims": { "P31": [{ "mainsnak": { "datavalue": { "value": { "id": "Q15661340" } } } }] }, "sitelinks": { "enwiki": { "title": "Notion (Ionia)" } } }
+    }
+  },
+  "apps": {
+    "Notion": [
+      { "trackId": 1232780281, "trackName": "Notion: Notes, Tasks, AI", "sellerName": "Notion Labs, Incorporated", "sellerUrl": "https://www.notion.so", "userRatingCount": 84000, "primaryGenreName": "Productivity", "description": "Write, plan and organize in one workspace." },
+      { "trackId": 1500000001, "trackName": "Notion", "sellerName": "Example Indie Studio", "sellerUrl": "https://sites.google.com/view/exampleindie", "userRatingCount": 3, "primaryGenreName": "Games", "description": "A small puzzle game." }
+    ]
+  }
+}

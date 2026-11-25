@@ -1,0 +1,16 @@
+{
+  "name": "domain-hound",
+  "displayName": "Domain Hound",
+  "version": "0.1.0",
+  "description": "Check domains, compare registrar prices, and screen product names.",
+  "author": { "name": "Lars Hvinden" },
+  "homepage": "https://domainhound.dev",
+  "license": "MIT",
+  "keywords": ["mcp", "domains"],
+  "mcpServers": {
+    "domain-hound": {
+      "command": "npx",
+      "args": ["-y", "domain-hound"]
+    }
+  }
+}

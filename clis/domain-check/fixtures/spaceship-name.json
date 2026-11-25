@@ -1,0 +1,9 @@
+[
+  {"domain":"example.com","text":"example\n.com\nREGISTERED IN 2012","premium":false,"canBuy":false},
+  {"domain":"example.co","text":"example\n.co\nTaken","premium":false,"canBuy":false},
+  {"domain":"example.me","text":"example\n.me\n$8.70\n$15.53\nRenews $15.53","currentPrice":"$8.70","premium":false,"canBuy":true},
+  {"domain":"example.io","text":"example\n.io\n$1,200.00\nRenews $52.00","premium":true,"canBuy":true},
+  {"domain":"example.ai","text":"example\n.ai\nPremium\n$99.00\nRenews $80.00\nAdd to cart","premium":false,"canBuy":true},
+  {"domain":"example.dev","text":"example\n.dev\n$12.00\nRenews $15.00\nAdd to cart","premium":false,"canBuy":false},
+  {"domain":"example.net","text":"example\n.net\n$15.00\nRenews $15.00\nAdd to cart","premium":false,"canBuy":true}
+]

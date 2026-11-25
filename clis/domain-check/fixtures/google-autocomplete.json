@@ -1,0 +1,17 @@
+{
+  "notion": {
+    "suggestions": ["notion", "notion login", "notion pricing", "notion app", "notion.so"],
+    "topics": [{"title": "Notion", "type": "Productivity software"}],
+    "entities": [{"name": "Notion", "description": "Workspace for notes and team productivity", "brand": true}]
+  },
+  "routemender": {
+    "suggestions": ["routes mender", "routemenderpro"],
+    "topics": [{"title": "RouteMender AI", "type": "Topic"}, {"title": "RouteMenders", "type": "Topic"}],
+    "entities": []
+  },
+  "zarquelt": {
+    "suggestions": ["zarquell app", "zarqueltpro login", "zarquets.com"],
+    "topics": [{"title": "Zarquell", "type": "Topic"}],
+    "entities": []
+  }
+}

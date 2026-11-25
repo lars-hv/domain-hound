@@ -1,0 +1,12 @@
+{
+  "name": "domain-hound-marketplace",
+  "interface": { "displayName": "Domain Hound" },
+  "plugins": [
+    {
+      "name": "domain-hound",
+      "source": { "source": "local", "path": "./" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}

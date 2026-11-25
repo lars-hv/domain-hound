@@ -1,0 +1,37 @@
+{
+  "marks": {
+    "hits": {
+      "hits": [
+        {"source":{"alive":false,"registered":true,"wordmark":"CLOUD OTTER","ownerName":["Retired Ltd"],"internationalClass":["IC 042"],"id":"10000001"}},
+        {"source":{"alive":true,"registered":true,"wordmark":"CLOUD OTTERS","ownerName":["Otter Goods Ltd"],"internationalClass":["IC 025"],"id":"10000002"}},
+        {"source":{"alive":true,"registered":true,"wordmark":"CLOUD OTTER","ownerName":["Example Tools Inc. (CORPORATION; DELAWARE, USA)"],"internationalClass":["IC 009","IC 042"],"id":"10000003"}},
+        {"source":{"alive":true,"registered":true,"wordmark":"CLOUD OTTER WATER PARK","ownerName":["Example Park"],"internationalClass":["IC 041"],"id":"10000004"}}
+      ]
+    }
+  },
+  "apps": {
+    "results": [
+      {"trackName":"Cloud Otter: Deployments","trackId":1012345,"sellerName":"Example Tools Incorporated","userRatingCount":418,"primaryGenreName":"Developer Tools","description":"Deploy apps to cloud hosting."},
+      {"trackName":"Cloud Otter School","trackId":1012346,"sellerName":"Example School"}
+    ]
+  },
+  "github": {
+    "taken": {"total_count":3,"incomplete_results":false,"items":[
+      {"name":"CloudOtter","full_name":"cloudotter/CloudOtter","owner":{"login":"cloudotter","type":"Organization"}},
+      {"name":"cloudotter","full_name":"devstudio/cloudotter","owner":{"login":"devstudio","type":"User"}},
+      {"name":"cloudotter-tools","full_name":"devstudio/cloudotter-tools","owner":{"login":"devstudio","type":"User"}}
+    ]},
+    "missing": {"total_count":0,"incomplete_results":false,"items":[]},
+    "limited": {"message":"API rate limit exceeded"}
+  },
+  "npm": {
+    "taken": {"name":"cloudotter"},
+    "missing": {"error":"Not found"}
+  },
+  "wikidata": {
+    "search": [
+      {"label":"Cloud Otter","description":"deployment software","id":"Q123456789"},
+      {"label":"Cloud Otter Creek","description":"stream","id":"Q123456790"}
+    ]
+  }
+}
