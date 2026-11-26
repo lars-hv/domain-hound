@@ -4,7 +4,7 @@ One MCP for everything domains: find, check, buy, set up, watch, move, renew, ke
 
 Domain Hound finds names and checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. Connect your Spaceship account to quote a domain, buy it with your approval and set up DNS. It also investigates and watches taken domains, plans moves to a cheaper registrar, and keeps track of every domain you own. It runs locally.
 
-- **Find and check:** `triage_names`, `check_domains`, `naming_method`
+- **Find and check:** `triage_names`, `check_domains`, `naming_guide`
 - **Buy and set up:** `quote_domain`, `buy_domain`, `setup_domain`
 - **Watch taken domains:** `taken_domain_dossier`, `watch_domain`
 - **Plan a move:** `move_domain`
@@ -22,11 +22,24 @@ Requires Node.js 20 or later.
 claude mcp add domain-hound -- npx -y domain-hound
 ```
 
+If the first launch times out while npm downloads the package, start Claude Code with `MCP_TIMEOUT=30000 claude`. [Claude Code MCP settings](https://code.claude.com/docs/en/mcp)
+
 **Codex**
 
 ```sh
 codex mcp add domain-hound -- npx -y domain-hound
 ```
+
+For a fresh npm cache, set `startup_timeout_sec = 30` in the Domain Hound entry in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.domain-hound]
+command = "npx"
+args = ["-y", "domain-hound"]
+startup_timeout_sec = 30
+```
+
+[Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
 
 **Other MCP clients**
 
@@ -46,6 +59,8 @@ Add this to the client’s MCP configuration for a local stdio server.
 Then ask, for example: “Is lanternbay.com available?”, “Find a name for my meeting-room booking app”, “Is the app name Quiet Otter taken?”, “Buy lanternbay.com and point it at my Vercel site” or “Which of my domains expire soon?”
 
 ## Find and check
+
+The Claude Code and Codex plugins include a `domains` skill for availability, price comparisons, purchases and release watches. The `naming` skill covers naming a product, company or app.
 
 The package uses the same hosted search as [domainhound.dev](https://domainhound.dev). `check_domains` compares ten
 endings by default: .com, .ai, .io, .dev, .co, .so, .sh, .inc, .tech and .app. A typed domain checks that exact ending.
@@ -84,11 +99,11 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 - [Find an available startup name](https://domainhound.dev/guides/find-an-available-startup-name/)
 - [Check whether an app name is taken](https://domainhound.dev/guides/is-my-app-name-available/)
 
-Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to generate names for an idea or screen names you already have. Ask for `naming_method` to see the naming process.
+Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to generate names for an idea or screen names you already have. Ask for `naming_guide` to see the naming process.
 
 ### Naming skill and Name score
 
-Brainstorm names all day. If they're not available, it's pointless. The naming skill gives your agent one method: subject words, six territories, five recipes (odd pair, pun, blend, insider term, phrase or character), hard bans, and one steering question: "Which two do you love, and which one do you hate?" The Claude Code plugin ships it as `skills/naming/SKILL.md`; any MCP client gets the same method from `naming_method`.
+Brainstorm names all day. If they're not available, it's pointless. The naming skill gives your agent one method: subject words, six territories, five recipes (odd pair, pun, blend, insider term, phrase or character), hard bans, and one steering question: "Which two do you love, and which one do you hate?" The Claude Code plugin ships it as `skills/naming/SKILL.md`; any MCP client gets the same method from `naming_guide`.
 
 `triage_names` gives each of the first five names a **Name score**, 0 to 100: how clear the road is. It is not a probability. Points come from the best available ending (22), its 3-year price (3), trademarks (25), rivals (20), apps (8), handles (7) and name quality (15). Bans (digits, hyphens, -ly, -ify, -io, AI, GPT, bot, smart, generic words like hub or labs, over 12 letters) and hard filters (no available ending within $60 over 3 years, an identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning) run first, in code; those names get no score and are never a pick. A check that failed counts 40% of its points and says "Not checked". Trademarks stay at 20 of 25 until the EU office answers. A failed US trademark or rival check keeps the total at 79 or less, and so does missing `candidates` evidence for the bans code cannot judge on its own. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Picks rank by score. Each scored name shows up to three reasons. The hosted generator includes its own Name score in each suggestion. A local bare-name lookup can also provide a preliminary score.
 

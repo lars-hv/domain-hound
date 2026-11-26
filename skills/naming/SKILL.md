@@ -5,7 +5,7 @@ description: Name a product, company, tool or domain. Use for any "what should w
 
 # Naming
 
-The same method as Domain Hound's `naming_method` tool. English names unless asked otherwise. The name must last: no rebrand later.
+The same method as Domain Hound's `naming_guide` tool. English names unless asked otherwise. The name must last: no rebrand later.
 
 ## Process
 

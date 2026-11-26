@@ -4,16 +4,16 @@ import { dnsNeed } from './clis/domain-check/prices.mjs';
 
 export const dossierTool = {
   name: 'taken_domain_dossier',
-  description: 'Investigate a taken domain: registry, site and public listing evidence, likely owner type, and a price range when supported, '
-    + 'plus up to three available alternatives with upfront, renewal and three-year prices and a quick trademark, app and rival screen. '
-    + 'Relay the display and sources. Keep maxBudget private and send no drafts. Share follow-up drafts and start a watch only on request.',
-  annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+  description: 'Use this when investigating a taken domain’s ownership, sale listing or likely price range. Checks registry and public site evidence, '
+    + 'and finds up to three available alternatives with upfront, renewal and three-year prices and a quick trademark, app and rival screen. '
+    + 'For release alerts use watch_domain. Keep maxBudget private and never send an offer draft.',
+  annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   inputSchema: {
     type: 'object',
     properties: {
       domain: { type: 'string', minLength: 3, maxLength: 127, description: 'The exact taken domain, like example.com.' },
       maxBudget: { type: 'number', minimum: 0,
-        description: 'Optional private walk-away price in USD. Kept out of every draft and the display.' },
+        description: 'Optional private walk-away price in USD, e.g. 250. Kept out of every draft and the display.' },
     },
     required: ['domain'],
     additionalProperties: false,
