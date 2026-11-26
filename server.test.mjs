@@ -1402,6 +1402,61 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
   assert.equal(answer.checks[0].details, undefined);
 });
 
+for (const late of [false, true]) {
+  test('check_domains ' + (late ? 'collects a late local App Store answer on repeat' : 'includes a quick local App Store answer in the first reply'), async t => {
+    const name = 'exampleheron';
+    const appStore = { status: 'unknown', reason: 'rate-limited', matches: [] };
+    const fallback = Response.json({ results: [{ trackName: 'Exampleheron: Notes', trackId: 12345 }] });
+    let releaseApple;
+    const apple = new Promise(resolve => { releaseApple = resolve; });
+    let releaseDetails;
+    const details = new Promise(resolve => { releaseDetails = resolve; });
+    t.after(() => { releaseApple(fallback); releaseDetails(); });
+    let retries = 0;
+    let appleSignal;
+    const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', DOMAIN_HOUND_EMBED_CHECKS: 'off' },
+      fetchFn: async (input, { signal }) => {
+        const url = new URL(input);
+        if (url.hostname === 'itunes.apple.com') {
+          retries++;
+          assert.equal(url.searchParams.get('term'), name);
+          appleSignal = signal;
+          return apple;
+        }
+        assert.equal(url.hostname, 'api.example.test');
+        if (url.pathname === '/v1/check') return Response.json({
+          version: 1, query: { name, ascii: name, exactDomain: null }, domains: [], choice: { pick: null },
+          complete: true, appStore, details: { id: 'token' },
+        });
+        await details;
+        return Response.json({ version: 1, appStore, googlePlay: { status: 'not-found' },
+          trademarks: { us: { status: 'no_exact_match_found', marks: [] } }, handles: [{ platform: 'YouTube', state: 'not-found' }] });
+      } });
+    const mcp = await local(t, { hosted: host });
+    const args = { query: name };
+    mcp.send(call(2, args));
+    // The first call must already be querying Apple while details are held open.
+    assert.equal(await mcp.answered(2), false);
+    assert.equal(retries, 1);
+    if (late) mcp.clock.tick(4000);
+    else releaseApple(fallback);
+    const first = structured(await mcp.reply(2));
+    assert.equal(first.pending, true);
+    assert.match(first.display, late ? /App Store \(iOS\) · Still checking/ : /App Store \(iOS\) · Taken.*Exampleheron: Notes/);
+    const early = await readFile(new URL(first.resultPage), 'utf8');
+    assert.match(early, late ? /Still checking/ : /Exampleheron: Notes/);
+    mcp.send(call(3, args));
+    assert.equal(await mcp.answered(3), false);
+    assert.equal(appleSignal.aborted, false);
+    releaseApple(fallback);
+    releaseDetails();
+    const final = structured(await mcp.reply(3));
+    assert.equal(final.resultPage, first.resultPage);
+    assert.match(final.display, /App Store \(iOS\) · Taken.*Exampleheron: Notes/);
+    assert.equal(retries, 1);
+  });
+}
+
 test('the package uses the local check when the hosted request cannot connect', async t => {
   assert.equal(hostedClient(version, { env: { DOMAIN_HOUND_LOCAL: '1' } }), null);
   let attempts = 0;
@@ -1621,6 +1676,8 @@ test('check_domains returns a client-recovered pick before name checks and rewri
   const domain = name + '.dev';
   const rdapUrl = 'https://pubapi.registry.google/rdap/domain/' + domain;
   const paths = [];
+  let startedDetails;
+  const detailsStarted = new Promise(resolve => { startedDetails = resolve; });
   const offer = { shop: 'Dynadot', firstYearUsd: 5, renewalUsd: 10, firstPaymentUsd: 5,
     threeYearUsd: 25, checkedAt: '2026-11-24', source: 'https://prices.example/dynadot',
     buyUrl: 'https://www.dynadot.com/domain/search?domain=' + domain };
@@ -1636,7 +1693,10 @@ test('check_domains returns a client-recovered pick before name checks and rewri
         return Response.json({ errorCode: 404 }, { status: 404, headers: { 'content-type': 'application/rdap+json' } });
       }
       assert.equal(url.hostname, 'api.example.test');
-      if (url.pathname === '/v1/check/details') return held;
+      if (url.pathname === '/v1/check/details') {
+        startedDetails();
+        return held;
+      }
       const seen = url.searchParams.get('seen');
       assert.ok(seen === null || seen === 'dev:available');
       return Response.json({ version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
@@ -1646,7 +1706,10 @@ test('check_domains returns a client-recovered pick before name checks and rewri
         appStore: { status: 'pending' }, googlePlay: { status: 'pending' }, trademarks: { us: { status: 'pending', marks: [] } } });
     } });
   const mcp = await local(t, { hosted: host });
-  const first = await mcp.ask(call(2, { query: name }));
+  mcp.send(call(2, { query: name }));
+  await detailsStarted;
+  mcp.clock.tick(4000);
+  const first = await mcp.reply(2);
   const { resultPage, pending } = structured(first);
   assert.equal(pending, true);
   assert.match(first.result.content[0].text, /^The Hound’s pick is brightboard\.dev at Dynadot/);

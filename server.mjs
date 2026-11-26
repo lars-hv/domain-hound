@@ -27,6 +27,7 @@ const timeoutMs = 14_000;
 // A lookup still running after this long is stopped.
 const maxLookupMs = 120_000;
 const hostedLookupMs = 34_000;
+const hostedFirstAnswerMs = 4_000;
 // Keep completed evidence stable for repeated calls during a short naming session.
 const keepFinishedMs = 120_000;
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
@@ -669,30 +670,34 @@ export async function serve({
     }
     const key = JSON.stringify([triage, streamDomains, Object.entries(args).sort(([a], [b]) => a.localeCompare(b))]);
     let lookup = hostedLookups.get(key);
+    const repeat = Boolean(lookup);
     if (!lookup) {
       const extra = selectedEndings(args).filter(ending => !defaultEndings.includes(ending));
       const controller = new AbortController();
       const signal = AbortSignal.any([controller.signal, hostedShutdown.signal, AbortSignal.timeout(hostedLookupMs)]);
       const job = { result: null, first: null };
       const early = new Array(rows.length);
+      const appChecks = [];
       let received = 0;
+      let canStream = false;
       let ready;
       job.ready = new Promise(resolve => { ready = resolve; });
-      const receive = (answer, index, qualifies = false) => {
+      const receive = (answer, index, qualifies = false, apple) => {
         if (!streamDomains || early[index]) return;
         early[index] = answer;
+        if (apple) appChecks.push(apple.then(appStore => { if (appStore) early[index] = { ...answer, appStore }; }));
         received += 1;
-        if (qualifies) job.hasDetails = true;
-        if (received === rows.length && job.hasDetails) {
-          job.first = renderHostedLookup(early, args, triage, { pending: true }).then(result => {
-            ready(result);
-            return result;
-          });
+        if (qualifies) canStream = true;
+        if (received === rows.length && canStream) {
+          // Keep the domain answer available at the deadline, even while Apple's retry runs in the background.
+          job.first = within({ done: Promise.all(appChecks) }, Math.min(timeout, hostedFirstAnswerMs) - (performance.now() - started))
+            .then(() => renderHostedLookup([...early], args, triage, { pending: true }));
+          ready();
         }
       };
       job.done = Promise.all(rows.map(async ({ name }, index) => {
         const answer = await hosted.check(name, name.includes('.') ? [] : extra, signal,
-          streamDomains ? value => receive(value, index, true) : undefined);
+          streamDomains ? (value, apple) => receive(value, index, true, apple) : undefined);
         receive(answer, index);
         return answer;
       })).then(async answers => {
@@ -711,13 +716,14 @@ export async function serve({
       lookup = job;
       hostedLookups.set(key, job);
     }
-    const ready = lookup.finished ? lookup.done : lookup.ready;
+    const ready = repeat ? lookup.done : lookup.ready;
     if (!await within({ done: ready }, timeout - (performance.now() - started))) {
+      if (lookup.first) return lookup.first;
       hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
       return toolResult(JSON.stringify({ display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
         complete: false, pending: true }));
     }
-    return lookup.finished ? lookup.result : ready;
+    return lookup.finished ? lookup.result : lookup.first;
   }
 
   async function renderHostedLookup(checks, args, triage, { pending = false, reuse } = {}) {
