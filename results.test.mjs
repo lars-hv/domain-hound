@@ -4,9 +4,9 @@ import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { searchCandidates, defaultEndings } from './clis/domain-check/name-search.mjs';
-import { backgroundCommand, resultPages, resultsLine } from './results.mjs';
+import { resultPages, resultsLine } from './results.mjs';
 import { newsQuestion, watchDomain } from './watch.mjs';
 
 const at = '2026-11-24T12:00:00.000Z';
@@ -103,27 +103,6 @@ test('a partial shop quote keeps renewal unknown and an exact offer above budget
   const exact = await pages({ ...data, names: [data.names[0]] }, { budget: 10, purchase: true });
   assert.match(exact.say, /Over budget\.\nThis check leaves checkout to you\.\nNext: try a cheaper domain\./);
   assert.doesNotMatch(exact.say, /https:\/\//);
-});
-
-test('desktop opener skips headless environments and requests platform background behavior', async () => {
-  const windowsPath = 'C:\\Temp\\receipt test (1).html';
-  assert.equal(await backgroundCommand(windowsPath, {}, 'win32'), null);
-  assert.equal(await backgroundCommand(windowsPath, { CI: 'true', SESSIONNAME: 'Console' }, 'win32'), null);
-  assert.equal(await backgroundCommand(windowsPath, { DOMAIN_HOUND_OPEN: 'off', SESSIONNAME: 'Console' }, 'win32'), null);
-  const [shell, flags] = await backgroundCommand(windowsPath, { SESSIONNAME: 'Console' }, 'win32');
-  assert.equal(shell, 'powershell.exe');
-  const script = Buffer.from(flags.at(-1), 'base64').toString('utf16le');
-  assert.match(script, /ShellExecuteW\(\[IntPtr\]::Zero, 'open', \$file, \$null, \$null, 4\)/);
-  assert.ok(script.includes(Buffer.from(windowsPath).toString('base64')));
-  const localPath = join(tmpdir(), 'receipt test.html');
-  const [gio, args, env] = await backgroundCommand(localPath, {
-    WAYLAND_DISPLAY: 'wayland-0', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/test',
-    XDG_ACTIVATION_TOKEN: 'unused', DESKTOP_STARTUP_ID: 'unused',
-  }, 'linux');
-  assert.deepEqual([gio, args], ['gio', ['open', pathToFileURL(localPath).href]]);
-  assert.equal(env.XDG_ACTIVATION_TOKEN, undefined);
-  assert.equal(env.DESKTOP_STARTUP_ID, undefined);
-  assert.equal(await backgroundCommand('/tmp/result.html', { DISPLAY: ':0' }, 'linux'), null);
 });
 
 test('a live website overrides the reported free registry status before progress or final output', async () => {

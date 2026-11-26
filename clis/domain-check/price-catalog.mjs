@@ -134,7 +134,7 @@ async function startRefresh(directory) {
   await lock.close();
   const child = spawn(process.execPath, [fileURLToPath(new URL('./index.mjs', import.meta.url)), '--refresh-prices'], {
     detached: true, stdio: 'ignore',
-    env: { ...process.env, DOMAIN_HOUND_PRICE_CACHE: fileURLToPath(directory) },
+    env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_PRICE_CACHE: fileURLToPath(directory) },
   });
   child.on('error', () => {});
   child.unref();

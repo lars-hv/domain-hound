@@ -1,7 +1,6 @@
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
-import { homedir, userInfo } from 'node:os';
+import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canRecommend, choosePick, comparePicks, defaultEndings, domainEnding, eligibilityNeed, lowestTotal, lowestUpfront, normalizeName,
@@ -563,32 +562,6 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { saving
   return { html, md };
 }
 
-export async function backgroundCommand(filename, env = process.env, platform = process.platform) {
-  if (env.DOMAIN_HOUND_OPEN === 'off' || env.CI || env.DOMAIN_HOUND_HEADLESS || env.SSH_CONNECTION || env.SSH_TTY) return null;
-  if (platform === 'darwin') {
-    const console = await stat('/dev/console').catch(() => null);
-    if (console?.uid === userInfo().uid) return ['/usr/bin/open', ['-g', filename]];
-  }
-  if (platform === 'win32' && /^(?:Console|RDP-Tcp#\d+)$/i.test(env.SESSIONNAME ?? '')) {
-    // SW_SHOWNOACTIVATE is forwarded to the file association handler. The existing browser may ignore it.
-    const path = Buffer.from(filename, 'utf8').toString('base64');
-    const script = `Add-Type -Namespace DomainHound -Name Shell -MemberDefinition @'
-[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet=System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling=true)]
-public static extern System.IntPtr ShellExecuteW(System.IntPtr parent, string verb, string file, string args, string directory, int show);
-'@
-$file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${path}'))
-$result = [DomainHound.Shell]::ShellExecuteW([IntPtr]::Zero, 'open', $file, $null, $null, 4)
-if ($result.ToInt64() -le 32) { exit 1 }`;
-    return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')]];
-  }
-  if (platform === 'linux' && env.WAYLAND_DISPLAY && env.DBUS_SESSION_BUS_ADDRESS) {
-    // Leave activation to the compositor without giving the browser a startup or activation token.
-    const { XDG_ACTIVATION_TOKEN, DESKTOP_STARTUP_ID, ...backgroundEnv } = env;
-    return ['gio', ['open', pathToFileURL(filename).href], backgroundEnv];
-  }
-  return null;
-}
-
 async function writePrivate(filename, content) {
   const temporary = filename + '.' + randomUUID() + '.tmp';
   try {
@@ -641,12 +614,9 @@ export function resultsLine(url) {
   return 'Results page: [Open results](' + (/[\s()]/.test(path) ? '<' + path + '>' : path) + ')';
 }
 
-// reuse: the resultPage URL of an earlier write for the same lookup; the update keeps that URL and does not open a
-// browser again. refresh: more checks are still running in this server, so the open page reloads itself.
+// Reuse keeps the same result URL as background checks update the files.
 export function resultPages({ env = process.env,
   directory = env.DOMAIN_HOUND_RESULTS_DIR || join(homedir(), '.domain-hound', 'results') } = {}) {
-  const session = randomUUID().slice(0, 8);
-  let sessionBase = null;
   let writes = Promise.resolve();
   return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
     const work = writes.then(async () => {
@@ -688,22 +658,6 @@ export function resultPages({ env = process.env,
       } catch (error) {
         await unlink(markdownPath).catch(() => {});
         throw error;
-      }
-      const exact = !triage && data.names?.length === 1 && data.names[0].name.includes('.');
-      const latest = resolve(directory, 'session-' + session + '.html');
-      if (kept && sessionBase === kept) {
-        // The open tab shows the session copy; update it in place, without opening another tab.
-        await writePrivate(latest, page.html).catch(() => {});
-      } else if (!kept && !watch && !exact) {
-        await backgroundCommand(latest, env).then(async command => {
-          if (!command) return;
-          await writePrivate(latest, page.html);
-          sessionBase = base;
-          const [executable, args, launchEnv] = command;
-          const browser = spawn(executable, args, { stdio: 'ignore', windowsHide: true, env: launchEnv });
-          browser.on('error', () => {});
-          browser.unref();
-        }).catch(() => {});
       }
       await prune(directory, base).catch(() => {});
       const url = pathToFileURL(filename).href.replaceAll('(', '%28').replaceAll(')', '%29');

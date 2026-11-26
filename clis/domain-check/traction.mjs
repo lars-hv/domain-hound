@@ -141,7 +141,7 @@ async function startTrancoRefresh(directory) {
   }
   try { await (await open(marker, 'wx', 0o600)).close(); } catch { return; }
   const child = spawn(process.execPath, [fileURLToPath(new URL('./index.mjs', import.meta.url)), '--refresh-tranco'], {
-    detached: true, stdio: 'ignore', env: { ...process.env, DOMAIN_HOUND_TRANCO_CACHE: fileURLToPath(directory) },
+    detached: true, stdio: 'ignore', env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_TRANCO_CACHE: fileURLToPath(directory) },
   });
   child.on('error', () => {});
   child.unref();

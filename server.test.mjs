@@ -39,7 +39,7 @@ function exchange(messages, { legacy = false, fastTimeout = false } = {}) {
 function runServer(args, messages, env = {}, cwd = undefined) {
   return new Promise((resolve, reject) => {
     const child = execFile(process.execPath, args, {
-      env: { ...process.env, DOMAIN_HOUND_LOCAL: '1', ...env }, cwd,
+      env: { ...process.env, DOMAIN_HOUND_LOCAL: '1', ...env, DOMAIN_HOUND_OPEN: 'off' }, cwd,
       timeout: 5000,
     }, (error, stdout) => {
       if (error) return reject(error);
@@ -1573,4 +1573,80 @@ test('check_domains fills unknown public name checks locally and keeps confirmed
   assert.match(answer.display, /Google Play · Taken · \[Search Google Play\]/);
   assert.deepEqual(calls.sort(), ['graph.facebook.com', 'graph.facebook.com', 'play.google.com', 'web.archive.org', 'web.archive.org',
     'www.threads.net', 'www.tiktok.com', 'www.twitch.tv', 'www.youtube.com']);
+});
+
+test('check_domains returns a client-recovered pick before name checks and rewrites the same receipt', async t => {
+  const name = 'brightboard';
+  const domain = name + '.dev';
+  const rdapUrl = 'https://pubapi.registry.google/rdap/domain/' + domain;
+  const paths = [];
+  const offer = { shop: 'Dynadot', firstYearUsd: 5, renewalUsd: 10, firstPaymentUsd: 5,
+    threeYearUsd: 25, checkedAt: '2026-11-24', source: 'https://prices.example/dynadot',
+    buyUrl: 'https://www.dynadot.com/domain/search?domain=' + domain };
+  let finish;
+  const held = new Promise(resolve => { finish = resolve; });
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', DOMAIN_HOUND_EMBED_CHECKS: 'off' },
+    fetchFn: async (input, init) => {
+      const url = new URL(input);
+      paths.push(url.pathname);
+      if (url.href === rdapUrl) {
+        assert.equal(init.redirect, 'error');
+        assert.equal(new Headers(init.headers).get('X-Domain-Hound-Client'), null);
+        return Response.json({ errorCode: 404 }, { status: 404, headers: { 'content-type': 'application/rdap+json' } });
+      }
+      assert.equal(url.hostname, 'api.example.test');
+      if (url.pathname === '/v1/check/details') return held;
+      const seen = url.searchParams.get('seen');
+      assert.ok(seen === null || seen === 'dev:available');
+      return Response.json({ version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
+        domains: [{ domain, ending: 'dev', status: seen ? 'available' : 'unknown', prices: [offer],
+          ...(seen ? { checkedFrom: 'local' } : { rdapUrl }) }],
+        choice: { pick: seen ? { ...offer, domain } : null }, details: { id: 'token' } });
+    } });
+  const mcp = await local(t, { hosted: host });
+  const first = await mcp.ask(call(2, { query: name }));
+  const { resultPage, pending } = structured(first);
+  assert.equal(pending, true);
+  assert.match(first.result.content[0].text, /pick is brightboard\.dev at Dynadot/);
+  assert.match(first.result.content[0].text, /same tool with the same input/);
+  assert.match(await readFile(new URL(resultPage), 'utf8'), /http-equiv="refresh"/);
+  finish(Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] },
+    googlePlay: { status: 'not-found', link: 'https://play.google.com/' }, handles: [{ platform: 'YouTube', state: 'not-found' }],
+    trademarks: { us: { status: 'no_exact_match_found', marks: [] } } }));
+  await mcp.waitForPage(data => data?.hosted && !data.pending);
+  for (let id = 3; id < 20; id++) {
+    await new Promise(resolve => setImmediate(resolve));
+    const next = await mcp.ask(call(id, { query: name }));
+    if (next.result.structuredContent.pending) continue;
+    assert.equal(next.result.structuredContent.resultPage, resultPage);
+    assert.match(next.result.content[0].text, /No matching app found/);
+    assert.doesNotMatch(await readFile(new URL(resultPage), 'utf8'), /http-equiv="refresh"/);
+    assert.deepEqual(paths, ['/v1/check', '/rdap/domain/brightboard.dev', '/v1/check', '/v1/check/details']);
+    return;
+  }
+  assert.fail('The repeat never collected the finished name checks.');
+});
+
+test('local registry recovery ignores mismatched routes, stale negatives and reserved domains', async () => {
+  const ascii = 'mapfern';
+  for (const [url, status, body, headers] of [
+    ['https://not-the-registry.example/rdap/domain/mapfern.dev', 404, { errorCode: 404 }, {}],
+    ['https://pubapi.registry.google/rdap/domain/mapfern.dev', 404, { errorCode: 404 }, { age: '5' }],
+    ['https://pubapi.registry.google/rdap/domain/mapfern.dev', 404, { errorCode: 404, description: ['Domain is reserved'] }, {}],
+    ['https://pubapi.registry.google/rdap/domain/mapfern.dev', 200, { objectClassName: 'domain', ldhName: 'other.dev' }, {}],
+  ]) {
+    const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' },
+      fetchFn: async input => {
+        const parsed = new URL(input);
+        if (parsed.hostname === 'pubapi.registry.google') return Response.json(body, { status, headers });
+        assert.equal(parsed.hostname, 'api.example.test');
+        assert.equal(parsed.searchParams.get('seen'), null);
+        return Response.json({ version: 1, query: { ascii, name: ascii }, domains: [
+          { domain: ascii + '.dev', ending: 'dev', status: 'unknown', prices: [], rdapUrl: url },
+        ], choice: { pick: null } });
+      } });
+    const answer = await host.check(ascii, [], AbortSignal.timeout(2000));
+    assert.equal(answer.domains[0].status, 'unknown');
+    assert.equal(answer.choice.pick, null);
+  }
 });
