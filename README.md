@@ -73,11 +73,19 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 
 Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to screen a short list or a name you already have. Ask for `naming_method` to see how a shortlist is generated.
 
+### Naming skill and Name score
+
+Brainstorm names all day. If they're not available, it's pointless. The naming skill gives your agent one method: subject words, six territories, five recipes (odd pair, pun, blend, insider term, phrase or character), hard bans, and one steering question: "Which two do you love, and which one do you hate?" The Claude Code plugin ships it as `skills/naming/SKILL.md`; any MCP client gets the same method from `naming_method`.
+
+`triage_names` gives each of the first five names a **Name score**, 0 to 100: how clear the road is. It is not a probability. Points come from the best free ending (22), its 3-year price (3), trademarks (25), rivals (20), apps (8), handles (7) and name quality (15). Bans (digits, hyphens, -ly, -ify, -io, AI, GPT, bot, smart, generic words like hub or labs, over 12 letters) and hard filters (no free ending within $60 over 3 years, an identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning) run first, in code; those names get no score and are never a pick. A check that failed counts 40% of its points and says "Not checked". Trademarks stay at 20 of 25 until the EU office answers. A failed US trademark or rival check keeps the total at 79 or less, and so does missing `candidates` evidence for the bans code cannot judge on its own. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Picks rank by score. Each scored name shows up to three reasons. A bare name in `check_domains` gets a preliminary score from its registry and price evidence. Use `triage_names` for the rest of the checks.
+
+Set `DOMAIN_HOUND_SCORE_LOG=1` to keep a local calibration log in `~/.domain-hound/score-log.jsonl`: component points, weights version, rank, and whether the person explicitly picked a shown name. Once they choose, the agent can record it with `check_domains`, using the exact domain and `picked: true`. It is off by default, never leaves your machine, and holds no names unless you also set `DOMAIN_HOUND_SCORE_LOG_NAMES=1`.
+
 Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. On macOS, naming and batch results open in the background. Windows and Wayland request a background open where the desktop supports it. Exact checks and watch results stay in chat with a file link. Set `DOMAIN_HOUND_OPEN=off` on the MCP server to keep every page closed.
 
 ### Share
 
-Use **Share** on the results page to send up to five names. The link carries the names, checked endings, verdicts, prices and check time after the `#`. The browser reads that part locally. Your brief and notes stay out of the link. Anyone with the full link can read the shortlist.
+Use **Share** on the results page to send up to five names. The link carries the names, checked endings, verdicts, prices, the Name score and how many checks were not done, and the check time after the `#`. Score reasons and evidence stay local. The browser reads that part locally. Your brief and notes stay out of the link. Anyone with the full link can read the shortlist.
 
 ## Buy and set up
 

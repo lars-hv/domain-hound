@@ -4,12 +4,18 @@
 // { p: pick row, b: [best value row, three-year payments in cents], j: renewal-jump bit mask by row, t: taken rows, preferred first,
 //   c: bit mask of rows whose price needs Cloudflare DNS }. A link carries c only when such a row is shown.
 // Version 1 links have no facts: they decode with no pick or best value and with jumps worked out from their prices.
+// Version 3 is version 2 plus one optional fact, s: [Name score 0 to 100, number of checks not done]. Links without a
+// score stay version 2, so readers that know only versions 1 and 2 keep opening them.
 export const sharePage = 'https://domainhound.dev/r/';
 export const shareUrlLimit = 2000;
 export const shareNameLimit = 5;
 export const shareRecordLimit = 28;
 export const shareVersion = '2.';
-const versions = { '1.': 1, '2.': 2 };
+export const scoreShareVersion = '3.';
+const versions = { '1.': 1, '2.': 2, '3.': 3 };
+// Name score bands and label (Name score v1). The viewer and the local results share them.
+export const scoreLabel = 'how clear the road is';
+export const scoreBand = value => value >= 80 ? 'Strong' : value >= 60 ? 'Workable' : value >= 40 ? 'Risky' : 'Advise against';
 export const shareVerdicts = [null, 'No conflict found', 'Check first', 'Avoid'];
 export const shareStatuses = [
   'Free at the registry',
@@ -34,11 +40,15 @@ const isCents = value => value === null || (Number.isSafeInteger(value) && value
 const dollars = value => value === null ? null : value / 100;
 const isTaken = row => /^Taken\b/.test(row.status);
 const factKeys = ['p', 'b', 'j', 't', 'c'];
+const scoredFactKeys = [...factKeys, 's'];
 export const cloudflareDns = 'Needs Cloudflare DNS';
 
-function parseFacts(facts, rows) {
-  if (!facts || typeof facts !== 'object' || Array.isArray(facts) || Object.keys(facts).some(key => !factKeys.includes(key))) return null;
-  const { p: pick = null, b: best = null, j: jumps = 0, t: taken = [], c: cloudflare = 0 } = facts;
+function parseFacts(facts, rows, version) {
+  const keys = version >= 3 ? scoredFactKeys : factKeys;
+  if (!facts || typeof facts !== 'object' || Array.isArray(facts) || Object.keys(facts).some(key => !keys.includes(key))) return null;
+  const { p: pick = null, b: best = null, j: jumps = 0, t: taken = [], c: cloudflare = 0, s: score = null } = facts;
+  if (score !== null && !(Array.isArray(score) && score.length === 2 && Number.isInteger(score[0]) && score[0] >= 0 && score[0] <= 100
+      && Number.isInteger(score[1]) && score[1] >= 0 && score[1] <= 7)) return null;
   const validIndex = index => Number.isInteger(index) && index >= 0 && index < rows.length;
   const available = index => validIndex(index) && ['Free at the registry', 'Confirmed at shop'].includes(rows[index].status);
   if ((pick !== null && !available(pick))
@@ -52,6 +62,7 @@ function parseFacts(facts, rows) {
       ...(best?.[0] === index && { bestValue: dollars(best[1]) }),
       ...(Math.floor(cloudflare / 2 ** index) % 2 === 1 && { dns: cloudflareDns }) })),
     takenDomains: taken.map(index => rows[index].domain),
+    ...(score && { score: { value: score[0], band: scoreBand(score[0]), notChecked: score[1] } }),
   };
 }
 
@@ -91,7 +102,7 @@ function parseReceipt(receipt, version) {
           || !isCents(now) || !isCents(renew) || !Number.isInteger(term) || term < 1 || term > 10) return null;
       endings.push({ domain, status: shareStatuses[status], now: dollars(now), renew: dollars(renew), term });
     }
-    const facts = version === 1 ? legacyFacts(endings) : parseFacts(group[4] ?? {}, endings);
+    const facts = version === 1 ? legacyFacts(endings) : parseFacts(group[4] ?? {}, endings, version);
     if (!facts) return null;
     parsed.push({ name, verdict: shareVerdicts[verdict], ...facts });
   }

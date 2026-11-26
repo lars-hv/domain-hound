@@ -12,6 +12,7 @@ import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { safeLink } from './display.mjs';
 import { receiptStyle } from './results-style.mjs';
 import { shareUrl } from './share.mjs';
+import { compareScores, scoreEligible, scoreHeadline, scoreName } from './clis/domain-check/name-score.mjs';
 
 const cash = value => Number.isFinite(value) ? '$' + value.toFixed(2) : null;
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
@@ -55,6 +56,17 @@ const markLabel = entry => plain(entry.office) + ' mark: ' + plain(entry.tier) +
   + (entry.checkedAt ? ', earlier answer from ' + plain(entry.checkedAt) : '');
 const watchLink = domain => 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(domain);
 const verdictOrder = { 'No conflict found': 0, 'Check first': 1, Avoid: 2 };
+// "Name score 91/100 - how clear the road is · Strong", or why a name has none. An exact domain check has no Name score.
+function scoreText(row) {
+  const score = row.score;
+  if (score?.filtered) return 'Not scored: ' + plain(score.filtered) + '.';
+  const headline = scoreHeadline(score);
+  if (headline) return headline + ' · ' + plain(score.band) + (score.pending ? ' (still checking)' : '') + '.';
+  return row.verdict && notScreened(row) ? 'Name score: not screened (first five names only).' : null;
+}
+const scoreReasons = row => Array.isArray(row.score?.reasons) && !row.score.filtered ? row.score.reasons.map(plain) : [];
+const shortScore = row => Number.isInteger(row.score?.value) ? ' Name score ' + row.score.value + '/100, ' + plain(row.score.band) + '.'
+  : row.score?.filtered ? ' Not scored: ' + plain(row.score.filtered) + '.' : '';
 
 function resultGroups(data, eligibleEndings, preferred = []) {
   return data.names.map((row, index) => {
@@ -115,6 +127,17 @@ function resultGroups(data, eligibleEndings, preferred = []) {
   });
 }
 
+function availabilityScore(group, args) {
+  const { row, records } = group;
+  if (row.name.includes('.')) return group;
+  const label = normalizeName(row.name);
+  const domains = records.filter(record => record.status === 'Free at the registry' && record.eligible
+    && record.domain === label + '.' + record.ending && (!args.endings?.length || args.endings.includes(record.ending))
+    && (args.budget == null || (record.now ?? Infinity) <= args.budget))
+    .map(record => ({ ending: record.ending, total: record.total, registry: true }));
+  return { ...group, row: { ...row, score: scoreName({ name: row.name, domains }) } };
+}
+
 function priceDate(offer) {
   return offer.priceAt ? ' checked ' + offer.priceAt.slice(0, 10) : '';
 }
@@ -163,7 +186,8 @@ function receiptSelection(groups, args, triage, eligible = []) {
   const inScope = record => record.eligible && (!preferred.length || preferred.includes(record.ending))
     && (budget == null || (record.now ?? Infinity) <= budget);
   // An exact lookup reports its one domain and never recommends.
-  const candidates = exact ? [] : groups.flatMap(group => group.row.verdict === 'Avoid' ? [] : group.records
+  // Triage recommendations require a name that passed its filters. Availability-only checks still show domain offers.
+  const candidates = exact ? [] : groups.flatMap(group => triage && !scoreEligible(group.row) ? [] : group.records
     .filter(record => inScope(record) && (record.state === 'free' || record.priceLabel === 'Shop quote'))
     .map(record => ({ group, record, domain: record.domain, now: record.now ?? null, total: record.total ?? null })));
   const context = group => ({ requested: group.row.name.includes('.') ? [...preferred, group.row.name] : preferred,
@@ -177,8 +201,9 @@ function receiptSelection(groups, args, triage, eligible = []) {
   const picks = groups.flatMap(group => {
     const pick = pickOf(group);
     return pick ? [pick] : [];
-  }).sort((a, b) => (verdictOrder[a.group.row.verdict] ?? 0) - (verdictOrder[b.group.row.verdict] ?? 0)
-    || comparePicks(a, b, across) || a.record.domain.localeCompare(b.record.domain)).slice(0, 3);
+  }).sort((a, b) => (triage ? compareScores(a.group.row.score, b.group.row.score) : 0)
+    || (verdictOrder[a.group.row.verdict] ?? 0) - (verdictOrder[b.group.row.verdict] ?? 0)
+    || comparePicks(a, b, across) || a.record.domain.localeCompare(b.record.domain)).slice(0, triage && args.shortlist ? 8 : 3);
   const order = preferred.length ? preferred : ['com'];
   const takenRank = record => {
     const index = order.indexOf(record.ending);
@@ -223,7 +248,7 @@ function summary(groups, args, triage, selection) {
   const reason = evidenceText(wanted.row.reason).replace('David vs Goliath: ', 'Established rival: ');
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
     + reason.replaceAll(' · ', '. ') + '.'
-    + markScreen(wanted.row, reason)
+    + markScreen(wanted.row, reason) + shortScore(wanted.row)
     + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best free rename: ' : ' Next name to check: ')
       + plain(best.group.row.name) + '.' : '')
     + (picks.some(item => item.group === wanted) ? '' : ' | ' + signals(wanted, triage)) : null;
@@ -232,7 +257,9 @@ function summary(groups, args, triage, selection) {
   const label = item => offerText(item.record, true) + caution(item);
   const offerLines = picks.map(({ group, record }, index) =>
     (budget != null && index === 0 ? 'Pick: ' : (index + 1) + '. ') + offerText(record) + ' (' + plain(record.status.toLowerCase()) + ') | '
-    + (triage ? plain(group.row.verdict) + ' | ' + marksText(group.row) + ' | ' : '') + signals(group, triage));
+    + (triage ? plain(group.row.verdict) + ' |' + (shortScore(group.row) ? shortScore(group.row).slice(0, -1) + ' |' : '')
+      + (scoreReasons(group.row).length ? ' ' + scoreReasons(group.row).join('; ') + ' |' : '') + ' ' + marksText(group.row) + ' | ' : '')
+    + signals(group, triage));
   const scope = constraints.length ? constraints.join(' | ') + '. ' : '';
   const leadPick = scope && offerLines.length ? scope + offerLines.shift() : null;
   const eligibility = args.eligible?.includes('no') || cheapest?.record.ending === 'no'
@@ -246,6 +273,7 @@ function summary(groups, args, triage, selection) {
   const lines = [
     leadPick || (scope ? scope + 'All endings are on the page.' : null),
     keep,
+    !triage && shortScore(wanted.row) ? shortScore(wanted.row).trim() : null,
     handles && 'Handles for ' + evidenceText(wanted.row.name) + ': ' + plain(handles) + '.',
     running.length ? 'Still checking ' + running.join(', ') + '. The results page updates by itself.' : null,
     ...offerLines,
@@ -260,7 +288,8 @@ function summary(groups, args, triage, selection) {
   const savings = picks.map(({ record }) => savingsLine(record)).filter(Boolean);
   const shortLines = args.shortlist && triage ? [
     constraints.length ? constraints.join(' | ') + '.' : null,
-    ...picks.map(({ group, record }) => offerText(record) + '. ' + plain(group.row.verdict) + '.'),
+    ...picks.map(({ group, record }) => offerText(record) + '. ' + plain(group.row.verdict) + '.' + shortScore(group.row)
+      + (scoreReasons(group.row).length ? ' ' + scoreReasons(group.row).join('. ') + '.' : '')),
     picks.length ? null : 'No available pick in scope.',
     running.length ? 'Still checking ' + running.join(', ') + '. The results page updates.' : null,
     args.purchase ? 'Domain Hound cannot buy or complete checkout.' : null,
@@ -448,6 +477,8 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { saving
     });
     return '<article id="name-' + index + '"><h2>' + escape(row.name) + '</h2>'
       + (row.verdict ? paragraph(plain(row.verdict) + '. ' + evidenceText(row.reason).split(' · ')[0]) + paragraph(nameSnapshot(group)) : '')
+      + (scoreText(row) ? '<div class="name-score">' + paragraph(scoreText(row))
+        + (scoreReasons(row).length ? '<ul>' + scoreReasons(row).map(line => '<li>' + escape(line) + '</li>').join('') + '</ul>' : '') + '</div>' : '')
       + '<table><caption>Endings · USD before tax</caption><thead><tr><th scope="col">Ending</th><th scope="col">Today</th><th scope="col">Renewal</th></tr></thead><tbody>'
       + rows.join('') + '</tbody></table>'
       + (row.verdict ? '<details><summary>Trademark, app and web evidence</summary><ul>'
@@ -473,6 +504,7 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { saving
   const md = ['# ' + title, '', 'Domain Hound · ' + checkedAt, '', ...lines, ...(savings.length ? ['', ...savings] : []), '',
     ...groups.flatMap(group => ['## ' + markdown(group.row.name), '',
       ...(group.row.verdict ? [markdown(group.row.verdict + '. ' + group.row.reason), markdown(nameSnapshot(group)), ''] : []),
+      ...(scoreText(group.row) ? [markdown(scoreText(group.row)), ...scoreReasons(group.row).map(line => '- ' + markdown(line)), ''] : []),
       '| Ending | Today (USD) | Renewal (USD) | Evidence | Shop |', '| --- | --- | --- | --- | --- |',
       ...group.records.map(record => '| ' + [record.domain, ...amountsFor(record), markdown(rowNote(record)),
         record.checkout ? '[' + markdown(record.shop ?? 'Check at shop') + '](' + record.checkout + ')' : ''].join(' | ') + ' |'),
@@ -571,13 +603,19 @@ export function resultPages({ env = process.env,
   return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
-      const groups = watch ? [] : resultGroups(data, args.eligible, args.endings);
+      let groups = watch ? [] : resultGroups(data, args.eligible, args.endings);
+      if (!watch && !triage && !data.pending) groups = groups.map(group => availabilityScore(group, args));
+      if (triage && args.shortlist && !data.pending && groups.some(({ row }) => row.score != null)) {
+        groups = groups.filter(({ row }) => Number.isInteger(row.score?.value) && scoreEligible(row))
+          .sort((a, b) => compareScores(a.row.score, b.row.score)).slice(0, 8);
+      }
       const selection = receiptSelection(groups, args, triage, args.eligible ?? data.eligible ?? []);
       const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
         ...(args.purchase ? ['This check leaves checkout to you.'] : []),
-      ], savings: [] } : summary(groups, args, triage, selection);
+      ], savings: [] } : groups.length ? summary(groups, args, triage, selection)
+        : { lines: ['No names passed the checks.'], savings: [] };
       // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
       const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);
       const title = watch ? data.domain : groups[0]?.row.name;
@@ -621,7 +659,11 @@ export function resultPages({ env = process.env,
       if (triage && args.shortlist) return { display: say, say, checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({
-        ...row, details: { ...row.details, sites: receiptDetails[index]?.details?.sites ?? {} },
+        ...row, ...(receiptDetails[index]?.score && { score: receiptDetails[index].score }),
+        details: { ...row.details, sites: receiptDetails[index]?.details?.sites ?? {} },
+      }));
+      if (!watch && !triage) structured.names = structured.names.map((row, index) => ({
+        ...row, ...(groups[index].row.score && { score: groups[index].row.score }),
       }));
       return { display: say, say, ...structured, checkedAt: at, resultPage: url };
     });

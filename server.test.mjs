@@ -15,6 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCache } from './clis/domain-check/cache.mjs';
 import { defaultEndings } from './clis/domain-check/name-search.mjs';
 import { triageNames } from './clis/domain-check/triage.mjs';
+import { referenceExamples } from './clis/domain-check/naming-method.mjs';
 import { attribution, checkText, errorText as errorJson, md, neverBuys, purchaseLine, safeLink, triageText } from './display.mjs';
 
 const server = new URL('./server.mjs', import.meta.url);
@@ -154,8 +155,8 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   assert.match(inputSchema.properties.endings.description, /preference order.*all twelve default endings/);
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'confirm']);
-  for (const flag of ['shortlist', 'purchase', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
+  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
+  for (const flag of ['shortlist', 'purchase', 'picked', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
   assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
   assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no', 'eu']);
   assert.deepEqual(triage.inputSchema.properties.eligible, inputSchema.properties.eligible);
@@ -183,6 +184,21 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   assert.match(names.description, /^1 to 20 bare names, exact domains or both, e\.g\./);
   assert.equal(naming.inputSchema.properties.about.maxLength, 512);
   assert.equal(naming.inputSchema.additionalProperties, false);
+});
+
+test('records a score pick only when the person explicitly chooses an exact domain', async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const picks = [];
+  output.resume();
+  const done = serve({ input, output, cwd: capability, scoreLog: {
+    picked(domain) { picks.push(domain); },
+  } });
+  input.end([...handshake(), call(2, { query: 'example.com' }),
+    call(3, { query: 'example.com', picked: true }), call(4, { query: 'example', picked: true }),
+    call(5, { query: 'failed.com', picked: 'yes' })].map(value => JSON.stringify(value)).join('\n') + '\n');
+  await done;
+  assert.deepEqual(picks, ['example.com']);
 });
 
 test('forwards purchase and the explicit browser confirm flag, and rejects non-boolean flags', async () => {
@@ -243,6 +259,7 @@ test('passes 20 names to one native batch invocation and preserves partial compa
     name: name.toLowerCase(),
     free: [{ d: 'com', s: 'nc', now: 9.48, renew: 10.68, y3: 30.84, shop: 'Spaceship' }],
     shop_check: ['so'],
+    score: { version: 'v1', filtered: 'Numbers or hyphens', kind: 'ban' },
   })));
 });
 
@@ -304,7 +321,7 @@ test('an ending on request joins the default endings at the wire and on the page
   assert.ok(receipt.includes('endingsample.de'));
 });
 
-test('naming_method returns the compact recipe as display with an optional description', async () => {
+test('naming_method returns the naming skill v1 method as display with an optional description', async () => {
   const responses = await exchange([...handshake(), call(2, undefined, 'naming_method'), call(3, {}, 'naming_method'),
     call(4, { query: 'not used' }, 'naming_method'), call(5, { about: 'Book trips' }, 'naming_method')]);
   const text = callJson(responses, 2);
@@ -316,16 +333,25 @@ test('naming_method returns the compact recipe as display with an optional descr
   assert.equal(callText(responses, 2), data.display);
   assert.deepEqual(Object.keys(data), ['display']);
   const recipe = data.display;
-  assert.ok(Buffer.byteLength(text) < 800, String(Buffer.byteLength(text)));
-  for (const phrase of ['intermediate', 'final triage display', 'about 30', 'familiar animal', 'category-generic',
-    'Default to English', 'endings or budget', 'Skip check_domains', 'Relay say as written', 'results page line',
-    'Do not call again', 'complete local results page']) {
+  // Process, recipes, bans, the steering question and twelve real names by type, still one short read.
+  assert.ok(Buffer.byteLength(text) < 2600, String(Buffer.byteLength(text)));
+  for (const phrase of ['naming skill v1', 'about 30', '6 territories', 'Generate 150', 'English names unless asked', 'endings or budget',
+    'candidates', 'Missing evidence counts as not checked', 'Skip check_domains', 'Relay say as written', 'results page line',
+    'Do not call again', 'complete local results page', 'ranked by score', 'not a probability', 'never pad',
+    'ask exactly "Which two do you love, and which one do you hate?"', 'Never re-show a rejected name',
+    'odd pair (default)', 'pun', 'blend', 'insider term', 'phrase or character',
+    'Bans (code drops them before scoring)', '-ly, -ify, -io', 'AI, GPT, bot, smart', 'Real names by type (patterns only)']) {
     assert.ok(recipe.includes(phrase), phrase);
   }
-  // One screening call: brief, generate, a single triage of the best eight, then the answer.
+  // Twelve real names by type, no origin stories.
+  const examples = recipe.slice(recipe.indexOf('Real names by type'));
+  assert.equal(referenceExamples.length, 12);
+  for (const [type, name] of referenceExamples) assert.ok(examples.includes(type) && examples.includes(name), name);
+  assert.doesNotMatch(recipe, /founded|named after|came from|stands for/i);
+  // One screening call: brief, generate, a single triage of the best eight, then the answer and the steering question.
   assert.doesNotMatch(recipe, /shortlist|check_domains ONCE/);
-  const order = ['1. Brief', '2. Generate', '3. Screen', 'triage_names ONCE with your best EIGHT', 'first five', '4. Answer']
-    .map(phrase => recipe.indexOf(phrase));
+  const order = ['1. Brief', '2. Subject words', '3. Generate', '5. Screen', 'triage_names ONCE with your best EIGHT', 'first five',
+    '6. Answer', '7. Steer'].map(phrase => recipe.indexOf(phrase));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
 });
@@ -336,7 +362,7 @@ test('naming_method accepts a detailed brief and keeps the recipe concise', asyn
   const { display } = callData(responses, 2);
   assert.match(display, /^Naming recipe/);
   assert.ok(display.includes(about.slice(0, 100)));
-  assert.ok(Buffer.byteLength(display) < 1000);
+  assert.ok(Buffer.byteLength(display) < 2700);
 });
 
 test('prints the MCP naming recipe in the CLI and points spaced names to it', async () => {
@@ -764,7 +790,9 @@ test('keeps all three naming calls under 8 KB and each listed tool text under it
   const prior = batchPayload(seven);
   const batch = checkText(prior, true);
   const triage = triageText(triagePayload(five), prior);
-  assert.ok(size(recipe) + size(batch) + size(triage) < 8000, [size(recipe), size(batch), size(triage)].join(' + '));
+  // The method skips the check_domains batch, so the naming calls are the method and one screen.
+  assert.ok(size(recipe) + size(triage) < 8000, [size(recipe), size(triage)].join(' + '));
+  assert.ok(size(batch) < 8000);
   assert.ok(size(triage) < 6000);
   assert.ok(size(triageText(triagePayload(ten))) < 10_000);
   assert.ok(size(checkText(batchPayload(twenty, 8))) < 8000);
@@ -925,7 +953,8 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   assert.ok(size(text) < 9500, String(size(text)));
   const parsed = JSON.parse(text);
   assert.deepEqual(Object.keys(parsed)[0], 'display');
-  assert.ok(parsed.display.includes('Best value: ' + labels[0] + '.com, $26.00 over 3 years'));
+  assert.ok(report.top.every(row => labels.indexOf(row.name) >= 5));
+  assert.ok(parsed.display.includes('Best value: ' + labels[5] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
   assert.ok(parsed.names.every(row => row.free.length === 12));
   for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
@@ -1057,6 +1086,32 @@ test('forwards per-name GEO from the client memory and rejects anything else', a
   assert.match(errorText(responses, 5), /geo names "Asana", which is not in names/);
 });
 
+test('forwards per-name naming evidence for the Name score and rejects anything else', async () => {
+  const evidence = { recipe: 'odd-pair', relation: 'direct', spellings: 1, realWord: true, descriptive: false, misspelled: false,
+    narrow: false, soundsLike: 'none', badMeaning: 'none', language: 'english' };
+  const responses = await exchange([...handshake(), request(2, 'tools/list'),
+    call(3, { names: ['Loomfox', 'Mesa'], candidates: { loomfox: evidence, Mesa: { relation: 'none' } } }, 'triage_names'),
+    call(4, { names: ['Loomfox'], candidates: { Asana: evidence } }, 'triage_names'),
+    call(5, { names: ['Loomfox'], candidates: { Loomfox: { relation: 'close' } } }, 'triage_names'),
+    call(6, { names: ['Loomfox'], candidates: { Loomfox: { subjectWord: 'loom' } } }, 'triage_names'),
+    call(7, { names: ['Loomfox'], candidates: { Loomfox: { spellings: 0 } } }, 'triage_names'),
+    call(8, { names: ['Loomfox'], candidates: ['Loomfox'] }, 'triage_names')]);
+  const triage = resultOf(responses, 2).tools.find(tool => tool.name === 'triage_names');
+  const { candidates } = triage.inputSchema.properties;
+  assert.equal(candidates.maxProperties, 20);
+  assert.equal(candidates.additionalProperties.additionalProperties, false);
+  assert.deepEqual(candidates.additionalProperties.properties.relation.enum, ['direct', 'loose', 'none']);
+  assert.match(candidates.description, /Missing evidence counts as not checked/);
+  const naming = resultOf(responses, 2).tools.find(tool => tool.name === 'naming_method');
+  assert.match(naming.description, /before generating names/);
+  const flags = callData(responses, 3).flags;
+  const at = flags.indexOf('--candidates');
+  assert.ok(at > 0);
+  assert.deepEqual(JSON.parse(flags[at + 1]), { loomfox: evidence, Mesa: { relation: 'none' } });
+  assert.match(errorText(responses, 4), /candidates names "Asana", which is not in names/);
+  for (const id of [5, 6, 7, 8]) assert.match(errorText(responses, id), /candidates must map each name to naming evidence/);
+});
+
 test('shows the rival, its level, two strongest signals and the GEO line in the triage display', () => {
   const row = (reason, traction) => ({ name: 'Notion', verdict: 'Avoid', reason, free: [], taken: ['com'], shop_check: [],
     own: {}, traction, competition: {}, google: { result: 'owned by Notion' } });
@@ -1085,8 +1140,8 @@ test('ends every MCP display, including errors, with one attribution line and ke
     call(8, { query: '' }), call(9, { query: 'x' }, 'broker_find'), call(10, { names: Array(21).fill('a') }, 'triage_names')]);
   for (const id of [2, 3, 4, 5, 6, 9]) callData(responses, id);
   for (const id of [7, 8, 10]) errorText(responses, id);
-  // The naming recipe stays a compact intermediate step.
-  assert.ok(size(callText(responses, 6)) < 800, String(size(callText(responses, 6))));
+  // The naming method stays one short read.
+  assert.ok(size(callText(responses, 6)) < 2600, String(size(callText(responses, 6))));
   // Direct renderers: exact, batch, shortlist, triage (single, shortlist, shared, dense and data-only fallback) and errors.
   const prior = batchPayload(seven);
   const texts = [

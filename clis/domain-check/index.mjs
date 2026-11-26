@@ -14,6 +14,7 @@ import { lookupRegistrations } from './registry.mjs';
 import { namingRecipe, purchaseLine } from './naming-method.mjs';
 import { progressReporter } from './progress.mjs';
 import { namePresence, triageNames } from './triage.mjs';
+import { validCandidate } from './name-score.mjs';
 import { refreshTranco } from './traction.mjs';
 import {
   catalogPrice, dynadotOffer, linkable, money, offer, porkbunOffer, rankedFirstYear, shops, shopSearchUrl, threeYearCost, transferStrategy, vatNorway,
@@ -676,6 +677,17 @@ function readGeo(value) {
   return null;
 }
 
+// Per-name naming evidence from the calling agent ({"Name":{"realWord":true,...}}); invalid input is ignored, which leaves
+// every semantic ban unchecked for the score.
+function readCandidates(value) {
+  try {
+    const candidates = JSON.parse(value ?? '');
+    if (candidates && typeof candidates === 'object' && !Array.isArray(candidates) && Object.keys(candidates).length <= 20
+      && Object.entries(candidates).every(([key, entry]) => key.length <= 100 && validCandidate(entry))) return candidates;
+  } catch { /* ignored */ }
+  return null;
+}
+
 function lookupArgs(args) {
   const options = {};
   const positional = [];
@@ -693,6 +705,7 @@ function lookupArgs(args) {
     else if (arg === '--confirm') options.browser = true;
     else if (arg === '--geo' && options.geo === undefined) options.geo = readGeo(args[++index]);
     else if (arg === '--about' && options.about === undefined) options.about = (args[++index] ?? '').slice(0, 160);
+    else if (arg === '--candidates' && options.candidates === undefined) options.candidates = readCandidates(args[++index]);
     else positional.push(arg);
   }
   return { options, positional };

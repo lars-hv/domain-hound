@@ -49,6 +49,7 @@ export async function searchNorwegianCompanies(name, input, options) {
       const match = companyMatch(letters(name), row.navn);
       if (match) matches.set(row.organisasjonsnummer, {
         name: compactText(row.navn, 65), match, url: 'https://virksomhet.brreg.no/nb/oppslag/enheter/' + row.organisasjonsnummer,
+        ...(typeof row.hjemmeside === 'string' && { homepage: compactText(row.hjemmeside, 253) }),
         ...(Number.isSafeInteger(row.antallAnsatte) && row.antallAnsatte > 0 && { employees: row.antallAnsatte }),
       });
     }

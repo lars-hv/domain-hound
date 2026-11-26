@@ -12,12 +12,41 @@ export const geoInstruction = 'GEO (presence in AI answers): for each name, answ
   + 'whether you know a specific brand, company or product by that exact name: "known: <what it is, a few words>" or "unknown". '
   + 'Say unknown for a plain dictionary word or when unsure. Do not guess.';
 
-// One screening call: triage_names checks every ending for all the names it gets and screens the first five, so the
-// recipe skips the preliminary check_domains batch (check_domains with shortlist still works for existing callers).
-export const namingRecipe = (about = '') => 'Naming recipe (intermediate). Use the final triage display.\n'
+// Real names by naming type, from the 2026-11-25 naming reference (213 names). Types and patterns only: the method never
+// tells or invents origin stories. The last three show types the bans exclude.
+export const referenceExamples = [
+  ['real word, repurposed', 'Stripe'], ['real word, repurposed', 'Linear'], ['compound', 'GitHub'], ['compound', 'Datadog'],
+  ['blend', 'Instagram'], ['blend', 'Vercel'], ['phrase', 'Hugging Face'], ['phrase', 'Liquid Death'], ['metaphor', 'Mistral'],
+  ['invented (banned here)', 'Figma'], ['misspelling (banned here)', 'Lyft'], ['acronym (not a recipe)', 'Redis'],
+];
+export const steeringQuestion = 'Which two do you love, and which one do you hate?';
+const exampleLine = () => {
+  const types = new Map();
+  for (const [type, name] of referenceExamples) types.set(type, [...types.get(type) ?? [], name]);
+  return [...types].map(([type, names]) => type + ': ' + names.join(', ')).join('; ');
+};
+
+// Naming skill v1, the same method as the Claude Code plugin skill (skills/naming/SKILL.md). One screening call:
+// triage_names checks every ending for all the names it gets and screens the first five, so the recipe skips the
+// preliminary check_domains batch (check_domains with shortlist still works for existing callers).
+export const namingRecipe = (about = '') => 'Naming recipe (naming skill v1). English names unless asked. The name must last.\n'
   + (about ? '1. Brief: ' + about.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim()
-    + '.\n' : '1. Brief: product, audience and preferences.\n')
-  + '2. Generate about 30 words. Pair one with a familiar animal or object. Default to English unless the person asked for another language. Avoid category-generic names.\n'
-  + '3. Screen: call triage_names ONCE with your best EIGHT names, strongest first (all get domains; the first five get marks, apps and rivals). '
-  + 'Add a short about, geo from memory, and any endings or budget the person gave. Skip check_domains.\n'
-  + '4. Answer: Relay say as written, starting with its results page line. Do not call again; the complete local results page fills in by itself.';
+    + '.\n' : '1. Brief: what it does, for whom, the feel in two words, names to avoid. At most three questions.\n')
+  + '2. Subject words: about 30 (objects, verbs, tools, places, roles, jargon, sounds). Pick 6 territories of meaning or sound; aim for the gap competitors leave.\n'
+  + '3. Generate 150, 25 per territory, every recipe. Each name contains or puns on a subject word. No judging yet.\n'
+  + '4. Filter: drop bans, over 12 letters or 3 syllables, more than one spelling by ear, hard to say, near-twins.\n'
+  + '5. Screen: call triage_names ONCE with your best EIGHT, strongest first (the first five get marks, apps and rivals). '
+  + 'Add about, geo from memory, any endings or budget, and candidates: per name recipe, relation (direct/loose/none), spellings, '
+  + 'realWord, descriptive, misspelled, narrow, soundsLike, badMeaning, language. Missing evidence counts as not checked. Skip check_domains.\n'
+  + '6. Answer: Relay say as written, starting with its results page line. Show only names with a Name score, ranked by score; '
+  + 'fewer than 5: say so and run another round, never pad. Name score is how clear the road is, not a probability. '
+  + 'Do not call again; the complete local results page fills in by itself.\n'
+  + '7. Steer: ask exactly "' + steeringQuestion + '" Find what the two loved names share and what the hated one signals; '
+  + 'generate the next round that way. Never re-show a rejected name.\n'
+  + 'Recipes (suggestive or arbitrary, never descriptive): odd pair (default), subject word + unexpected concrete word, Loomfox; '
+  + 'pun, a familiar phrase with a subject word swapped in by sound, Grepvine; blend on a shared syllable, both words audible, Inboxer; '
+  + 'insider term outsiders hear as an image, Cold Kerf; phrase or character, Captain Diff.\n'
+  + 'Bans (code drops them before scoring): two subject words, or one + hub/base/flow/labs/app/pro; no real word inside; '
+  + '-ly, -ify, -io, dropped vowels, misspellings, numbers, hyphens; AI, GPT, bot, smart; sounds like a competitor, drug or Pokemon; '
+  + 'names one feature; invented origin stories or claims about real brands.\n'
+  + 'Real names by type (patterns only): ' + exampleLine() + '.';

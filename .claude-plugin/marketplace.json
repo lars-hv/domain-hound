@@ -5,7 +5,7 @@
   "plugins": [
     {
       "name": "domain-hound",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "source": "./",
       "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track."
     }

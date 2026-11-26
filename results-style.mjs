@@ -57,6 +57,9 @@ thead th:nth-child(n+2), tbody td { text-align: right; }
 tbody td { font-variant-numeric: lining-nums tabular-nums; }
 th[scope="row"] code { display: block; font-weight: 800; }
 th[scope="row"] small { display: block; font: 400 .9375rem/1.45 system-ui, sans-serif; }
+.name-score { margin-block: .5rem; padding: .5rem .8rem; border: 2px solid var(--blue); background: var(--gold); }
+.name-score p { margin: 0; font-weight: 800; }
+.name-score ul { margin: .35rem 0 0; padding-left: 1.1rem; }
 details { border-bottom: 1px dashed var(--blue); }
 summary { cursor: pointer; font-weight: 750; }
 details[open] { padding-bottom: .65rem; }

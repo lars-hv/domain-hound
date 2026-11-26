@@ -5,6 +5,7 @@ import { canRecommend, choosePick, comparePicks, eligibilityNeed, lowestTotal, l
 import { purchaseLine } from './clis/domain-check/naming-method.mjs';
 
 export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
+import { compareScores } from './clis/domain-check/name-score.mjs';
 export const neverBuys = 'This check leaves checkout to you; open the link to buy.';
 export const attribution = 'via domainhound.dev';
 
@@ -427,7 +428,7 @@ export function topPicks(result, preferred = []) {
   const context = { requested: preferred, eligible: result.eligible ?? [] };
   const rest = rows.map((row, index) => ({ row, index, pick: eligiblePick(row, prices, result.eligible, preferred) }))
     .filter(({ row }) => !picks.some(pick => pick.name === row.name))
-    .sort((a, b) => (verdictRank[a.row.verdict] ?? 3) - (verdictRank[b.row.verdict] ?? 3)
+    .sort((a, b) => compareScores(a.row.score, b.row.score) || (verdictRank[a.row.verdict] ?? 3) - (verdictRank[b.row.verdict] ?? 3)
       || Number(!a.pick) - Number(!b.pick) || (a.pick && b.pick ? comparePicks(a.pick, b.pick, context) : 0) || a.index - b.index);
   for (const { row, pick } of rest.slice(0, 3 - picks.length)) {
     picks.push({ name: row.name, verdict: row.verdict, reason: row.reason,
@@ -528,7 +529,9 @@ export function triageDisplay(result, prior, { short = false, compact = false, p
     const value = !compact && rowBestValue(row, prices);
     const reason = compact ? shorten(String(row.reason ?? '').split(' · ', 1)[0], 80) : row.reason;
     const checks = compact ? checkLines(row, false).map(line => line.split(' · [search]', 1)[0]) : checkLines(row, short);
-    lines.push('| ' + nameLabel(row.name) + ' | ' + md(row.verdict) + ': ' + md(reason) + (compact ? '' : tractionLine(row, Boolean(prior) || short)) + ' | '
+    const score = Number.isInteger(row.score?.value) ? ' · Name score ' + row.score.value + '/100, ' + row.score.band
+      : row.score?.filtered ? ' · Not scored: ' + row.score.filtered : '';
+    lines.push('| ' + nameLabel(row.name) + ' | ' + md(row.verdict) + ': ' + md(reason) + md(score) + (compact ? '' : tractionLine(row, Boolean(prior) || short)) + ' | '
       + (cell.join('<br>') || 'none free') + (value ? '<br>' + value : '') + ' | ' + checkout + ' | '
       + checks.join('<br>') + ' |');
   }
