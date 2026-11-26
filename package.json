@@ -1,6 +1,6 @@
 {
   "name": "domain-hound",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "license": "MIT",
   "type": "module",
@@ -43,6 +43,7 @@
     "hosted.mjs",
     "hosted-results.mjs",
     "display.mjs",
+    "short-answer.mjs",
     "results.mjs",
     "results-style.mjs",
     "results-cards.mjs",

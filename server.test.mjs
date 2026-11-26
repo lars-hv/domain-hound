@@ -60,14 +60,13 @@ function resultOf(responses, id) {
   return response.result;
 }
 
-// Every tool result has exactly one text block: the display. The structured result starts with the same display.
+// Every tool result has exactly one text block. Short lookup answers retain the legacy structured display.
 function callText(responses, id, isError = false) {
   const result = resultOf(responses, id);
   assert.equal(result.isError, isError);
   assert.equal(result.content.length, 1);
   assert.equal(result.content[0].type, 'text');
   assert.equal(typeof result.structuredContent, 'object');
-  if ("display" in result.structuredContent) assert.equal(result.content[0].text, result.structuredContent.display);
   return result.content[0].text;
 }
 
@@ -166,7 +165,7 @@ test('advertises ten distinct tools with intent descriptions and complete annota
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   assert.equal(check._meta['anthropic/maxResultSizeChars'], 40_000);
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
+  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'detail', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
   for (const flag of ['shortlist', 'purchase', 'picked', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
   assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
   assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no', 'eu']);
@@ -347,8 +346,8 @@ test('naming_method returns the naming skill v1 method as display with an option
   // Process, recipes, bans, the steering question and twelve real names by type, still one short read.
   assert.ok(Buffer.byteLength(text) < 2600, String(Buffer.byteLength(text)));
   for (const phrase of ['naming skill v1', 'about 30', '6 territories', 'Generate 150', 'English names unless asked', 'endings or budget',
-    'candidates', 'Missing evidence counts as not checked', 'Skip check_domains', 'Relay say as written', 'results page line',
-    'Do not call again', 'complete local results page', 'ranked by score', 'not a probability', 'never pad',
+    'candidates', 'Missing evidence counts as not checked', 'Skip check_domains', 'Show the tool’s answer as given', 'results link',
+    'Offer details only if the user asks', 'never pad',
     'ask exactly "Which two do you love, and which one do you hate?"', 'Never re-show a rejected name',
     'odd pair (default)', 'pun', 'blend', 'insider term', 'phrase or character',
     'Bans (code drops them before scoring)', '-ly, -ify, -io', 'AI, GPT, bot, smart', 'Real names by type (patterns only)']) {
@@ -540,12 +539,7 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
   assert.equal(progress.pending, true);
   assert.deepEqual(progress.rows, [{ name: 'slowroom', statuses: { taken: ['com'], available: ['dev', 'app'],
     'still checking': unanswered } }]);
-  const [notice, ...lines] = progress.display.split('\n');
-  assert.equal(notice, localCheckNotice);
-  assert.equal(lines[0], '**Still checking** after 1.0 s (answer budget 1.0 s). The lookup keeps running.');
-  assert.equal(lines[1], 'Registry answers so far: 3 of 10 domains.');
-  assert.equal(lines[2], '- slowroom: available .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
-  assert.match(progress.display, /Call the same tool again with the same input/);
+  assert.equal(progress.display, 'slowroom: available .dev .app · taken .com\nStill checking domains.');
 
   // The repeat joins the running lookup and returns its finished result when it ends, before its own budget.
   mcp.send(call(3, { query: 'slowroom' }));
@@ -553,7 +547,7 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
   await held.open();
   const result = structured(await mcp.reply(3));
   assert.equal(mcp.clock.now(), 1000);
-  assert.match(result.display, /The Hound’s pick is slowroom\.dev .* over three years\./);
+  assert.match(result.display, /^slowroom\.dev is your best bet:/);
   assert.equal(await runsIn(held.runs), 1);
   // The same lookup stays stable for the session window.
   const repeated = await mcp.ask(call(4, { query: 'slowroom' }));
@@ -573,18 +567,17 @@ test('lists all seven requested names in order on a timeout and collects the cac
   const [first, second] = await Promise.all([mcp.reply(3), mcp.reply(2)]);
   for (const response of [first, second]) {
     const progress = structured(response);
-      assert.deepEqual(progress.rows.map(row => row.name), names);
-    const lines = progress.display.split('\n').slice(1);
-    assert.equal(lines[1], 'Registry answers so far: 3 of 61 domains.');
+    assert.deepEqual(progress.rows.map(row => row.name), names);
+    const lines = progress.display.split('\n');
     // A row without any answer yet shows every default ending; the exact domain stays exact.
     assert.deepEqual(progress.rows[0], { name: 'quietbook', statuses: { 'still checking': defaultEndings } });
     assert.deepEqual(progress.rows[2], { name: 'oakenroom.me', statuses: { 'still checking': ['oakenroom.me'] } });
-    assert.equal(lines[2], '- quietbook: still checking .' + defaultEndings.join(' .') + ', ask again');
-    assert.equal(lines[4], '- oakenroom.me: still checking oakenroom.me, ask again');
-    assert.deepEqual(lines.slice(2, 9).map(line => line.split(':')[0].slice(2)), names);
+    assert.equal(lines[1], 'slowroom: available .dev .app · taken .com');
+    assert.equal(lines[7], 'Still checking domains.');
+    assert.deepEqual(lines.slice(0, 7).map(line => line.split(':')[0]), names);
   }
   // The purchase request keeps its closing line in the progress answer.
-  assert.ok(callText([first], 3).endsWith('\n\n' + purchaseLine));
+  assert.ok(callText([first], 3).endsWith('This check leaves checkout to you.'));
   assert.equal(await runsIn(held.runs), 1);
   // The lookup finishes while nobody waits; the repeat gets it from the kept result without waiting on its budget.
   await held.open();
@@ -1083,7 +1076,7 @@ test('forwards per-name GEO from the client memory and rejects anything else', a
   assert.equal(geo.type, 'object');
   assert.equal(geo.maxProperties, 20);
   assert.match(geo.description, /own knowledge only, without searching/);
-  assert.match(triage.description, /Use the returned verdicts/);
+  assert.match(triage.description, /Show the answer as given; offer details only if the user asks/);
   const pattern = new RegExp(geo.additionalProperties.pattern);
   for (const value of ['known: notes app', 'Known (notes app)', 'unknown']) assert.ok(pattern.test(value), value);
   for (const value of ['known', 'maybe', 'unknown brand']) assert.ok(!pattern.test(value), value);
@@ -1345,10 +1338,10 @@ test('keeps a fully priced hosted check and a twenty-name batch within the MCP r
     const expected = input.names ?? [input.query];
     assert.deepEqual(otherFields, {});
     assert.deepEqual(rows, expected.map(name => ({ name, statuses: { available: defaultEndings } })));
-    assert.match(text, /^The Hound’s pick is lanternotter0\.com/);
-    assert.ok(text.includes(resultsLine(resultPage)));
+    assert.match(text, /^lanternotter0\.com is your best bet:/);
+    assert.ok(text.includes(resultsLine(resultPage).replace('Results page:', 'All prices, shops and handles:')));
     assert.ok(expected.every(name => text.includes(name)));
-    assert.match(text, /Dynadot \$5\.00\/\$10\.00, \$25\.00 over 3y/);
+    assert.match(text, /\$5\.00 now, then \$10\.00\/yr \(Dynadot\)/);
     const wire = JSON.stringify(reply);
     assert.ok(id === 2 ? Buffer.byteLength(wire) < 8_000 : wire.length < 40_000, 'Wire size ' + wire.length);
     const receipt = await readFile(new URL(resultPage), 'utf8');
@@ -1451,7 +1444,7 @@ for (const [timing, title] of [
     else releaseApple(fallback);
     const first = structured(await mcp.reply(2));
     assert.equal(first.pending, true);
-    assert.match(first.display, late ? /App Store \(iOS\) · Still checking/ : /App Store \(iOS\) · Taken.*Exampleheron: Notes/);
+    assert.match(first.display, late ? /^Still checking App Store/m : /App Store: taken/);
     const early = await readFile(new URL(first.resultPage), 'utf8');
     assert.match(early, late ? /Still checking/ : /Exampleheron: Notes/);
     mcp.send(call(3, args));
@@ -1463,7 +1456,7 @@ for (const [timing, title] of [
     releaseDetails();
     const final = structured(await mcp.reply(3));
     assert.equal(final.resultPage, first.resultPage);
-    assert.match(final.display, /App Store \(iOS\) · Taken.*Exampleheron: Notes/);
+    assert.match(final.display, /App Store: taken/);
     assert.equal(retries, 1);
   });
 }
@@ -1480,8 +1473,8 @@ test('the package uses the local check when the hosted request cannot connect', 
   assert.equal(attempts, 2);
   assert.equal(answer.rows[0].name, 'oakenroom.me');
   assert.equal(answer.checks, undefined);
-  assert.equal(answer.display.split('\n')[0], localCheckNotice);
-  assert.match(answer.display, /oakenroom\.me/);
+  assert.ok(answer.display.split('\n')[0].endsWith(localCheckNotice));
+  assert.match(answer.display, /^oakenroom\.me is available/);
 });
 
 test('the first tool call retries transient hosted check and details failures', async t => {
@@ -1527,7 +1520,7 @@ test('a slow hosted lookup stays hosted past the tool response budget and a repe
   mcp.clock.tick(1000);
   const progress = structured(await mcp.reply(2));
   assert.equal(progress.pending, true);
-  assert.match(progress.display, /^The hosted check is still running\./);
+  assert.equal(progress.display, 'Still checking domains.');
   mcp.send(call(3, args));
   finish({ query: { name, ascii: name, exactDomain: null }, domains: [], complete: true, choice: { pick: null } });
   const answer = structured(await mcp.reply(3));
@@ -1668,11 +1661,13 @@ test('the package first call and saved page show both app stores before an exact
   const { resultPage, pending } = structured(first);
   assert.equal(pending, true);
   const lines = first.result.content[0].text.split('\n');
-  assert.match(lines[0], /^The Hound’s pick is exampleheron\.dev.*\$25\.00/);
-  assert.equal(lines[1], 'App Store (iOS) · No matching app found');
-  assert.match(lines[2], /^Google Play \(Android\) · Taken/);
-  assert.match(lines[3], /^Heads-up:.*EXAMPLEHERON.*12345678.*Example Studio/);
-  assert.equal(lines[4], 'Search aid, not legal advice.');
+  assert.deepEqual(lines.slice(0, 3), [
+    'exampleheron.dev is your best bet: $5.00 now, then $10.00/yr (Dynadot).',
+    'App Store: no app with this name · Google Play: taken',
+    'Heads-up: EXAMPLEHERON has an exact US trademark match (Example Studio). Matters if you sell in the US.',
+  ]);
+  assert.equal(lines.length, 4);
+  assert.match(lines[3], /^All prices, shops and handles:/);
   const early = await readFile(new URL(resultPage), 'utf8');
   assert.match(early.split('<body>')[1], /Hound’s pick.*App Store \(iOS\).*Google Play \(Android\).*trademark-warning.*Example Studio.*Buy at Dynadot/s);
   finish(Response.json({ version: 1, appStore: { status: 'unknown', matches: [] }, googlePlay: { status: 'unknown' },
@@ -1723,11 +1718,9 @@ test('check_domains returns a client-recovered pick before name checks and rewri
   const first = await mcp.reply(2);
   const { resultPage, pending } = structured(first);
   assert.equal(pending, true);
-  assert.match(first.result.content[0].text, /^The Hound’s pick is brightboard\.dev at Dynadot/);
-  assert.match(first.result.content[0].text, /App Store \(iOS\) · Still checking/);
-  assert.match(first.result.content[0].text, /Google Play \(Android\) · Still checking/);
-  assert.match(first.result.content[0].text, /^Trademark check still running\.$/m);
-  assert.match(first.result.content[0].text, /same tool with the same input/);
+  assert.match(first.result.content[0].text, /^brightboard\.dev is your best bet:.*Dynadot/);
+  assert.match(first.result.content[0].text, /^Still checking App Store, Google Play, US trademark\.$/m);
+  assert.ok(first.result.content[0].text.split('\n').length <= 6);
   const early = await readFile(new URL(resultPage), 'utf8');
   assert.match(early, /http-equiv="refresh"/);
   assert.match(early, /class="hunt-results"/);
@@ -1743,7 +1736,7 @@ test('check_domains returns a client-recovered pick before name checks and rewri
     const next = await mcp.ask(call(id, { query: name }));
     if (next.result.structuredContent.pending) continue;
     assert.equal(next.result.structuredContent.resultPage, resultPage);
-    assert.match(next.result.content[0].text, /No matching app found/);
+    assert.match(next.result.content[0].text, /App Store: no app with this name/);
     const updated = await readFile(new URL(resultPage), 'utf8');
     assert.doesNotMatch(updated, /http-equiv="refresh"/);
     assert.match(updated, /class="hunt-results"/);
@@ -1779,4 +1772,90 @@ test('local registry recovery ignores mismatched routes, stale negatives and res
     assert.equal(answer.domains[0].status, 'unknown');
     assert.equal(answer.choice.pick, null);
   }
+});
+
+
+test('a taken exact name offers a priced alternative and detail reuses the same receipt', async t => {
+  const offer = { shop: 'Example Shop', firstPaymentUsd: 7.5, renewalUsd: 11.75, threeYearUsd: 31,
+    buyUrl: 'https://example.test/shop' };
+  const name = 'exampleheron';
+  const domain = name + '.ai';
+  const dev = { domain: name + '.dev', ending: 'dev', status: 'available', prices: [offer] };
+  const exact = { domain, ending: 'ai', status: 'taken', prices: [] };
+  const calls = [];
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', DOMAIN_HOUND_EMBED_CHECKS: 'off' },
+    fetchFn: async url => {
+      if (url.pathname === '/v1/check/details') {
+        calls.push(url.pathname);
+        return Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] },
+          googlePlay: { status: 'taken' }, trademarks: { us: { status: 'no_exact_match_found', marks: [] } },
+          handles: [{ platform: 'Instagram', state: 'taken', link: 'https://www.instagram.com/exampleheron/' }] });
+      }
+      const query = url.searchParams.get('name');
+      calls.push(query);
+      return Response.json({ version: 1, query: { name, ascii: name, exactDomain: query === domain ? domain : null },
+        domains: query === domain ? [exact] : [exact, dev], complete: true,
+        choice: { pick: query === domain ? null : { ...offer, domain: dev.domain } },
+        appStore: { status: 'no_match_found', matches: [] }, googlePlay: { status: 'taken' },
+        trademarks: { us: { status: 'no_exact_match_found', marks: [] } }, details: { id: 'fixture-id' } });
+    } });
+  const mcp = await local(t, { hosted: host });
+  const first = await mcp.ask(call(2, { query: domain }));
+  const lines = first.result.content[0].text.split('\n');
+  assert.equal(lines[0], 'exampleheron.ai is taken. Best available: exampleheron.dev, $7.50 now, then $11.75/yr (Example Shop).');
+  assert.equal(lines[1], 'Taken: .ai');
+  assert.ok(lines.length <= 6);
+  assert.doesNotMatch(lines.join('\n'), /^Instagram/m);
+  assert.deepEqual(first.result.structuredContent.rows, [{ name: domain, statuses: { taken: ['ai'] } }]);
+  const full = await mcp.ask(call(3, { query: domain, detail: 'full' }));
+  assert.equal(full.result.structuredContent.resultPage, first.result.structuredContent.resultPage);
+  assert.match(full.result.content[0].text, /^Instagram ·/m);
+  assert.match(full.result.content[0].text, /Available · exampleheron.dev[\s\S]*Example Shop/);
+  const html = await readFile(new URL(full.result.structuredContent.resultPage), 'utf8');
+  assert.match(html, /exampleheron.dev/);
+  assert.match(html, /Example Shop/);
+  assert.deepEqual(calls, [domain, name, '/v1/check/details']);
+});
+
+test('checks the hidden .inc ending before counting all ten defaults as taken', async t => {
+  const name = 'fullharbor';
+  const calls = [];
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' },
+    fetchFn: async url => {
+      const query = url.searchParams.get('name');
+      calls.push(query);
+      const exactDomain = query.endsWith('.inc') ? query : null;
+      const endings = exactDomain ? ['inc'] : defaultEndings.filter(ending => ending !== 'inc');
+      return Response.json({ version: 1, query: { name, ascii: name, exactDomain }, complete: true,
+        domains: endings.map(ending => ({ domain: name + '.' + ending, ending, status: 'taken', prices: [] })),
+        appStore: { status: 'taken', matches: [] }, googlePlay: { status: 'taken' },
+        trademarks: { us: { status: 'no_exact_match_found', marks: [] } }, choice: { pick: null } });
+    } });
+  const mcp = await local(t, { hosted: host });
+  const first = await mcp.ask(call(2, { query: name }));
+  assert.match(first.result.content[0].text, /^All 10 endings are taken\. Want new name ideas\?/);
+  assert.deepEqual(first.result.structuredContent.rows[0].statuses.taken, defaultEndings.filter(ending => ending !== 'inc'));
+  assert.deepEqual(calls, [name, name + '.inc']);
+});
+
+test('an idea shows one line per name, puts confirmed prices first and caps the list at five', async t => {
+  const names = Array.from({ length: 6 }, (_, i) => {
+    const name = 'Example ' + i;
+    const domain = { domain: 'example' + i + '.dev', ending: 'dev', status: 'available',
+      shop: 'Example Shop', firstYearUsd: 7, renewalUsd: 12, threeYearUsd: 31 };
+    return { name, domain, domains: [{ ...domain, prices: [domain] }],
+      nameChecks: { appStore: { status: 'no_match_found' }, googlePlay: { status: 'not-found' } } };
+  });
+  const mcp = await local(t, { hosted: { generate: async () => ({ version: 2, stage: 'final', complete: true, names }) } });
+  const args = { idea: 'An app for planning a library' };
+  const first = await mcp.ask(call(2, args, 'triage_names'));
+  const lines = first.result.content[0].text.split('\n');
+  assert.equal(lines.length, 6);
+  assert.equal(lines[0], 'Example 0 - example0.dev, $7.00 now, then $12.00/yr (Example Shop) · apps free');
+  assert.match(lines.at(-1), /^All prices, shops and handles:/);
+  assert.equal(first.result.structuredContent.checks.length, 6);
+  const full = await mcp.ask(call(3, { ...args, detail: 'full' }, 'triage_names'));
+  assert.deepEqual(full.result.structuredContent, first.result.structuredContent);
+  assert.equal(full.result.content[0].text, full.result.structuredContent.display);
+  assert.match(full.result.content[0].text, /Available · example5.dev/);
 });

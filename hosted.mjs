@@ -1,7 +1,7 @@
 import { setTimeout as wait } from 'node:timers/promises';
 import { checkGooglePlayNames, checkSocialHandles, embedChecksEnabled, handleLabel, handleStates, publicProfiles } from './clis/domain-check/handles.mjs';
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
-import { normalizeName } from './clis/domain-check/name-search.mjs';
+import { defaultEndings, normalizeName } from './clis/domain-check/name-search.mjs';
 import { rdapSignal } from './clis/domain-check/registry.mjs';
 import { searchApps } from './clis/domain-check/triage-sources.mjs';
 
@@ -200,7 +200,16 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       const [main, ...extras] = await Promise.all([get(name, signal),
         ...extraEndings.map(ending => get(normalizeName(name) + '.' + ending, signal))]);
       const { details, ...answer } = main;
+      // The web view hides taken .inc rows. Verify it explicitly before reporting that all defaults are taken.
+      const missingInc = !main.query.exactDomain && !extraEndings.includes('inc') && main.domains.length === defaultEndings.length - 1
+        && defaultEndings.filter(ending => ending !== 'inc').every(ending =>
+          main.domains.some(row => row.ending === ending && row.status === 'taken'));
       answer.domains = [...main.domains, ...extras.flatMap(extra => extra.domains)];
+      const inc = { domain: main.query.ascii + '.inc', ending: 'inc', status: 'unknown', prices: [] };
+      const withInc = row => ({ domains: [...answer.domains, row], choice: answer.choice });
+      const comparison = missingInc ? get(inc.domain, signal)
+        .then(extra => withInc(extra.domains.find(row => row.domain === inc.domain) ?? inc), () => withInc(inc)) : null;
+      if (comparison) answer[alternativeEndings] = withInc(inc);
       answer.complete = main.complete && extras.every(extra => extra.complete);
       const exact = main.query.exactDomain;
       const needsAlternatives = exact && main.domains.length === 1 && main.domains[0].domain === exact && main.domains[0].status === 'taken';
@@ -226,9 +235,9 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
         : detailsApp.then(row => definite(initialApp) ? initialApp
           : recoverApple(best(initialApp, row), main.query.name, signal));
       const waitingForApple = !definite(initialApp) && Boolean(initialApp || hasDetails);
-      if (hasDetails || waitingForApple) {
+      if (hasDetails || waitingForApple || alternatives || comparison) {
         onDomains?.(waitingForApple ? { ...answer, appStore: { ...initialApp, status: 'pending' } } : answer,
-          waitingForApple ? appCheck : undefined);
+          waitingForApple ? appCheck : undefined, alternatives ?? comparison);
       }
 
       const nameChecks = await detailCheck;
@@ -241,7 +250,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       if (nameChecks && appStore) nameChecks.appStore = appStore;
       const googlePlay = best(answer.googlePlay, nameChecks?.googlePlay);
       const mark = best(answer.trademarks?.us, nameChecks?.trademarks?.us);
-      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }), nameChecks,
+      return { ...answer, ...((alternatives || comparison) && { [alternativeEndings]: await (alternatives ?? comparison) }), nameChecks,
         ...(appStore && { appStore }), ...(googlePlay && { googlePlay }), ...(mark && { trademarks: { us: mark } }) };
     },
 

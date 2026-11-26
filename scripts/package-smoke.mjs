@@ -130,8 +130,8 @@ try {
         const display = checked.content[0].text;
         assert.equal(checked.structuredContent.rows[0].name, 'example.com');
         assert.deepEqual(checked.structuredContent.rows[0].statuses.taken, ['com']);
-        assert.match(display, /Taken · example\.com/i);
-        assert.match(display, /^Results page: \[Open results\]\(.+\.html>?\)$/m);
+        assert.match(display, /^example\.com is taken\./);
+        assert.match(display, /^All prices, shops and handles: \[Open results\]\(.+\.html>?\)$/m);
         checkBytes = Buffer.byteLength(JSON.stringify(checked));
         assert.ok(checkBytes < 8_000, checkBytes + ' bytes');
         description = `Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken`;
