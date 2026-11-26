@@ -45,6 +45,7 @@
     "display.mjs",
     "results.mjs",
     "results-style.mjs",
+    "results-cards.mjs",
     "share.mjs",
     "site/r/share-format.mjs",
     "watch.mjs",

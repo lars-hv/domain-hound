@@ -582,7 +582,8 @@ test('reads Google Play card titles and developers from HTML and recognizes an e
     searches++;
   }) };
   const names = new Map([['cloudotter', 'Cloud Otter']]);
-  assert.equal((await searchAndroidApps(names, options)).get('cloudotter').length, 2);
+  const apps = (await searchAndroidApps(names, options)).get('cloudotter');
+  assert.deepEqual(apps.map(app => app.name), expected.map(app => app.name));
   await searchAndroidApps(names, { ...options, now: new Date(+now + 86_399_999) });
   assert.equal(searches, 1);
   await searchAndroidApps(names, { ...options, now: new Date(+now + 86_400_000) });
