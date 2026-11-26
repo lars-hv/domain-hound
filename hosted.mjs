@@ -5,6 +5,8 @@ import { normalizeName } from './clis/domain-check/name-search.mjs';
 import { searchApps } from './clis/domain-check/triage-sources.mjs';
 
 export const hostedBase = 'https://domainhound-mcp.domainhound.workers.dev';
+// Page-only evidence. Symbols survive the internal object spreads and stay out of MCP JSON.
+export const alternativeEndings = Symbol('alternative endings');
 export class HostedRateLimit extends Error {}
 
 export function hostedDebug(message, env = process.env) {
@@ -152,6 +154,14 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     async check(name, extraEndings, signal) {
       const [main, ...extras] = await Promise.all([get(name, signal),
         ...extraEndings.map(ending => get(normalizeName(name) + '.' + ending, signal))]);
+      const exact = main.query.exactDomain;
+      const needsAlternatives = exact && main.domains.length === 1 && main.domains[0].domain === exact && main.domains[0].status === 'taken';
+      // Run alongside the name checks. An unavailable comparison must not discard the exact answer.
+      const alternatives = needsAlternatives ? get(main.query.ascii, signal).then(comparison =>
+        comparison.query.ascii === main.query.ascii ? {
+          domains: comparison.domains, choice: comparison.choice, priceSnapshot: comparison.priceSnapshot,
+          share: comparison.share, complete: comparison.complete,
+        } : null).catch(() => null) : null;
       let nameChecks = null;
       if (typeof main.details?.id === 'string') {
         nameChecks = await read('/v1/check/details', {
@@ -170,7 +180,8 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
         }
       }
       const { details, ...answer } = main;
-      return { ...answer, domains: [...main.domains, ...extras.flatMap(extra => extra.domains)], nameChecks,
+      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }),
+        domains: [...main.domains, ...extras.flatMap(extra => extra.domains)], nameChecks,
         complete: main.complete && extras.every(extra => extra.complete) };
     },
 

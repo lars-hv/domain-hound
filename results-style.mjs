@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 // Domain Hound's brand B receipt, designed for the same table at phone and desktop widths.
 export const receiptStyle = `
 :root {
@@ -73,3 +75,10 @@ footer { font-size: .9375rem; }
   th, td { padding: .55rem .85rem; }
 }
 `;
+
+// Inline packaged files so a saved result can be opened on its own.
+const asset = name => readFileSync(new URL('./assets/' + name, import.meta.url));
+export const resultMark = 'data:image/svg+xml;base64,' + asset('icon.svg').toString('base64');
+export const cardStyle = '/* ' + asset('mulish-OFL.txt') + ' */\n'
+  + '@font-face{font-family:Mulish;font-weight:200 1000;font-style:normal;src:url(data:font/woff2;base64,'
+  + asset('mulish-latin-wght-normal.woff2').toString('base64') + ') format("woff2")}\n' + asset('results.css');
