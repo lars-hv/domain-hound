@@ -6,6 +6,8 @@ import { rdapSignal } from './clis/domain-check/registry.mjs';
 import { searchApps } from './clis/domain-check/triage-sources.mjs';
 
 export const hostedBase = 'https://domainhound-mcp.domainhound.workers.dev';
+// Page-only evidence. Symbols survive the internal object spreads and stay out of MCP JSON.
+export const alternativeEndings = Symbol('alternative endings');
 export class HostedRateLimit extends Error {}
 
 export function hostedDebug(message, env = process.env) {
@@ -197,6 +199,14 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       const { details, ...answer } = main;
       answer.domains = [...main.domains, ...extras.flatMap(extra => extra.domains)];
       answer.complete = main.complete && extras.every(extra => extra.complete);
+      const exact = main.query.exactDomain;
+      const needsAlternatives = exact && main.domains.length === 1 && main.domains[0].domain === exact && main.domains[0].status === 'taken';
+      // Run alongside the name checks. An unavailable comparison must not discard the exact answer.
+      const alternatives = needsAlternatives ? get(main.query.ascii, signal).then(comparison =>
+        comparison.query.ascii === main.query.ascii ? {
+          domains: comparison.domains, choice: comparison.choice, priceSnapshot: comparison.priceSnapshot,
+          share: comparison.share, complete: comparison.complete,
+        } : null).catch(() => null) : null;
       let nameChecks = null;
       if (typeof details?.id === 'string') {
         onDomains?.(answer);
@@ -215,7 +225,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           if (result.status === 'rejected') hostedDebug('Optional ' + (index ? 'handle' : 'App Store') + ' recovery failed', env);
         }
       }
-      return { ...answer, nameChecks };
+      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }), nameChecks };
     },
 
     async generate(args, signal) {

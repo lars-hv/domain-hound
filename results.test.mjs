@@ -1,4 +1,5 @@
 import './test-support/isolated-cache.mjs';
+import { shopSearchUrl } from './clis/domain-check/prices.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -54,7 +55,8 @@ test('the short recommendation obeys scope while both receipts retain every endi
   assert.match(html, /possibly available by DNS/);
   assert.match(html, /needs|eligibility required/);
   assert.match(html, /https:\/\/www\.spaceship\.com\/domain-search\/\?query=cedarheron\.com/);
-  assert.doesNotMatch(html, /<script\b|query=cedarheron\.no|query=paperheron\.com/);
+  assert.equal([...html.matchAll(/<script\b/g)].length, 1, 'only the fixed reader clock runs');
+  assert.doesNotMatch(html, /<script>alert|query=cedarheron\.no|query=paperheron\.com/);
   assert.match(md, /cedarheron\.com \| \$12\.00 \| \$14\.00/);
   if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
@@ -172,7 +174,7 @@ test('say names the handles of the person’s own name in three states and the p
   assert.doesNotMatch(line, /free|available/i);
   const path = fileURLToPath(result.resultPage);
   const [html, md] = await Promise.all([readFile(path, 'utf8'), readFile(path.replace(/\.html$/, '.md'), 'utf8')]);
-  assert.match(html, /<summary>Handles<\/summary>/);
+  assert.match(html, /<summary>Name checks<\/summary>[\s\S]*?<h4>Handles<\/h4>/);
   assert.match(html, /<a href="https:\/\/github\.com\/paperheron">GitHub @paperheron · Taken<\/a>/);
   assert.match(html, /GitHub alternative @getpaperheron · No profile found/);
   assert.match(html, /YouTube @paperheron · Couldn&#39;t check/);
@@ -192,4 +194,98 @@ test('the progress frame names the handle stage while the top names are checked'
   assert.equal(text.pending, true);
   assert.match(text.display, /handles for the top three names are being checked/);
   assert.match(text.display, /still checking \.de, ask again/);
+});
+
+test('hosted receipts put the trademark before the pick and fold shops after the cheapest three', async t => {
+  const { pages } = await tempPages(t);
+  const domain = 'example.dev';
+  const prices = ['Spaceship', 'Dynadot', 'Namecheap', 'Cloudflare'].map((shop, index) => ({
+    shop, firstYearUsd: 2, renewalUsd: 10 - index, threeYearUsd: 22 - 2 * index, minimumYears: 1,
+    firstPaymentUsd: 2, buyUrl: shopSearchUrl(shop.toLowerCase(), domain),
+  }));
+  const check = { query: { name: 'example' }, choice: { pick: { domain, ...prices.at(-1) }, capUsd: 60 },
+    domains: [{ domain, status: 'available', prices }], nameChecks: {
+      trademarks: { us: { status: 'exact_match_found', marks: [
+        { mark: '', owner: 'Example Labs', url: 'https://tsdr.uspto.gov/#caseNumber=12345678' },
+      ] } }, appStore: {}, googlePlay: {}, handles: [] } };
+  const lines = ['Agent text stays intact.'];
+  const result = await pages({ hosted: true, checks: [check], names: [{ name: 'example' }], lines, checkedAt: at }, {});
+  assert.equal(result.say, resultsLine(result.resultPage) + '\n' + lines[0]);
+  const html = await readFile(new URL(result.resultPage), 'utf8');
+  const body = html.split('<body>')[1];
+  assert.ok(body.includes('class="trademark-warning"'));
+  assert.match(body, /Example Labs filed for example\./);
+  assert.match(body, /https:\/\/tsdr\.uspto\.gov\/#caseNumber=12345678">Read the filing/);
+  assert.ok(body.indexOf('class="trademark-warning"') < body.indexOf('Hound’s pick'));
+  assert.match(body, /Buy at Cloudflare/);
+  assert.match(body, /Renewal at Cloudflare costs more than 3 times the first year/);
+  assert.match(body, /<details[^>]*><summary[^>]*>\+1 more shop<\/summary>/);
+  assert.ok(body.indexOf('Buy at Cloudflare') < body.indexOf('+1 more shop'));
+  assert.match(body, /<time datetime="/);
+  assert.doesNotMatch(body, /Agent text stays intact/);
+});
+
+test('an exact taken check keeps its agent answer and adds verified alternatives to the receipt', async t => {
+  const { hostedClient } = await import('./hosted.mjs');
+  const { hostedResult } = await import('./hosted-results.mjs');
+  const { pages } = await tempPages(t);
+  const exact = 'example.ai';
+  const row = (domain, status) => ({ domain, ending: domain.split('.')[1], status, prices: [] });
+  const checks = {
+    [exact]: [row(exact, 'taken')],
+    example: [row(exact, 'available'), row('example.dev', 'available')],
+  };
+  let comparisonFailed = false;
+  const client = hostedClient('test', { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' }, fetchFn: async url => {
+    const name = url.searchParams.get('name');
+    if (comparisonFailed && name === 'example') return new Response(null, { status: 429 });
+    return Response.json({ version: 1, query: { name: 'example', ascii: 'example', exactDomain: name === exact ? exact : null },
+      complete: true, domains: checks[name], choice: { pick: null } });
+  } });
+  async function receipt() {
+    const check = await client.check(exact, [], AbortSignal.timeout(2000));
+    const data = hostedResult([check], {});
+    const result = await pages(data, {});
+    assert.doesNotMatch(result.say + JSON.stringify(result.checks), /example\.dev/);
+    return (await readFile(new URL(result.resultPage), 'utf8')).split('<body>')[1];
+  }
+  const first = await receipt();
+  assert.match(first, /example\.ai is taken\./);
+  assert.match(first, /Available instead/);
+  assert.match(first, /data-domain="example\.dev"/);
+  assert.doesNotMatch(first, /data-domain="example\.ai"/);
+  comparisonFailed = true;
+  const failed = await receipt();
+  assert.match(failed, /Couldn’t check other endings/);
+  assert.doesNotMatch(failed, /All checked endings are taken/);
+});
+
+test('scored ideas keep page order and the same saved page updates in place', async t => {
+  const { directory, pages } = await tempPages(t);
+  const { generatedChecks, hostedResult } = await import('./hosted-results.mjs');
+  const entries = ['heron', 'otter'].map((name, index) => {
+    const domain = name + '.dev';
+    return { name, domains: [{ domain, status: 'available', prices: [] }],
+      domain: { domain, shop: 'Dynadot', minimumYears: 1, firstPaymentUsd: 8, renewalUsd: 12,
+        threeYearUsd: 32, buyUrl: shopSearchUrl('dynadot', domain) },
+      score: { total: 60 + index, band: 'Workable', reasons: ['Available .dev'] } };
+  });
+  const output = (stage, pending) => {
+    const generation = { names: entries, stage, checkedAt: at, complete: !pending, priceSnapshot: { checkedAt: at } };
+    return hostedResult(generatedChecks(generation), {}, generation, { pending });
+  };
+  const initial = await pages(output('initial', true), {}, { refresh: true });
+  const first = await readFile(new URL(initial.resultPage), 'utf8');
+  assert.ok(first.indexOf('<h2>heron') < first.indexOf('<h2>otter'));
+  const final = await pages(output('final', false), {}, { reuse: initial.resultPage });
+  assert.equal(final.resultPage, initial.resultPage);
+  assert.ok(!(await readdir(directory)).some(file => file.startsWith('session-')));
+  const html = await readFile(new URL(final.resultPage), 'utf8');
+  assert.ok(html.indexOf('<h2>otter') < html.indexOf('<h2>heron'));
+  assert.match(html, /Name score 61\/100/);
+  assert.match(html, /Why this name\?/);
+  assert.match(html, /Price list dated 24 Nov 2026/);
+  assert.match(html, /Buy at Dynadot/);
+  assert.doesNotMatch(html, /http-equiv="refresh"/);
+  assert.deepEqual(final.checks.map(check => check.query.name), ['heron', 'otter']);
 });

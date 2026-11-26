@@ -27,7 +27,7 @@ function warning(check) {
     + '. The match applies to the name across all endings.');
 }
 
-function nameCheckLines(details, pending, name) {
+export function nameCheckLines(details, pending, name) {
   if (!details) return [pending ? 'Name checks are still running. Call the same tool with the same input to collect them.' : 'Name checks could not be completed.'];
   const { appStore: app, googlePlay, trademarks, handles } = details;
   const appText = app.status === 'taken' ? 'Matching app found' : app.status === 'no_match_found' ? 'No matching app found'
@@ -140,9 +140,13 @@ export function generatedChecks(generation) {
   }));
 }
 
-export function hostedResult(checks, args, generation, { pending = false, failed = false, checkedAt } = {}) {
-  const shown = !generation && args.shortlist && checks.some(check => check.score)
+export function visibleChecks(checks, args, generation) {
+  return !generation && args.shortlist && checks.some(check => check.score)
     ? checks.filter(check => scoreEligible(check)).sort((a, b) => compareScores(a.score, b.score)).slice(0, 8) : checks;
+}
+
+export function hostedResult(checks, args, generation, { pending = false, failed = false, checkedAt } = {}) {
+  const shown = visibleChecks(checks, args, generation);
   const lines = [
     ...checks.flatMap(warning),
     ...(shown.length ? shown.flatMap((check, index) => [

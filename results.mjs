@@ -4,21 +4,21 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canRecommend, choosePick, comparePicks, defaultEndings, domainEnding, eligibilityNeed, lowestTotal, lowestUpfront, normalizeName,
-  qualityRank } from './clis/domain-check/name-search.mjs';
+  qualityRank, termCosts } from './clis/domain-check/name-search.mjs';
 import { handleLabel, handlePriorities, handleSummary, linkedInSearchHint } from './clis/domain-check/handles.mjs';
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { attributed, localCheckNotice, safeLink } from './display.mjs';
-import { checkLines, pickDomain, pickLine } from './hosted-results.mjs';
-import { receiptStyle } from './results-style.mjs';
+import { checkLines, nameCheckLines, pickDomain, pickLine, visibleChecks } from './hosted-results.mjs';
+import { datedListPrices, loadCachedCatalog } from './clis/domain-check/price-catalog.mjs';
+import { alternativeEndings } from './hosted.mjs';
+import { anchor, escape, paragraph, priceDay, publicShare, renderCards } from './results-cards.mjs';
 import { shareUrl } from './share.mjs';
 import { compareScores, scoreEligible, scoreHeadline, scoreName } from './clis/domain-check/name-score.mjs';
 
 const cash = value => Number.isFinite(value) ? '$' + value.toFixed(2) : null;
 const cloudflareDns = 'Requires Cloudflare DNS';
-const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
-  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const plain = value => String(value ?? '').replace(/[\r\n\p{Cc}\p{Cf}]+/gu, ' ').replace(/\s*[—–]\s*/g, '. ').trim();
 const evidenceText = value => plain(value).replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/https?:\/\/[^\s)]+/gi, '').replace(/[\[\]<>]/g, '').replace(/\s{2,}/g, ' ').trim();
@@ -238,6 +238,12 @@ function checkedOption(record) {
     minimumYears: term, buyUrl: record.checkout, needsCloudflareDns: Boolean(record.dns) };
 }
 
+function localExactPick(records, args, exactDomain) {
+  return pickDomain(records.filter(record => record.state === 'free').map(record => ({
+    ...checkedOption(record), now: record.now, total: record.total,
+  })), { ...args, endings: [exactDomain] });
+}
+
 function localCheckSummary(group, args, selection, priceListDate) {
   const { row, records } = group;
   const exactDomain = row.name.includes('.') ? row.name : null;
@@ -247,9 +253,7 @@ function localCheckSummary(group, args, selection, priceListDate) {
     confirmed: record.priceLabel === 'Shop quote',
   }));
   const pick = exactDomain
-    ? pickDomain(records.filter(record => record.state === 'free').map(record => ({
-      ...checkedOption(record), now: record.now, total: record.total,
-    })), { ...args, endings: [exactDomain] })
+    ? localExactPick(records, args, exactDomain)
     : selection.best?.record && checkedOption(selection.best.record);
   const lines = checkLines({ domains, choice: { pick }, query: { name: row.name, exactDomain }, score: row.score }, false, { local: true });
   if (priceListDate) lines.push('Dated list prices in USD before tax · ' + priceListDate);
@@ -465,31 +469,24 @@ function handlePriority({ row }, companyType) {
   }).join(', ') + '.';
 }
 
-const anchor = (label, url) => '<a href="' + escape(url) + '">' + escape(label) + '</a>';
 function evidenceHtml([label, url, linkLabel]) {
-  if (!url) return escape(label);
-  return (linkLabel && label ? escape(label) + ' · ' : '') + anchor(linkLabel ?? label, url);
+  // Evidence can carry an earlier check time. Keep raw ISO values in the machine-readable receipt only.
+  const text = label.replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g, value => priceDay(value) ?? value);
+  if (!url) return escape(text);
+  return (linkLabel && text ? escape(text) + ' · ' : '') + anchor(linkLabel ?? text, url);
 }
 
 function evidenceMarkdown([label, url, linkLabel]) {
   if (!url) return markdown(label);
   return (linkLabel && label ? markdown(label) + ' · ' : '') + '[' + markdown(linkLabel ?? label) + '](' + url + ')';
 }
-function summaryHtml(line) {
-  return Array.from(line.matchAll(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g)).reduce(({ html, offset }, match) =>
-    ({ html: html + escape(line.slice(offset, match.index)) + anchor(match[1], match[2]), offset: match.index + match[0].length }),
-  { html: '', offset: 0 });
-}
-function paragraph(line) {
-  const { html, offset } = summaryHtml(line);
-  return '<p>' + html + escape(line.slice(offset)) + '</p>';
-}
 const amountsFor = ({ now, renew }) => [cash(now) ?? 'No price', cash(renew) ?? 'No price'];
 
-function rowNote(row) {
+function rowNote(row, forHtml = false) {
+  const date = value => forHtml && value ? priceDay(value) ?? value : value;
   return [row.status, row.priceLabel, row.term > 1 ? row.term + ' years per payment' : null,
     row.jump ? 'Renewal jumps' : null, row.dns ?? null, !row.eligible ? '.' + row.ending + ' needs ' + eligibilityNeed(row.ending) : null,
-    row.source, row.checkedAt, row.priceAt ? 'Price checked ' + row.priceAt : null].filter(Boolean).join(' · ');
+    row.source, date(row.checkedAt), row.priceAt ? 'Price checked ' + date(row.priceAt) : null].filter(Boolean).join(' · ');
 }
 
 // Who saw what in this lookup, in one short paragraph for the page footer. Every clause matches a request the code makes.
@@ -502,53 +499,122 @@ export function disclosure(data, triage) {
     + 'Up to three go to public handle APIs. Domain Hound uses your brief locally. ' + shop;
 }
 
-function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [], hostedShare } = {}) {
-  const title = watch ? 'Domain watch' : 'Domain results';
-  const shared = hostedShare ?? shareUrl(groups, checkedAt, shareFacts);
+function hostedWarning(check) {
+  const us = check.nameChecks?.trademarks?.us;
+  return us?.status === 'exact_match_found' ? '<aside class="trademark-warning"><strong>Exact US trademark match for “'
+    + escape(check.query.name) + '”.</strong>' + us.marks.map(mark => '<p>' + (mark.owner
+      ? escape(mark.owner + ' filed for ' + (mark.mark || check.query.name) + '. ') : '')
+      + (recordLink(mark.url) ? anchor('Read the filing', recordLink(mark.url)) : '') + '</p>').join('') + '</aside>' : '';
+}
+
+function hostedPrices(row, pick, budget, pending) {
+  if (row.status !== 'available' || row.priceShown === false || row.premium) return [];
+  let prices = row.prices ?? [];
+  // Generated ideas sometimes carry the comparison (or just the winning quote) on the pick.
+  if (!prices.length && pick?.domain === row.domain) {
+    prices = pick.prices ?? [];
+    if (!prices.length && pick.shop) prices = [{ ...pick, firstYearUsd: pick.firstPaymentUsd / (pick.minimumYears ?? 1) }];
+  }
+  return prices.map(quote => {
+    const shop = shops[shopIds.get(quote.shop)];
+    // The hosted catalog sets its own price-only flag. Match both registrar and exact domain.
+    const expected = shop && shop.url + encodeURIComponent(row.domain) + (shop.suffix ?? '');
+    const canBuy = !pending && !quote.dataOnly && expected && quote.buyUrl === expected
+      && (!row.eligibility || row.eligibility.need || row.eligibility.note)
+      && (budget == null || quote.firstPaymentUsd <= budget);
+    return { ...quote, buyUrl: canBuy ? expected : null };
+  });
+}
+
+function hostedNameChecks(details, pending, name) {
+  // The page refreshes itself; the repeat-call hint is only for the MCP reply.
+  if (!details) return paragraph(pending ? 'Name checks are still running.' : 'Name checks could not be completed.');
+  const lines = nameCheckLines(details, pending, name);
+  const apps = [];
+  const handles = [];
+  for (const line of lines) {
+    const [label, ...finding] = line.split(' · ');
+    const group = /^(?:App Store|Google Play|US trademarks)/.test(label) ? apps : handles;
+    group.push('<div class="check-line"><dt>' + escape(label) + '</dt><dd>' + paragraph(finding.join(' · ')) + '</dd></div>');
+  }
+  return '<div class="check-grid"><section><h4>Apps and trademarks</h4><dl>' + apps.join('') + '</dl></section>'
+    + (handles.length ? '<section><h4>Handles</h4><dl class="handle-list">' + handles.join('') + '</dl></section>' : '') + '</div>';
+}
+
+function hostedCard(check, pending, args, snapshot) {
+  const { query, nameChecks, score } = check;
+  const alternatives = check[alternativeEndings];
+  const seen = new Set(check.domains.map(row => row.domain));
+  const rows = [...check.domains, ...(alternatives?.domains ?? []).filter(row => !seen.has(row.domain))];
+  const pick = check.choice?.pick ?? alternatives?.choice?.pick;
+  const domains = rows.map(row => ({
+    ...row, prices: hostedPrices(row, pick, args.budget, pending && !nameChecks),
+    note: [row.premium, row.eligibility && (row.eligibility.note || row.eligibility.need || 'Check who can buy this domain.')]
+      .filter(Boolean).join(' · '),
+  }));
+  const sameExact = alternatives?.domains.some(row => row.domain === query.exactDomain && row.status === 'taken');
+  return { name: query.exactDomain ?? query.name, exact: query.exactDomain, domains, pick, cap: check.choice?.capUsd ?? alternatives?.choice?.capUsd,
+    warning: hostedWarning(check) || (domains.some(row => row.status === 'available') && !['no_exact_match_found', 'exact_match_found'].includes(nameChecks?.trademarks?.us?.status)
+      ? '<p class="trademark-pending">' + (pending ? 'Checking US trademarks…' : 'US trademark: couldn’t check.') + '</p>' : ''),
+    checks: hostedNameChecks(nameChecks, pending, query.name),
+    score: scoreText({ score }), reasons: score?.reasons, priceDate: alternatives?.priceSnapshot?.checkedAt ?? check.priceSnapshot?.checkedAt ?? snapshot,
+    share: (sameExact && publicShare(alternatives.share?.url)) || publicShare(check.share?.url), complete: alternatives?.complete ?? check.complete, alternativesFailed: alternatives === null };
+}
+
+function localCard(group, pick, data, args, catalog) {
+  const { row, records } = group;
+  const exact = row.name.includes('.') ? row.name : null;
+  if (!data.pending && data.source === 'local' && data.names.length === 1 && exact && !pick && args.budget == null && !args.endings && !args.confirm
+      && !row.verdict) pick = localExactPick(records, args, exact);
+  const domains = records.map(record => {
+    const available = record.state === 'free' || (record.priceLabel === 'Shop quote' && record.state !== 'taken');
+    const quote = checkedOption(record);
+    const prices = available && (record.now != null || record.renew != null) ? [{ ...quote, checkedAt: record.priceAt }] : [];
+    if (prices.length && data.source === 'local' && record.priceLabel === 'List price') {
+      for (const item of datedListPrices(catalog, record.ending, new Date(data.checkedAt ?? Date.now()))) {
+        if (item.shop === quote.shop) continue;
+        const costs = termCosts(record.ending, item.firstYear, item.renewal);
+        prices.push({ shop: item.shop, firstYearUsd: item.firstYear, renewalUsd: item.renewal,
+          firstPaymentUsd: costs.firstPayment, renewalPaymentUsd: costs.renewalPayment, threeYearUsd: costs.threeYear,
+          minimumYears: costs.minimumYears, checkedAt: item.checkedAt, buyUrl: shopSearchUrl(item.id, record.domain) });
+      }
+    }
+    for (const price of prices) {
+      if (!record.eligible || args.budget != null && (price.firstPaymentUsd ?? Infinity) > args.budget
+        || !safeLink(price.buyUrl, record.domain) || price.buyUrl !== shopSearchUrl(shopIds.get(price.shop), record.domain)) price.buyUrl = null;
+    }
+    return { domain: record.domain, prices, confirmed: record.priceLabel === 'Shop quote', status: available ? 'available' : record.state === 'taken' ? 'taken' : 'unknown',
+      note: [record.status, record.priceLabel, !record.eligible && '.' + record.ending + ' needs ' + eligibilityNeed(record.ending)]
+        .filter(Boolean).join(' · ') };
+  });
+  const checks = [...(row.verdict ? [paragraph(plain(row.verdict) + '. ' + evidenceText(row.reason)), paragraph(nameSnapshot(group)),
+    ...details(group).map(line => '<p>' + evidenceHtml(line) + '</p>')] : []),
+    ...[handlePriority(group, args.companyType)].filter(Boolean).map(paragraph),
+    ...(row.handles?.length ? ['<h4>Handles</h4>', ...handleLines(group).map(line => '<p>' + evidenceHtml(line) + '</p>')] : []),
+    ...(row.verdict && !row.handles?.length ? ['<p>Handles: checked for the top three names.</p>'] : [])].join('');
+  const rows = records.map(record => {
+    const checkShop = record.state === 'check' && record.checkout && (args.budget == null || (record.now ?? Infinity) <= args.budget);
+    return '<tr><th scope="row"><code>' + escape(record.domain) + '</code><small>' + escape(rowNote(record, true))
+      + (checkShop ? ' · ' + anchor('Check at ' + record.shop, record.checkout) : '') + '</small></th>'
+      + amountsFor(record).map(value => '<td>' + escape(value) + '</td>').join('') + '</tr>';
+  });
+  const evidence = '<h4>Registry and shop evidence</h4><table class="shop-table evidence-table"><thead><tr>'
+    + '<th>Ending</th><th>Upfront</th><th>Renewal</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
+  return { local: true, name: row.name, exact, domains, pick, priceDate: data.priceListDate, score: scoreText(row), reasons: scoreReasons(row), checks: checks + evidence,
+    warning: trademarkSnapshot(row) === 'match found' ? '<aside class="trademark-warning"><strong>Trademark match for “'
+      + escape(row.name) + '”.</strong>' + paragraph(marksText(row)) + '</aside>' : '' };
+}
+
+function render(groups, lines, checkedAt, coverage, watch, companyType, { data, cards, savings, note, refresh, shareFacts, hiddenWarnings }) {
+  const shared = publicShare(data.generation?.share?.url) || (cards.length === 1 && cards[0].share)
+    || shareUrl(groups, checkedAt, shareFacts);
   const shareLabel = groups.length > 5 ? 'Share first five names' : 'Share';
-  const [intro, ...body] = lines;
-  const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
-  const before = body.filter(line => !comparison.includes(line)).slice(0, comparison.length ? -1 : undefined);
-  const after = comparison.length ? body.slice(-1) : [];
   const sources = watch?.source ? 'Registry: ' + String(watch.source).toUpperCase() :
     Object.entries(coverage ?? {}).map(([name, count]) => name + ' ' + count + '% answered').join(' · ');
-  const articles = groups.map((group, index) => {
-    const { row } = group;
-    const handles = handleLines(group);
-    const priority = handlePriority(group, companyType);
-    const rows = group.records.map(record => {
-      const [now, renew] = amountsFor(record);
-      return '<tr><th scope="row"><code>' + escape(record.domain) + '</code><small>' + escape(rowNote(record))
-        + (record.checkout ? ' · ' + anchor(record.shop ?? 'Check at shop', record.checkout) : '')
-        + '</small></th><td>' + escape(now) + '</td><td>' + escape(renew) + '</td></tr>';
-    });
-    return '<article id="name-' + index + '"><h2>' + escape(row.name) + '</h2>'
-      + (row.verdict ? paragraph(plain(row.verdict) + '. ' + evidenceText(row.reason).split(' · ')[0]) + paragraph(nameSnapshot(group)) : '')
-      + (scoreText(row) ? '<div class="name-score">' + paragraph(scoreText(row))
-        + (scoreReasons(row).length ? '<ul>' + scoreReasons(row).map(line => '<li>' + escape(line) + '</li>').join('') + '</ul>' : '') + '</div>' : '')
-      + '<table><caption>Endings · USD before tax</caption><thead><tr><th scope="col">Ending</th><th scope="col">Today</th><th scope="col">Renewal</th></tr></thead><tbody>'
-      + rows.join('') + '</tbody></table>'
-      + (row.verdict ? '<details><summary>Trademark, app and web evidence</summary><ul>'
-        + details(group).map(line => '<li>' + evidenceHtml(line) + '</li>').join('') + '</ul></details>' : '')
-      + (handles.length ? '<details><summary>Handles</summary>' + (priority ? paragraph(priority) : '') + '<ul>'
-        + handles.map(line => '<li>' + evidenceHtml(line) + '</li>').join('') + '</ul></details>'
-        : row.verdict ? '<p><small>Handles: checked for the top three names.</small></p>' : '')
-      + '</article>';
-  });
-  const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
-    + '<meta name="referrer" content="no-referrer"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; base-uri \'none\'; form-action \'none\'">'
-    // While checks still run, the open page reloads itself to pick up the rewritten file.
-    + (refresh ? '<meta http-equiv="refresh" content="8">' : '')
-    + '<title>' + title + ' | Domain Hound</title><style>' + receiptStyle + '</style></head><body><main>'
-    + '<header>' + (shared ? '<a class="share" href="' + escape(shared) + '">' + shareLabel + '</a>' : '')
-    + '<small>Domain Hound</small><h1>' + title + '</h1><time>' + escape(checkedAt) + '</time></header><section>'
-    + [intro, ...before].filter(Boolean).map(paragraph).join('')
-    + (comparison.length ? '<div class="comparison">' + comparison.map(paragraph).join('') + '</div>' : '')
-    + after.map(paragraph).join('') + savings.map(paragraph).join('') + '</section>'
-    + (groups.length > 1 ? '<nav aria-label="Jump to a name">' + groups.map(({ row }, index) => anchor(row.name, '#name-' + index)).join(' ') + '</nav>' : '')
-    + articles.join('') + '<footer>' + (sources ? paragraph(sources) : '') + (note ? paragraph(note) : '')
-    + '<p>You hold the leash.</p></footer></main></body></html>\n';
-  const md = ['# ' + title, '', 'Domain Hound · ' + checkedAt, '', ...lines, ...(savings.length ? ['', ...savings] : []), '',
+  const comparison = groups.length ? lines.filter(line => /^(?:Cheapest|Best value):/.test(line)) : [];
+  const html = renderCards({ data, cards, checkedAt, shared, shareLabel, watch, lines, savings, note, sources,
+    comparison, refresh, hiddenWarnings });
+  const md = ['# ' + (watch ? 'Domain watch' : 'Domain results'), '', 'Domain Hound · ' + checkedAt, '', ...lines, ...(savings.length ? ['', ...savings] : []), '',
     ...groups.flatMap(group => ['## ' + markdown(group.row.name), '',
       ...(group.row.verdict ? [markdown(group.row.verdict + '. ' + group.row.reason), markdown(nameSnapshot(group)), ''] : []),
       ...(scoreText(group.row) ? [markdown(scoreText(group.row)), ...scoreReasons(group.row).map(line => '- ' + markdown(line)), ''] : []),
@@ -647,10 +713,15 @@ export function resultPages({ env = process.env,
       const kept = reusedBase(reuse, directory);
       const base = kept ?? new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
+      const catalog = local && groups.length ? await loadCachedCatalog().catch(() => null) : null;
+      const shown = [...visibleChecks(data.checks ?? [], args, data.generation)];
+      if (data.generation?.stage === 'final') shown.sort((a, b) => (b.score?.value ?? -1) - (a.score?.value ?? -1));
+      const hiddenWarnings = (data.checks ?? []).filter(check => !shown.includes(check)).map(hostedWarning).join('');
+      const cards = data.hosted ? shown.map(check => hostedCard(check, data.pending, args, data.generation?.priceSnapshot?.checkedAt))
+        : groups.map((group, index) => localCard(group, data.pending ? null : selection.names[index].pick, data, args, catalog));
       const page = render(groups, local ? [localCheckNotice, ...lines] : lines, at, data.sources, watch ? data : null, args.companyType,
-        { savings, note: watch ? '' : data.hosted ? 'Domain Hound’s hosted service checks registries, prices and public name sources.' : disclosure(data, triage),
-          refresh: Boolean(refresh), shareFacts,
-          hostedShare: data.checks?.length === 1 ? httpsLink(data.checks[0].share?.url) : null });
+        { data, cards, savings, hiddenWarnings, note: watch ? '' : data.hosted ? 'Domain Hound’s hosted service checks registries, prices and public name sources.' : disclosure(data, triage),
+          refresh: Boolean(refresh), shareFacts });
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {

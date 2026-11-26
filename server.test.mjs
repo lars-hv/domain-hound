@@ -1609,7 +1609,12 @@ test('check_domains returns a client-recovered pick before name checks and rewri
   assert.equal(pending, true);
   assert.match(first.result.content[0].text, /pick is brightboard\.dev at Dynadot/);
   assert.match(first.result.content[0].text, /same tool with the same input/);
-  assert.match(await readFile(new URL(resultPage), 'utf8'), /http-equiv="refresh"/);
+  const early = await readFile(new URL(resultPage), 'utf8');
+  assert.match(early, /http-equiv="refresh"/);
+  assert.match(early, /class="hunt-results"/);
+  assert.match(early, /data-domain="brightboard\.dev"/);
+  assert.match(early, /Name checks are still running\./);
+  assert.doesNotMatch(early, /same tool with the same input/);
   finish(Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] },
     googlePlay: { status: 'not-found', link: 'https://play.google.com/' }, handles: [{ platform: 'YouTube', state: 'not-found' }],
     trademarks: { us: { status: 'no_exact_match_found', marks: [] } } }));
@@ -1620,7 +1625,13 @@ test('check_domains returns a client-recovered pick before name checks and rewri
     if (next.result.structuredContent.pending) continue;
     assert.equal(next.result.structuredContent.resultPage, resultPage);
     assert.match(next.result.content[0].text, /No matching app found/);
-    assert.doesNotMatch(await readFile(new URL(resultPage), 'utf8'), /http-equiv="refresh"/);
+    const updated = await readFile(new URL(resultPage), 'utf8');
+    assert.doesNotMatch(updated, /http-equiv="refresh"/);
+    assert.match(updated, /class="hunt-results"/);
+    assert.match(updated, /data-domain="brightboard\.dev"/);
+    assert.match(updated, /class="check-grid"/);
+    assert.match(updated, /No matching app found/);
+    assert.doesNotMatch(updated, /Name checks are still running/);
     assert.deepEqual(paths, ['/v1/check', '/rdap/domain/brightboard.dev', '/v1/check', '/v1/check/details']);
     return;
   }
