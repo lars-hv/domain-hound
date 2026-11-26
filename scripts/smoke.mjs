@@ -13,7 +13,8 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
 const tools = ['check_domains', 'triage_names', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
-const endings = defaultEndings;
+// The engine filters .inc out of a bare-name result unless it finds an affordable available registration.
+const endings = defaultEndings.filter(ending => ending !== 'inc');
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 
 async function smokeMcp(label, command, args, options, capability) {
@@ -52,7 +53,7 @@ async function smokeMcp(label, command, args, options, capability) {
     const advertised = await request(2, 'tools/list');
     assert.deepEqual(advertised.tools.map(tool => tool.name), tools);
 
-    // The first lookup on an empty cache must already carry a dated list price for every ending.
+    // The first lookup on an empty cache must already carry dated list prices.
     const firstStarted = performance.now();
     const first = await request(3, 'tools/call', { name: 'check_domains', arguments: { names: [query] } });
     const firstLookup = Math.round(performance.now() - firstStarted);
