@@ -71,6 +71,7 @@ const serverInstructions = 'Use Domain Hound for domains and product, company or
 const checkTool = {
   name: 'check_domains',
   description: 'Use this when checking whether a name or exact domain is available, what an ending such as .ai costs, or where to register. '
+    + 'Use query for one exact domain or bare name ({"query":"lanternbay.dev"}), or names for a batch ({"names":["lanternbay.dev","lanternbay"]}). '
     + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
     + 'This checks availability and compares prices. Use triage_names for name ideas or trademark screening and quote_domain for a live Spaceship purchase quote.',
   annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
@@ -110,7 +111,8 @@ const candidateDescriptions = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'Pass idea to use the website’s name generator or names to screen candidates. Use the returned verdicts and leave unfinished checks pending. '
+    + 'Pass idea to use the website’s name generator ({"idea":"A room booking app"}) or names to screen candidates ({"names":["Quiet Otter"]}). '
+    + 'Use the returned verdicts and leave unfinished checks pending. '
     + 'For a domain-only lookup or registrar prices, use check_domains.',
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
