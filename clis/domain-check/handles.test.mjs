@@ -86,7 +86,7 @@ test('a wrong control answer turns that platform into check links for the whole 
   assert.equal(again.find(row => row.platform === 'npm').state, 'taken');
 });
 
-test('caches taken for 7 days and no public profile for 1 hour, keeps the original check time, never caches check', async t => {
+test('caches definite profile states for an hour and keeps the original check time', async t => {
   const directory = await directoryFor(t);
   const calls = [];
   const fetcher = withSocial(undefined, { taken: ['oakenroom'], calls });
@@ -105,11 +105,9 @@ test('caches taken for 7 days and no public profile for 1 hour, keeps the origin
   assert.equal(later.taken.checkedAt, now.toISOString());
   assert.equal(later.missing.checkedAt, now.toISOString());
   const afterHour = await run(new Date(+now + hour));
-  assert.deepEqual(afterHour.calls.filter(handle => !/^zq|^github$/.test(handle)), ['lanternbay']);
-  assert.equal(afterHour.taken.checkedAt, now.toISOString());
-  const week = await run(new Date(+now + handleLifetime.taken));
-  assert.ok(week.calls.includes('oakenroom'));
-  assert.equal(handleLifetime.taken, 7 * 24 * hour);
+  assert.deepEqual(afterHour.calls.filter(handle => !/^zq|^github$/.test(handle)).sort(), ['lanternbay', 'oakenroom']);
+  assert.equal(afterHour.taken.checkedAt, new Date(+now + hour).toISOString());
+  assert.equal(handleLifetime.taken, hour);
   assert.equal(handleLifetime['not-found'], hour);
 });
 

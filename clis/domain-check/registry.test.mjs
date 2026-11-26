@@ -140,3 +140,31 @@ test('reads DENIC, IIS, Punktum and EURid WHOIS answers', async t => {
   });
   assert.deepEqual(result.map(row => row.status), ['free', 'taken', 'free', 'taken', 'free', 'taken', 'free', 'taken']);
 });
+
+test('local fallback rechecks standard availability after ten minutes and Google availability after thirty', async t => {
+  const path = await mkdtemp(join(tmpdir(), 'hound-registry-'));
+  t.after(() => rm(path, { recursive: true, force: true }));
+  const directory = pathToFileURL(path + '/');
+  const domains = identityBatch(['example.co', 'example.dev']);
+  const initial = new Date('2026-11-26T12:00:00.000Z');
+  const seen = [];
+  const options = {
+    directory, resolveNs: async () => [], dnsFirst: true, timeLeft: () => 3000,
+    fetcher: async url => {
+      if (new URL(url).hostname === 'data.iana.org') {
+        return Response.json({ services: [[['dev'], ['https://pubapi.registry.google/rdap/']]] });
+      }
+      seen.push(new URL(url).pathname.split('/').at(-1));
+      return Response.json({ errorCode: 404 }, { status: 404, headers: { 'content-type': 'application/rdap+json' } });
+    },
+  };
+  const check = ms => lookupRegistrations(domains, { ...options, now: new Date(+initial + ms) });
+  assert.ok((await check(0)).every(row => row.status === 'free'));
+  assert.deepEqual(seen.sort(), ['example.co', 'example.dev']);
+  seen.length = 0;
+  await check(10 * 60_000);
+  assert.deepEqual(seen, ['example.co']);
+  seen.length = 0;
+  await check(30 * 60_000);
+  assert.deepEqual(seen.sort(), ['example.co', 'example.dev']);
+});

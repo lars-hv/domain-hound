@@ -612,9 +612,9 @@ test('reuses only recent conclusive registration evidence for the rate-limited e
   assert.deepEqual(cached, { status: 'free', source: 'rdap', checkedAt: now.toISOString() });
   assert.equal(calls, 1);
   assert.equal((await lookupRegistrations(names, { ...options, dnsFirst: false }))[0].status, 'taken');
-  // A free answer is reused for an hour; then the registry is asked again.
-  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 3_000_000) }))[0].status, 'free');
-  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 3_601_000) }))[0].status, 'taken');
+  // A free .io answer is reused for ten minutes.
+  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 599_000) }))[0].status, 'free');
+  assert.equal((await lookupRegistrations(names, { ...options, now: new Date(+now + 600_000) }))[0].status, 'taken');
   assert.equal(calls, 3);
 });
 

@@ -8,7 +8,8 @@ export const bootstrapUrl = 'https://data.iana.org/rdap/dns.json';
 // A conclusive registry answer is reused: a registration for a day, an absence for an hour. DNS still runs first,
 // so a name registered since then shows up through its name servers.
 export const takenLifetime = 24 * 3_600_000;
-export const freeLifetime = 3_600_000;
+export const freeLifetime = 10 * 60_000;
+const googleFreeLifetime = 30 * 60_000;
 const identityDigital = 'https://rdap.identitydigital.services';
 const rdapRateLimit = 'Registry RDAP returned HTTP 429';
 // A rate-limited registry host is left alone for its Retry-After in this process and the next.
@@ -445,7 +446,8 @@ export async function lookupRegistrations(candidates, {
       const filename = dnsFirst ? 'rdap-' + domain + '.json' : null;
       const cached = filename && await readCache(directory, filename);
       const age = now - cached?.at;
-      const lifetime = { taken: takenLifetime, free: freeLifetime }[cached?.result?.status] ?? 0;
+      const availableLifetime = origin === 'https://pubapi.registry.google' ? googleFreeLifetime : freeLifetime;
+      const lifetime = { taken: takenLifetime, free: availableLifetime }[cached?.result?.status] ?? 0;
       if (age >= 0 && age < lifetime) {
         record(row, { ...cached.result, checkedAt: new Date(cached.at).toISOString() });
         return;
