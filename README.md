@@ -54,9 +54,11 @@ An affordable .inc result appears in a bare-name search only after the registry 
 Each available domain shows the listed shops, first-year price, renewal and three-year cost, plus the cheapest shop
 over three years. The Hound picks the highest-ranked available ending within $60 over three years when one qualifies.
 The results put exact live US trademark matches first, followed by the domains, App Store, Google Play and public
-handle checks. When the hosted check leaves TikTok, Instagram, X, YouTube, Threads or Google Play unknown, the
-package tries the public source from your device. Google Play matches exact titles, ignoring case and spaces.
-Set `DOMAIN_HOUND_EMBED_CHECKS=off` for search or profile links only on TikTok, Instagram, X, Threads and Google Play.
+handle checks. The package retries unknown public profile and Google Play results from your device. LinkedIn and
+Reddit use the Wayback Machine CDX index, with the latest Common Crawl index as a fallback when Wayback cannot answer.
+A capture includes its year. A successful empty archive search returns `not-seen`. Google Play matches a title or
+a title starting with the name followed by a non-letter, ignoring case. Set `DOMAIN_HOUND_EMBED_CHECKS=off` for search
+or profile links only on TikTok, Instagram, X, Threads, Facebook, LinkedIn, Reddit, Twitch and Google Play.
 The package also tries Apple from your device when the hosted App Store lookup is rate-limited.
 
 Pass `idea` to `triage_names` to generate names on the same service. The results page updates as the checks finish.
@@ -183,7 +185,8 @@ with public evidence sources. Catalog downloads carry no candidate name. Clickin
 | `api.patentstyret.no` | With a subscription key, the Norwegian office gets the key and candidate spellings. |
 | `mcp.atom.com` | The taken domain for an exact listing lookup. The buyer's ceiling stays local. |
 | `itunes.apple.com` | Candidate name for US App Store search. |
-| `www.tiktok.com`, `graph.facebook.com`, `publish.twitter.com` / `publish.x.com`, `www.threads.net` / `www.threads.com`, `www.youtube.com` | The candidate's handle. |
+| `www.tiktok.com`, `graph.facebook.com`, `publish.twitter.com` / `publish.x.com`, `www.threads.net` / `www.threads.com`, `www.youtube.com`, `www.twitch.tv` | The candidate's handle. |
+| `web.archive.org`, `index.commoncrawl.org` | Candidate LinkedIn company or Reddit profile URL for the public archive search. |
 | `play.google.com` | Candidate name for Google Play app search. |
 | `www.googleapis.com` | The candidate's YouTube handle and optional local `YOUTUBE_API_KEY` when the key is configured. |
 | `www.wikidata.org`, `www.google.com`, `trends.google.com`, `data.brreg.no` | Candidate name; Wikidata also gets entity or class IDs for matches. |

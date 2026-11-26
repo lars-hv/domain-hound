@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canRecommend, choosePick, comparePicks, defaultEndings, domainEnding, eligibilityNeed, lowestTotal, lowestUpfront, normalizeName,
   qualityRank } from './clis/domain-check/name-search.mjs';
-import { handleLabel, handlePriorities, handleSummary, linkedInSearch } from './clis/domain-check/handles.mjs';
+import { handleLabel, handlePriorities, handleSummary, linkedInSearchHint } from './clis/domain-check/handles.mjs';
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
@@ -384,12 +384,9 @@ function details(group) {
 function handleLines(group) {
   const rows = Array.isArray(group.row.handles) ? group.row.handles : [];
   return rows.flatMap(row => {
-    if (row.platform === 'LinkedIn') {
-      return [[handleLabel(row), linkedInSearch(group.row.name), 'Search LinkedIn']];
-    }
     const label = row.platform + ' @' + plain(row.handle) + ' · ' + handleLabel(row);
     const detail = row.why === 'still checking' ? ' · still checking' : row.checkedAt ? ' · checked ' + plain(row.checkedAt) : '';
-    return [[label + detail, httpsLink(row.link)], ...(row.variants ?? []).map(variant => [
+    return [[label + detail, httpsLink(row.link), row.linkLabel], ...(row.variants ?? []).map(variant => [
       row.platform + ' alternative @' + plain(variant.handle) + ' · ' + handleLabel(variant),
       httpsLink(variant.link),
     ])];
@@ -414,7 +411,8 @@ function nameSnapshot({ row, records }) {
   const handles = Array.isArray(row.handles) ? row.handles : [];
   const taken = handles.filter(handle => handle.state === 'taken').length;
   const absent = handles.filter(handle => handle.state === 'not-found').length;
-  const checks = handles.length - taken - absent;
+  const notSeen = handles.filter(handle => handle.state === 'not-seen').length;
+  const checks = handles.length - taken - absent - notSeen;
   return [
     'Domains ' + open + ' open' + (blocked ? ', ' + blocked + ' taken' : ''),
     'Trademark ' + trademarkSnapshot(row),
@@ -422,7 +420,8 @@ function nameSnapshot({ row, records }) {
     'Apps ' + (apps.some(value => value?.length) ? 'same-name listing' : apps.some(value => value == null)
       ? (waitingOn(row, 'App Store') || waitingOn(row, 'Google Play') ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete') : 'no match'),
     'Handles ' + (handles.length ? [taken ? taken + ' taken' : null,
-      absent ? absent + ' with no profile found' : null, checks ? "couldn't check " + checks : null].filter(Boolean).join(', ')
+      absent ? absent + ' with no profile found' : null, notSeen ? notSeen + ' with no page found in public archives' : null,
+      checks ? "couldn't check " + checks : null].filter(Boolean).join(', ')
       : 'outside top three'),
   ].join(' / ');
 }
@@ -431,7 +430,6 @@ function handlePriority({ row }, companyType) {
   if (!Array.isArray(row.handles) || !row.handles.length || !Object.hasOwn(handlePriorities, companyType)) return '';
   return 'Handles to secure for this business: ' + handlePriorities[companyType].map(platform => {
     const entry = row.handles.find(handle => handle.platform === platform);
-    if (platform === 'LinkedIn') return handleLabel({ platform });
     return platform + ' · ' + (entry?.why === 'still checking' ? 'still checking' : handleLabel(entry));
   }).join(', ') + '.';
 }
@@ -675,7 +673,10 @@ export function resultPages({ env = process.env,
       await prune(directory, base).catch(() => {});
       const url = pathToFileURL(filename).href.replaceAll('(', '%28').replaceAll(')', '%29');
       // The link uses the client's local-file Markdown form. Keep the file URI for structured consumers.
-      const say = [resultsLine(url), ...(shortLines ?? lines)].join('\n');
+      const handles = data.hosted ? data.checks.flatMap(check => check.nameChecks?.handles ?? [])
+        : groups.flatMap(group => group.row.handles ?? []);
+      const hints = [...new Set(handles.map(linkedInSearchHint).filter(Boolean))];
+      const say = [resultsLine(url), ...(shortLines ?? lines), ...hints].join('\n');
       if (data.hosted) {
         const { hosted, lines, ...structured } = data;
         return { display: say, say, ...structured, resultPage: url };

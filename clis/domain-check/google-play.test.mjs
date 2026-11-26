@@ -70,10 +70,12 @@ test('reads server-rendered Google Play cards without a browser and caches them'
       url: 'https://play.google.com/store/apps/details?id=test.example.cloudotter' },
     { name: 'Cloud Otter', seller: 'Example & Studio', ratings: 120, category: 'PRODUCTIVITY', description: '',
       url: 'https://play.google.com/store/apps/details?id=test.example.cloudotter.second' },
+    { name: 'Cloud Otter School', seller: 'Example School', ratings: 120, category: 'PRODUCTIVITY', description: '',
+      url: 'https://play.google.com/store/apps/details?id=test.example.cloudotter.school' },
   ]);
   const search = calls.find(call => call.url.pathname === '/store/search').url;
   assert.deepEqual(Object.fromEntries(search.searchParams), { q: 'Cloud Otter', c: 'apps', hl: 'en', gl: 'US' });
-  assert.equal(calls.filter(call => call.url.pathname === '/store/apps/details').length, 2);
+  assert.equal(calls.filter(call => call.url.pathname === '/store/apps/details').length, 3);
   const cachedFetch = t.mock.fn(unexpectedFetch);
   assert.deepEqual(await searchAndroidApps(names, { ...options, fetcher: cachedFetch }), new Map([['cloudotter', apps]]));
   assert.equal(cachedFetch.mock.callCount(), 0);

@@ -1,9 +1,9 @@
 import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { withShopPages } from './confirm.mjs';
-import { appNameMatches, compactText, day, request } from './triage-sources.mjs';
+import { compactText, day, request } from './triage-sources.mjs';
 
-import { parsePlayCards, playSearchLink } from './public-name-checks.mjs';
+import { parsePlayCards, playSearchLink, playTitleMatches } from './public-name-checks.mjs';
 
 export { parsePlayCards, playSearchLink };
 const origin = 'https://play.google.com';
@@ -92,12 +92,12 @@ function browserSource(page) {
   };
 }
 
-async function lookUp(source, name, input, deadline) {
+async function lookUp(source, input, deadline) {
   const remaining = () => Math.max(1, Math.floor(deadline - performance.now()));
   const rows = await source.search(input, remaining);
   if (rows === null) return null;
   const matches = rows.flatMap(row => {
-    if (!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(row.id) || !appNameMatches(name, row.name)) return [];
+    if (!/^[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+$/.test(row.id) || !playTitleMatches(input, row.name)) return [];
     return [{ name: compactText(row.name, 70), seller: compactText(row.seller, 70),
       url: origin + '/store/apps/details?id=' + row.id }];
   });
@@ -124,7 +124,7 @@ export async function searchAndroidApps(names, options = {}) {
     const filename = 'triage-play-' + name + '.json';
     const prior = await readCache(directory, filename);
     const age = now.getTime() - prior?.at;
-    if (age >= 0 && age < cacheLifetime && Array.isArray(prior.apps) && prior.apps.every(app => Object.hasOwn(app, 'ratings')) && (!prior.apps.length || prior.version === 2)) {
+    if (age >= 0 && age < cacheLifetime && prior.version === 3 && Array.isArray(prior.apps) && prior.apps.every(app => Object.hasOwn(app, 'ratings'))) {
       answered(name, prior.apps);
       return null;
     }
@@ -139,10 +139,10 @@ export async function searchAndroidApps(names, options = {}) {
       let source;
       try {
         source = await useSource();
-        const apps = await lookUp(source, name, input, Math.min(deadline, performance.now() + 8000));
+        const apps = await lookUp(source, input, Math.min(deadline, performance.now() + 8000));
         if (apps === null || performance.now() >= deadline) continue;
         answered(name, apps);
-        await writeCache(directory, filename, { at: now.getTime(), apps, version: 2 }).catch(() => {});
+        await writeCache(directory, filename, { at: now.getTime(), apps, version: 3 }).catch(() => {});
         return;
       } catch { /* An unavailable search gives no evidence about the name. */ }
       finally { await source?.close?.(); }

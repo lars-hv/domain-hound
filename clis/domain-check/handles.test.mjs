@@ -13,7 +13,10 @@ import { autoPlatforms, checkGooglePlayNames, checkSocialHandles, handleLifetime
 const now = new Date('2026-11-25T12:00:00Z');
 const hour = 3_600_000;
 const fixtures = JSON.parse(await readFile(new URL('./fixtures/public-name-checks.json', import.meta.url), 'utf8'));
+const archives = JSON.parse(await readFile(new URL('./fixtures/archive-checks.json', import.meta.url), 'utf8'));
 const youtube = JSON.parse(await readFile(new URL('./fixtures/youtube-handle.json', import.meta.url), 'utf8'));
+const respond = ({ status, type, body }) => new Response(typeof body === 'string' ? body : JSON.stringify(body),
+  { status, headers: { 'content-type': type } });
 
 async function directoryFor(t) {
   const path = await mkdtemp(join(tmpdir(), 'hound-handles-'));
@@ -24,7 +27,7 @@ async function directoryFor(t) {
 
 const states = rows => Object.fromEntries(rows.map(row => [row.platform, row.state]));
 
-test('shows every platform in Lars’s order with three states only; ambiguous replies and link-only platforms stay unknown', async t => {
+test('shows every platform in order and keeps ambiguous replies and link-only platforms unknown', async t => {
   const directory = await directoryFor(t);
   const calls = [];
   const result = await checkSocialHandles([{ name: 'quietotter', variants: true }], {
@@ -46,8 +49,8 @@ test('shows every platform in Lars’s order with three states only; ambiguous r
     [['getquietotter', 'not-found'], ['quietotterapp', 'not-found'], ['quietotterhq', 'not-found']]);
   // No request ever goes to a link-only platform.
   assert.deepEqual([...new Set(calls.map(([platform]) => platform))].sort(), ['Bluesky', 'GitHub', 'npm']);
-  assert.deepEqual(autoPlatforms, ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'GitHub', 'npm', 'Bluesky']);
-  assert.deepEqual(Object.values(handleStates), ['Taken', 'No profile found', "Couldn't check"]);
+  assert.deepEqual(autoPlatforms, ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'Facebook', 'LinkedIn', 'GitHub', 'npm', 'Bluesky']);
+  assert.deepEqual(Object.values(handleStates), ['Taken', 'No profile found', 'No page found in public archives', "Couldn't check"]);
   assert.doesNotMatch(JSON.stringify(rows) + JSON.stringify(handleStates), /free|available/i);
   assert.equal(handlePlatforms.length, 11);
 });
@@ -59,11 +62,11 @@ test('variants run only when the exact handle is taken, and missing handles read
     directory, now, fetcher: withSocial(undefined, { taken: ['gethushroom'], calls }),
   });
   const rows = result.get('hushroom');
-  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { YouTube: 'unknown', X: 'unknown', Instagram: 'unknown', TikTok: 'unknown', Threads: 'unknown', GitHub: 'not-found', npm: 'not-found', Bluesky: 'not-found' });
+  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { YouTube: 'unknown', X: 'unknown', Instagram: 'unknown', TikTok: 'unknown', Threads: 'unknown', Facebook: 'unknown', LinkedIn: 'unknown', GitHub: 'not-found', npm: 'not-found', Bluesky: 'not-found' });
   assert.ok(rows.every(row => !row.variants));
   assert.ok(!calls.some(([, handle]) => /gethushroom/.test(handle)));
   assert.equal(handleSummary(rows), "GitHub · No profile found, npm · No profile found, Bluesky · No profile found · "
-    + "Couldn't check (YouTube, X, Instagram, TikTok, Threads, Facebook, PyPI) · LinkedIn doesn't allow checks");
+    + "Couldn't check (YouTube, X, Instagram, TikTok, Threads, Facebook, LinkedIn, PyPI)");
 });
 
 test('a wrong control answer turns that platform into check links for the whole run', async t => {
@@ -145,7 +148,8 @@ test('reads each API strictly: an unexpected body is "unknown", never a guess', 
     return base(input, init);
   };
   const rows = (await checkSocialHandles([{ name: 'quietotter' }], { directory, now, fetcher })).get('quietotter');
-  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { YouTube: 'unknown', X: 'unknown', Instagram: 'unknown', TikTok: 'unknown', Threads: 'unknown', GitHub: 'unknown', npm: 'unknown', Bluesky: 'unknown' });
+  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))),
+    Object.fromEntries(autoPlatforms.map(platform => [platform, 'unknown'])));
 });
 
 test('a GitHub rate limit holds GitHub checks until the reset, without new requests', async t => {
@@ -219,6 +223,7 @@ test('YouTube matches Worker states, retries one transient failure and caches de
 
 for (const [kind, platform] of [
   ['tiktok', 'TikTok'], ['instagram', 'Instagram'], ['x', 'X'], ['youtube', 'YouTube'], ['threads', 'Threads'], ['googlePlay', 'Google Play'],
+  ['facebook', 'Facebook'], ['twitch', 'Twitch'],
 ]) {
   test(`${platform} local check accepts only recorded response signatures`, async () => {
     const counts = { taken: 0, 'not-found': 0, unknown: 0 };
@@ -228,19 +233,72 @@ for (const [kind, platform] of [
       ['unknown', play ? 'Changed Brand' : 'changedbrand'], ['login', 'loginwall'], ['limited', 'limitedbrand']]) {
       const { status, type, body } = fixtures[kind][key];
       const options = { directory: null, env: {}, fetcher: async (url, init) => {
+        if (kind === 'threads' && url === publicUrls.instagram(name)) {
+          const instagram = fixtures.instagram.taken;
+          return respond({ ...instagram, body: { ...instagram.body, html: instagram.body.html.replace('paperheron', name) } });
+        }
         assert.equal(url, publicUrls[kind](name));
         assert.equal(init.redirect, 'manual');
         assert.equal(new Headers(init.headers).has('x-goog-api-key'), false);
         return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers: { 'content-type': type } });
       } };
       const row = play ? (await checkGooglePlayNames([name], options)).get(name)
-        : (await checkSocialHandles([{ name, platforms: [platform], links: false }], options)).get(name)[0];
-      assert.equal(row.state, ['login', 'limited'].includes(key) ? 'unknown' : key);
+        : (await checkSocialHandles([{ name, platforms: [platform], links: false }], { ...options, extraPlatforms: ['Twitch'] })).get(name)[0];
+      assert.equal(row.state, ['login', 'limited'].includes(key) || (kind === 'threads' && key === 'not-found') ? 'unknown' : key);
       assert.equal(Boolean(row.why), row.state === 'unknown');
       if (key === 'limited') assert.equal(row.why, 'rate-limited');
       counts[row.state]++;
     }
-    assert.deepEqual(counts, { taken: 1, 'not-found': 1, unknown: 3 });
+    assert.deepEqual(counts, kind === 'threads' ? { taken: 1, 'not-found': 0, unknown: 4 } : { taken: 1, 'not-found': 1, unknown: 3 });
+  });
+}
+
+test('Threads uses the Instagram missing result even when only Threads was requested', async () => {
+  const name = 'absentbrand';
+  const rows = await checkSocialHandles([{ name, platforms: ['Threads'], links: false }], {
+    directory: null, now, env: {}, fetcher: async url => respond(url.includes('facebook')
+      ? fixtures.instagram['not-found'] : fixtures.threads.login),
+  });
+  assert.deepEqual(rows.get(name).map(({ platform, state, why, checkedAt }) => [platform, state, why, checkedAt]),
+    [['Threads', 'not-found', 'no Instagram account', now.toISOString()]]);
+});
+
+test('Google Play recognizes a title with a non-letter suffix boundary', async () => {
+  const name = 'Paper Heron';
+  const found = await checkGooglePlayNames([name], { directory: null, env: {}, fetcher: async () => respond(fixtures.googlePlay.prefix) });
+  assert.equal(found.get(name).state, 'taken');
+});
+
+for (const [platform, path] of [['LinkedIn', 'linkedin.com/company/'], ['Reddit', 'reddit.com/user/']]) {
+  test(`${platform} uses exact public captures with a Common Crawl fallback and caches the capture year`, async t => {
+    const directory = await directoryFor(t);
+    const calls = [];
+    const names = ['paperheron', 'absentbrand', 'crawledbrand', 'emptybrand', 'changedbrand'];
+    const run = (at = now) => checkSocialHandles(names.map(name => ({ name, platforms: [platform], links: false })), {
+      directory, now: at, env: {}, extraPlatforms: ['Reddit'], fetcher: async (input, init) => {
+        const url = new URL(input);
+        calls.push(url);
+        assert.equal(new Headers(init.headers).get('user-agent'), 'DomainHound/0.1 (https://domainhound.dev)');
+        assert.equal(init.redirect, 'manual');
+        if (url.pathname === '/collinfo.json') return respond(archives.commonCrawl.collections);
+        const profile = url.searchParams.get('url');
+        assert.ok(profile.startsWith(path));
+        const handle = profile.slice(path.length);
+        if (url.hostname === 'web.archive.org') return respond(archives.wayback[{ paperheron: 'taken', absentbrand: 'not-seen' }[handle] ?? 'unknown']);
+        const reply = archives.commonCrawl[{ crawledbrand: 'taken', emptybrand: 'not-seen' }[handle] ?? 'unknown'];
+        return respond(JSON.parse(JSON.stringify(reply).replaceAll('PROFILE', profile)));
+      },
+    });
+    const rows = [...(await run()).values()].flat();
+    assert.deepEqual(rows.map(({ state, seenYear }) => [state, seenYear]),
+      [['taken', 2018], ['not-seen', undefined], ['taken', 2026], ['not-seen', undefined], ['unknown', undefined]]);
+    assert.equal(rows[1].linkLabel, 'Search ' + platform);
+    assert.match(rows[1].link, /\/search\//);
+    assert.equal(rows[4].why, 'archive lookup failed');
+    assert.equal(calls.filter(url => url.pathname === '/collinfo.json').length, 1);
+    calls.length = 0;
+    assert.equal((await run(new Date(+now + hour - 1))).get(names[0])[0].seenYear, 2018);
+    assert.equal(calls.filter(url => url.searchParams.has('url')).length, 2, 'only the unknown result is looked up again');
   });
 }
 
@@ -252,11 +310,13 @@ test('turning embeds off leaves the original links, skips Google Play, and still
     return new Response(body, { status, headers: { 'content-type': type } });
   } };
   const name = 'paperheron';
-  const platforms = ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads'];
-  const handles = (await checkSocialHandles([{ name, platforms, links: false }], options)).get(name);
-  assert.deepEqual(states(handles), { YouTube: 'taken', X: 'unknown', Instagram: 'unknown', TikTok: 'unknown', Threads: 'unknown' });
+  const platforms = ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'Facebook', 'LinkedIn', 'Reddit', 'Twitch'];
+  const handles = (await checkSocialHandles([{ name, platforms, links: false }], { ...options, extraPlatforms: ['Reddit', 'Twitch'] })).get(name);
+  assert.deepEqual(states(handles), { YouTube: 'taken', X: 'unknown', Instagram: 'unknown', TikTok: 'unknown', Threads: 'unknown',
+    Facebook: 'unknown', LinkedIn: 'unknown', Reddit: 'unknown', Twitch: 'unknown' });
   assert.ok(handles.every(row => row.link));
-  assert.deepEqual(handles.slice(1).map(row => row.why), ['lookup requires approved API access', 'embed only', 'embed only', 'link only']);
+  assert.deepEqual(handles.slice(1).map(row => row.why), ['lookup requires approved API access', 'embed only', 'embed only',
+    'link only', 'link only', 'link only', 'link only', 'link only']);
   assert.equal((await checkGooglePlayNames([name], options)).size, 0);
   assert.deepEqual(calls, ['https://www.youtube.com/@paperheron']);
 });

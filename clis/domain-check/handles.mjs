@@ -2,18 +2,19 @@ import { createHash, randomInt } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { anySignal, cacheDir, readCache, writeCache } from './cache.mjs';
 import { classifyYouTubeHandle, validYouTubeHandle, youtubeHandleUrl } from './youtube-handle.mjs';
-import { classifyPublicCheck, fetchPublicCheck, playCacheName, publicBodyComplete, publicCheckTiming, publicHeaders, publicHtmlLimit,
-  publicPageKinds, publicUrls, readsPublicBody, validPlayName } from './public-name-checks.mjs';
+import { archiveKinds, archiveLabel, checkPublicArchives, classifyPublicCheck, fetchPublicCheck, findCommonCrawlIndex, playCacheName,
+  publicBodyComplete, publicCacheKind, publicCheckTiming, publicHeaders, publicHtmlLimit, publicPageKinds, publicUrls,
+  readsArchiveBody, readsPublicBody, threadsFromInstagram, validPlayName } from './public-name-checks.mjs';
 
-// Social handles. Three states only, never "free": a missing public profile does not mean the handle can be had.
 export const handleStates = {
   taken: 'Taken',
   'not-found': 'No profile found',
+  'not-seen': 'No page found in public archives',
   unknown: "Couldn't check",
 };
 const hour = 3_600_000;
 // Default lifetimes for confirmed results. Public page and embed results of either kind last an hour.
-export const handleLifetime = { taken: 7 * 24 * hour, 'not-found': hour };
+export const handleLifetime = { taken: 7 * 24 * hour, 'not-found': hour, 'not-seen': hour };
 // One platform's whole run (its two controls, the exact handles and any variants) shares this budget.
 export const platformBudgetMs = 2000;
 export const handleVariants = name => ['get' + name, name + 'app', name + 'hq'];
@@ -33,40 +34,48 @@ async function readStrictJson(response) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-export const publicProfiles = Object.freeze({ YouTube: 'youtube', X: 'x', Instagram: 'instagram', TikTok: 'tiktok', Threads: 'threads' });
+export const publicProfiles = Object.freeze({ YouTube: 'youtube', X: 'x', Instagram: 'instagram', TikTok: 'tiktok', Threads: 'threads',
+  Facebook: 'facebook', LinkedIn: 'linkedin', Reddit: 'reddit', Twitch: 'twitch' });
 const publicKinds = { ...publicProfiles, 'Google Play': 'googlePlay' };
 export const embedChecksEnabled = (env = process.env) => env.DOMAIN_HOUND_EMBED_CHECKS !== 'off';
-const disabledReason = { Instagram: 'embed only', TikTok: 'embed only', X: 'lookup requires approved API access', Threads: 'link only' };
-const disabled = (platform, env) => !embedChecksEnabled(env) && Object.hasOwn(disabledReason, platform);
+const disabledReason = { Instagram: 'embed only', TikTok: 'embed only', X: 'lookup requires approved API access' };
+const disabled = (platform, env) => !embedChecksEnabled(env) && platform !== 'YouTube' && Object.hasOwn(publicKinds, platform);
 
-async function readPublicResponse(kind, response, name) {
+async function readPublicBody(response, maxBytes, read, complete) {
+  const { status } = response;
   const contentType = response.headers.get('content-type') ?? '';
-  if (!readsPublicBody(kind, response.status, contentType)) {
+  const meta = { status, contentType };
+  if (!read(status, contentType)) {
     void response.body?.cancel().catch(() => {});
-    return 'unknown';
+    return meta;
   }
-  if (!response.body || Number(response.headers.get('content-length')) > publicHtmlLimit) {
+  if (Number(response.headers.get('content-length')) > maxBytes) {
     void response.body?.cancel().catch(() => {});
-    return 'unknown';
+    return { ...meta, error: 'too-large' };
   }
   let size = 0;
   let body = '';
   const decoder = new TextDecoder();
-  for await (const chunk of response.body) {
+  for await (const chunk of response.body ?? []) {
     size += chunk.byteLength;
-    if (size > publicHtmlLimit) return 'unknown';
+    if (size > maxBytes) return { ...meta, error: 'too-large' };
     body += decoder.decode(chunk, { stream: true });
-    if (publicBodyComplete(kind, response.status, contentType, body, name)) break;
+    if (complete?.(status, contentType, body)) break;
   }
-  return classifyPublicCheck(kind, { status: response.status, contentType, body: body + decoder.decode() }, name);
+  return { ...meta, body: body + decoder.decode() };
 }
 
 // Anything the parser does not recognise is unknown.
 const apis = {
   ...Object.fromEntries(Object.entries(publicKinds).map(([platform, kind]) => [platform, {
-    valid: kind === 'googlePlay' ? validPlayName : kind === 'youtube' ? validYouTubeHandle : handle => /^[a-z0-9]+$/.test(handle),
+    valid: kind === 'googlePlay' ? validPlayName : kind === 'youtube' ? validYouTubeHandle
+      : archiveKinds.includes(kind) ? label : handle => /^[a-z0-9]+$/.test(handle),
     url: publicUrls[kind],
-    read: (response, name) => readPublicResponse(kind, response, name),
+    archive: archiveKinds.includes(kind),
+    read: async (response, name) => classifyPublicCheck(kind, await readPublicBody(response,
+      publicPageKinds.includes(kind) ? publicHtmlLimit : 512 * 1024,
+      (status, type) => readsPublicBody(kind, status, type),
+      (status, type, body) => publicBodyComplete(kind, status, type, body, name)), name),
     public: true,
   }])),
   youtubeApi: {
@@ -125,9 +134,11 @@ const apis = {
 };
 
 // Display order (Lars, 2026-11-25): YouTube, X, Instagram, TikTok, Facebook, LinkedIn, then GitHub, npm, PyPI, Bluesky.
-export const linkedInLabel = "LinkedIn doesn't allow checks";
 export const linkedInSearch = name => 'https://www.linkedin.com/search/results/companies/?' + new URLSearchParams({ keywords: name });
-export const handleLabel = row => row?.platform === 'LinkedIn' ? linkedInLabel : handleStates[row?.state] ?? handleStates.unknown;
+const redditSearch = name => 'https://www.reddit.com/search/?' + new URLSearchParams({ q: name, type: 'users' });
+export const handleLabel = row => row?.state === 'taken' && row.seenYear ? archiveLabel(row.seenYear) : handleStates[row?.state] ?? handleStates.unknown;
+export const linkedInSearchHint = row => row?.platform === 'LinkedIn' && row.state === 'not-seen' && label(row.handle)
+  ? 'You can confirm with a web search for `site:linkedin.com/company/' + row.handle + '`.' : null;
 
 export const handlePlatforms = [
   { id: 'YouTube', link: handle => 'https://www.youtube.com/@' + handle, auto: true },
@@ -135,18 +146,18 @@ export const handlePlatforms = [
   { id: 'Instagram', link: handle => 'https://www.instagram.com/' + handle + '/', auto: true },
   { id: 'TikTok', link: handle => 'https://www.tiktok.com/@' + handle, auto: true },
   { id: 'Threads', link: handle => 'https://www.threads.com/@' + handle, auto: true },
-  { id: 'Facebook', link: handle => 'https://www.facebook.com/' + handle },
-  { id: 'LinkedIn', link: linkedInSearch, linkLabel: 'Search LinkedIn' },
+  { id: 'Facebook', link: handle => 'https://www.facebook.com/' + handle, auto: true },
+  { id: 'LinkedIn', link: handle => 'https://www.linkedin.com/company/' + handle, search: linkedInSearch, linkLabel: 'Search LinkedIn', auto: true },
   { id: 'GitHub', link: handle => 'https://github.com/' + handle, auto: true },
   { id: 'npm', link: handle => 'https://www.npmjs.com/package/' + handle, auto: true },
   { id: 'PyPI', link: handle => 'https://pypi.org/project/' + handle + '/' },
   { id: 'Bluesky', link: handle => 'https://bsky.app/profile/' + handle + '.bsky.social', auto: true },
 ];
-// Shown only when the person asks for them; always check links.
+// Shown when the person asks for them in a local name screen.
 export const requestPlatforms = [
   { id: 'Snapchat', link: handle => 'https://www.snapchat.com/add/' + handle },
-  { id: 'Reddit', link: handle => 'https://www.reddit.com/user/' + handle + '/' },
-  { id: 'Twitch', link: handle => 'https://www.twitch.tv/' + handle },
+  { id: 'Reddit', link: handle => 'https://www.reddit.com/user/' + handle + '/', search: redditSearch, linkLabel: 'Search Reddit', auto: true },
+  { id: 'Twitch', link: handle => 'https://www.twitch.tv/' + handle, auto: true },
   handlePlatforms.find(platform => platform.id === 'Threads'),
   { id: 'Pinterest', link: handle => 'https://www.pinterest.com/' + handle + '/' },
   { id: 'Discord', link: () => 'https://support.discord.com/hc/en-us/articles/12620128861463-New-Usernames-Display-Names' },
@@ -170,41 +181,51 @@ async function githubHeld(directory, now) {
 }
 
 // One request, and one retry inside the same budget when the platform fails (5xx or no response).
-async function request(platform, identifier, options, retry = true) {
+async function requestWithRetry(platform, options, url, api, read, retry = true) {
   const { fetcher, signal, githubToken, youtubeApiKey } = options;
   const youtubeApi = platform === 'YouTube' && Boolean(youtubeApiKey);
-  const api = apis[youtubeApi ? 'youtubeApi' : platform];
   // An optional token lifts GitHub's 60 requests an hour for anonymous callers. It is sent only to api.github.com.
   const auth = youtubeApi ? { 'x-goog-api-key': youtubeApiKey }
     : platform === 'GitHub' && githubToken ? { Authorization: 'Bearer ' + githubToken } : {};
   const bounded = Object.hasOwn(publicKinds, platform);
   const page = api.public && publicPageKinds.includes(publicKinds[platform]);
-  const timeout = page ? publicCheckTiming.pageTimeoutMs : publicCheckTiming.timeoutMs;
+  const timeout = page ? publicCheckTiming.pageTimeoutMs : api.archive ? publicCheckTiming.archiveTimeoutMs : publicCheckTiming.timeoutMs;
   const attemptSignal = bounded ? anySignal([signal, AbortSignal.timeout(timeout)]) : signal;
-  if (attemptSignal?.aborted) return { state: 'unknown', why: 'timeout' };
-  let why = 'upstream-error';
+  if (attemptSignal?.aborted) return { error: 'timeout' };
+  let error = 'network';
   try {
-    const url = api.url(identifier);
-    const init = { redirect: 'error', signal: attemptSignal,
-      headers: { 'User-Agent': userAgent, ...api.headers, ...auth, ...(api.public && publicHeaders) } };
+    const init = { redirect: api.archive ? 'manual' : 'error', signal: attemptSignal,
+      headers: { 'User-Agent': userAgent, ...api.headers, ...auth, ...(api.public && !api.archive && publicHeaders) } };
     const response = api.public ? await fetchPublicCheck(fetcher, url, init) : await fetcher(url, init);
-    const settled = response.status < 500 && response.status !== 429;
-    const state = settled ? await api.read(response, identifier) : 'unknown';
-    if (!settled) void response.body?.cancel().catch(() => {});
-    const limited = platform === 'GitHub' && [403, 429].includes(response.status);
-    if (response.status < 500) {
-      return { state, ...(state === 'unknown' && { why: response.status === 429 ? 'rate-limited' : 'no clear answer' }),
-        ...(limited && { limited: Number(response.headers.get('x-ratelimit-reset')) * 1000 || null }) };
-    }
+    if (response.status < 500) return await read(response);
+    void response.body?.cancel().catch(() => {});
   } catch {
-    if (attemptSignal?.aborted) why = 'timeout';
+    if (attemptSignal?.aborted) error = 'timeout';
   }
   if (retry && !signal?.aborted) {
-    if (!bounded) return request(platform, identifier, options, false);
+    if (!bounded) return requestWithRetry(platform, options, url, api, read, false);
     const waited = await delay(randomInt(80, 161), true, { signal }).catch(() => false);
-    if (waited) return request(platform, identifier, options, false);
+    if (waited) return requestWithRetry(platform, options, url, api, read, false);
   }
-  return { state: 'unknown', why };
+  return { error: signal?.aborted ? 'timeout' : error };
+}
+
+async function request(platform, identifier, options) {
+  const api = apis[platform === 'YouTube' && options.youtubeApiKey ? 'youtubeApi' : platform];
+  if (api.archive) {
+    const read = url => requestWithRetry(platform, options, url, api,
+      response => readPublicBody(response, 512 * 1024, readsArchiveBody));
+    return checkPublicArchives(publicKinds[platform], identifier, read, () => options.commonIndex ??= findCommonCrawlIndex(read));
+  }
+  const result = await requestWithRetry(platform, options, api.url(identifier), api, async response => {
+    const limited = platform === 'GitHub' && [403, 429].includes(response.status);
+    const why = response.status === 429 ? 'rate-limited' : 'no clear answer';
+    if (response.status === 429) void response.body?.cancel().catch(() => {});
+    const state = response.status === 429 ? 'unknown' : await api.read(response, identifier);
+    return { state, ...(state === 'unknown' && { why }),
+      ...(limited && { limited: Number(response.headers.get('x-ratelimit-reset')) * 1000 || null }) };
+  });
+  return result.error ? { state: 'unknown', why: result.error === 'timeout' ? 'timeout' : 'upstream-error' } : result;
 }
 
 // The run's two controls for one platform: a handle known to exist and a random one that cannot. When either comes
@@ -221,7 +242,10 @@ function controlsFor(platform, options) {
   return runs.get(key);
 }
 
-const cachePlatform = (platform, options) => platform === 'YouTube' && !options.youtubeApiKey ? 'youtube-page' : platform.toLowerCase().replace(' ', '-');
+const cachePlatform = (platform, options) => {
+  if (platform === 'YouTube' && !options.youtubeApiKey) return 'youtube-page';
+  return publicCacheKind(publicKinds[platform] ?? platform).toLowerCase().replace(' ', '-');
+};
 
 function lookup(platform, identifier, options) {
   const key = cachePlatform(platform, options) + '|' + identifier + '|' + (options.directory?.href ?? '');
@@ -262,7 +286,8 @@ async function platformBatch(platform, handles, options, deadline) {
       continue;
     }
     const saved = await cached(platform, identifier, options);
-    if (saved) answers.set(handle, { state: saved.state, checkedAt: new Date(saved.at).toISOString(), via: 'cache' });
+    if (saved) answers.set(handle, { state: saved.state, checkedAt: new Date(saved.at).toISOString(), via: 'cache',
+      ...(saved.seenYear && { seenYear: saved.seenYear }) });
     else live.push([handle, identifier]);
   }
   if (!live.length && (!options.controlRuns || !answers.size)) return answers;
@@ -289,7 +314,7 @@ async function platformBatch(platform, handles, options, deadline) {
   }
   const checkedAt = now.toISOString();
   for (const [index, [handle, identifier]] of live.entries()) {
-    const { state, why } = results[index];
+    const { state, why, seenYear } = results[index];
     const key = platform + '|' + identifier + '|' + (directory?.href ?? '');
     if (state === 'unknown') {
       const answer = { state: 'unknown', why: why ?? 'no clear answer in time' };
@@ -297,20 +322,23 @@ async function platformBatch(platform, handles, options, deadline) {
       runCache?.set(key, answer);
       continue;
     }
-    answers.set(handle, { state, checkedAt, via: 'api' });
-    runCache?.set(key, { state, checkedAt, via: 'api' });
-    await writeCache(directory, cacheFile(platform, identifier, options), { at: now.getTime(), state }).catch(() => {});
+    const archive = seenYear ? { seenYear } : {};
+    answers.set(handle, { state, checkedAt, via: 'api', ...archive });
+    runCache?.set(key, { state, checkedAt, via: 'api', ...archive });
+    await writeCache(directory, cacheFile(platform, identifier, options), { at: now.getTime(), state, ...archive }).catch(() => {});
   }
   return answers;
 }
 
 function linkRow(platform, handle, why = platform.why ?? 'link only') {
-  return { platform: platform.id, handle, state: 'unknown', link: platform.link(handle), why,
-    ...(platform.linkLabel && { linkLabel: platform.linkLabel }) };
+  const search = platform.id === 'LinkedIn';
+  return { platform: platform.id, handle, state: 'unknown', link: (search ? platform.search : platform.link)(handle), why,
+    ...(search && { linkLabel: platform.linkLabel }) };
 }
 
 function selectedPlatforms(extra) {
-  return [...handlePlatforms, ...requestPlatforms.filter(platform => !platform.auto && (extra === true || Array.isArray(extra) && extra.includes(platform.id)))];
+  return [...handlePlatforms, ...requestPlatforms.filter(platform => !handlePlatforms.includes(platform) &&
+    (extra === true || Array.isArray(extra) && extra.includes(platform.id)))];
 }
 
 export function pendingHandleRows(name, extra) {
@@ -349,23 +377,27 @@ export async function checkGooglePlayNames(names, {
 // when the exact handle is taken, inside the same per-platform budget.
 export async function checkSocialHandles(rows, {
   directory = cacheDir, now = new Date(), fetcher = globalThis.fetch, signal, budgetMs,
-  controls, extraPlatforms = false, env = process.env, freshRun = false,
+  controls, extraPlatforms = false, env = process.env, freshRun = false, instagramAnswers = new Map(),
 } = {}) {
   const githubToken = typeof env?.DOMAIN_HOUND_GITHUB_TOKEN === 'string' && /^[\w-]{20,255}$/.test(env.DOMAIN_HOUND_GITHUB_TOKEN)
     ? env.DOMAIN_HOUND_GITHUB_TOKEN : null;
   const youtubeApiKey = typeof env?.YOUTUBE_API_KEY === 'string' ? env.YOUTUBE_API_KEY.trim() : '';
   const options = { directory, now, fetcher, signal, controls, githubToken, youtubeApiKey,
     ...(freshRun && { controlRuns: new Map(), runAnswers: new Map() }) };
-  const wanted = platform => rows.filter(row => (row.platforms ?? autoPlatforms).includes(platform));
-  const perPlatform = new Map(await Promise.all(autoPlatforms.map(async platform => {
-    const names = wanted(platform);
+  const platforms = selectedPlatforms(extraPlatforms);
+  const automatic = platforms.filter(platform => platform.auto).map(platform => platform.id);
+  const requested = (row, platform) => (row.platforms ?? automatic).includes(platform);
+  const perPlatform = new Map(await Promise.all(automatic.map(async platform => {
+    const names = rows.filter(row => requested(row, platform) ||
+      (platform === 'Instagram' && requested(row, 'Threads') && !instagramAnswers.has(row.name)));
     if (!names.length || disabled(platform, env)) return [platform, null];
     const platformBudget = Object.hasOwn(publicKinds, platform)
       ? Math.min(budgetMs ?? publicCheckTiming.budgetMs, publicCheckTiming.budgetMs) : budgetMs ?? platformBudgetMs;
     const started = performance.now();
     return withinPlatformBudget(platformBudget, async deadline => {
       const exact = await platformBatch(platform, names.map(row => row.name), options, deadline);
-      const taken = names.filter(row => row.variants && exact.get(row.name)?.state === 'taken');
+      const taken = archiveKinds.includes(publicKinds[platform]) ? []
+        : names.filter(row => row.variants && requested(row, platform) && exact.get(row.name)?.state === 'taken');
       const left = platformBudget - (performance.now() - started);
       const variants = taken.length && left >= 300
         ? await platformBatch(platform, taken.flatMap(row => handleVariants(row.name)), options, deadline)
@@ -375,24 +407,27 @@ export async function checkSocialHandles(rows, {
   })));
   const result = new Map();
   for (const row of rows) {
-    const platforms = selectedPlatforms(extraPlatforms);
     const entries = [];
     for (const platform of platforms) {
-      const requested = (row.platforms ?? autoPlatforms).includes(platform.id);
-      if (requested && disabled(platform.id, env)) {
+      const wanted = requested(row, platform.id);
+      if (wanted && disabled(platform.id, env)) {
         entries.push(linkRow(platform, row.name, disabledReason[platform.id]));
         continue;
       }
-      const checked = requested ? perPlatform.get(platform.id) : null;
+      const checked = wanted ? perPlatform.get(platform.id) : null;
       if (!platform.auto || !checked?.exact) {
         if (row.links === false) continue;
         entries.push(linkRow(platform, row.name, platform.auto ? 'not checked for this name' : undefined));
         continue;
       }
-      const answer = checked.exact.get(row.name) ?? { state: 'unknown', why: 'no clear answer in time' };
-      const entry = { platform: platform.id, handle: row.name, state: answer.state, link: platform.link(row.name),
+      const raw = checked.exact.get(row.name) ?? { state: 'unknown', why: 'no clear answer in time' };
+      const instagram = instagramAnswers.get(row.name) ?? perPlatform.get('Instagram')?.exact.get(row.name);
+      const answer = platform.id === 'Threads' ? threadsFromInstagram(raw, instagram) : raw;
+      const search = (answer.state === 'not-seen' || (answer.state === 'unknown' && platform.id === 'LinkedIn')) && platform.search;
+      const entry = { platform: platform.id, handle: row.name, state: answer.state, link: (search || platform.link)(row.name),
+        ...(search && { linkLabel: platform.linkLabel }), ...(answer.seenYear && { seenYear: answer.seenYear }),
         ...(answer.checkedAt && { checkedAt: answer.checkedAt }), ...(answer.why && { why: answer.why }) };
-      if (row.variants && answer.state === 'taken') {
+      if (row.variants && answer.state === 'taken' && !platform.search) {
         entry.variants = handleVariants(row.name).map(handle => {
           const variant = checked.variants.get(handle) ?? { state: 'unknown', why: 'no clear answer in time' };
           return { handle, state: variant.state, link: platform.link(handle),
@@ -408,9 +443,9 @@ export async function checkSocialHandles(rows, {
 
 export function handleSummary(entries, { limit = Infinity, manualLimit = Infinity, ordered = false } = {}) {
   if (!Array.isArray(entries) || !entries.length) return null;
-  const checked = entries.filter(entry => ['taken', 'not-found'].includes(entry.state));
+  const checked = entries.filter(entry => ['taken', 'not-found', 'not-seen'].includes(entry.state));
   const open = entries.filter(entry => !checked.includes(entry));
-  const describe = entry => entry.platform === 'LinkedIn' ? linkedInLabel : entry.platform + ' · ' + handleLabel(entry);
+  const describe = entry => entry.platform + ' · ' + handleLabel(entry);
   if (ordered) {
     const shown = new Set([...entries.slice(0, 2), ...checked.slice(0, 2)]);
     for (const entry of entries) {
@@ -425,8 +460,7 @@ export function handleSummary(entries, { limit = Infinity, manualLimit = Infinit
   const shown = checked.slice(0, limit).map(describe);
   const manual = open.slice(0, manualLimit);
   const more = checked.length - shown.length + open.length - manual.length;
-  const unchecked = manual.filter(entry => entry.platform !== 'LinkedIn').map(entry => entry.platform);
+  const unchecked = manual.map(entry => entry.platform);
   return [shown.join(', '), unchecked.length ? handleStates.unknown + ' (' + unchecked.join(', ') + ')' : '',
-    manual.some(entry => entry.platform === 'LinkedIn') ? linkedInLabel : '',
     more > 0 ? '(' + more + ' more on the page)' : ''].filter(Boolean).join(' · ');
 }

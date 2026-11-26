@@ -2,11 +2,11 @@ import { attributed, md } from './display.mjs';
 import { canRecommend, choosePick, normalizeName } from './clis/domain-check/name-search.mjs';
 import { compareScores, scoreEligible, scoreHandles, scoreName } from './clis/domain-check/name-score.mjs';
 import { relevantClasses } from './clis/domain-check/triage-sources.mjs';
-import { handleLabel, handleStates, linkedInLabel, linkedInSearch } from './clis/domain-check/handles.mjs';
+import { handleLabel, handleStates } from './clis/domain-check/handles.mjs';
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 
 const money = value => Number.isFinite(value) ? '$' + value.toFixed(2) : 'price at shop';
-const platforms = ['LinkedIn', 'X', 'Instagram', 'TikTok', 'YouTube', 'Threads', 'GitHub'];
+const platforms = ['LinkedIn', 'X', 'Instagram', 'TikTok', 'YouTube', 'Threads', 'Facebook', 'Reddit', 'Twitch', 'GitHub'];
 
 function link(label, value) {
   try {
@@ -41,10 +41,11 @@ function nameCheckLines(details, pending, name) {
     'App Store · ' + appText + (apps ? ' · ' + apps : ''),
     (googlePlay.why === 'no public search' ? googlePlayLabel : 'Google Play · ' + (handleStates[googlePlay.status] ?? handleStates.unknown))
       + ' · ' + link(googlePlayLinkLabel, googlePlay.link ?? playSearchLink(name)),
-    ...platforms.map(platform => {
+    ...platforms.flatMap(platform => {
       const handle = handles.find(row => row.platform === platform);
-      if (platform === 'LinkedIn') return linkedInLabel + ' · ' + link('Search LinkedIn', linkedInSearch(name));
-      return platform + ' · ' + link(handleLabel(handle), handle?.link);
+      if (!handle) return [];
+      const label = handleLabel(handle);
+      return platform + ' · ' + (handle.linkLabel ? label + ' · ' + link(handle.linkLabel, handle.link) : link(label, handle.link));
     }),
   ];
 }

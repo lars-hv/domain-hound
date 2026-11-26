@@ -61,11 +61,16 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
 
   async function recoverNameChecks(entries, signal) {
     const enabled = embedChecksEnabled(env);
-    const definite = value => value === 'taken' || value === 'not-found';
+    const definite = value => ['taken', 'not-found', 'not-seen'].includes(value);
     const checked = entries.filter(entry => Array.isArray(entry.nameChecks?.handles));
+    const instagramAnswers = new Map(checked.flatMap(({ name, nameChecks }) => {
+      const instagram = nameChecks.handles.find(row => row.platform === 'Instagram');
+      return definite(instagram?.state) ? [[instagram.handle ?? normalizeName(name), instagram]] : [];
+    }));
     const profiles = checked.flatMap(({ name, nameChecks }) => Object.keys(publicProfiles).flatMap(platform => {
       const row = nameChecks.handles.find(row => row.platform === platform);
-      if ((enabled || platform === 'YouTube') && definite(row?.state)) return [];
+      const oldThreadsMissing = platform === 'Threads' && row?.state === 'not-found' && row.why !== 'no Instagram account';
+      if ((enabled || platform === 'YouTube') && definite(row?.state) && !oldThreadsMissing) return [];
       const handle = row?.handle ?? normalizeName(name);
       return handle ? [{ platform, handle, row, nameChecks }] : [];
     }));
@@ -78,13 +83,14 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     const play = checked.filter(({ nameChecks }) => !enabled || !definite(nameChecks.googlePlay?.status));
     const options = { fetcher: fetchFn, env, signal };
     const [handles, playResults] = await Promise.all([
-      checkSocialHandles(rows, options).catch(() => null),
+      checkSocialHandles(rows, { ...options, instagramAnswers, extraPlatforms: ['Reddit', 'Twitch'] }).catch(() => null),
       checkGooglePlayNames(play.map(({ name }) => name), options).catch(() => null),
     ]);
     for (const { platform, handle, row, nameChecks } of profiles) {
       const result = handles?.get(handle)?.find(result => result.platform === platform);
       if (!result) continue;
-      const profile = { ...row, ...result, label: handleLabel(result), checkedAt: result.checkedAt ?? null,
+      const { linkLabel, seenYear, source, ...prior } = row ?? {};
+      const profile = { ...prior, ...result, label: handleLabel(result), checkedAt: result.checkedAt ?? null,
         why: result.why ?? null, ...(definite(result.state) && { source: 'local' }) };
       nameChecks.handles = row ? nameChecks.handles.map(entry => entry === row ? profile : entry)
         : [...nameChecks.handles, profile];

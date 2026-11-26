@@ -651,6 +651,7 @@ export async function serve({
       evidence.handles = Object.fromEntries(entries.map(([name, rows]) => [name, {
         taken: rows.filter(row => row.state === 'taken').map(row => row.platform),
         not_found: rows.filter(row => row.state === 'not-found').map(row => row.platform),
+        not_seen: rows.filter(row => row.state === 'not-seen').map(row => row.platform),
         check: rows.filter(row => row.state === 'unknown').map(row => row.platform),
       }]));
       if (!check.rows) {

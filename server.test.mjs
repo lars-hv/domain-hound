@@ -1343,7 +1343,9 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
       });
       assert.equal(parsed.searchParams.get('id'), 'fixture-id');
       return Response.json({ version: 1, appStore, googlePlay: { status: 'not-found', link: 'https://play.google.com/store' },
-        handles: ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads'].map(platform => ({ platform, state: 'not-found' })),
+        handles: ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'Facebook', 'Twitch'].map(platform => ({ platform, state: 'not-found',
+          ...(platform === 'Threads' && { why: 'no Instagram account' }) })).concat(
+          ['LinkedIn', 'Reddit'].map(platform => ({ platform, state: 'not-seen' }))),
         trademarks: { us: { status: 'exact_match_found', marks: [{ mark: 'EXAMPLEHERON', owner: 'Example Company',
           status: 'applied', url: 'https://tsdr.uspto.gov/' }] } } });
     },
@@ -1406,7 +1408,7 @@ test('the MCP checks YouTube locally only when the hosted YouTube state is unkno
   const mcp = await local(t, { hosted: host });
   const checked = resultOf([await mcp.ask(call(2, { query: 'localbrand' }))], 2).structuredContent;
   assert.match(checked.display, /YouTube · \[Taken\]\(https:\/\/www\.youtube\.com\/@localbrand\)/);
-  assert.match(checked.display, /LinkedIn doesn't allow checks · \[Search LinkedIn\]/);
+  assert.match(checked.display, /LinkedIn · Couldn't check · \[Search LinkedIn\]/);
   assert.match(checked.display, /Google Play has no public search · \[Search Google Play\]/);
   assert.equal(checked.checks[0].nameChecks.handles[0].source, 'local');
   assert.doesNotMatch(JSON.stringify(checked), /fixture-placeholder/);
@@ -1455,9 +1457,11 @@ test('check_domains fills unknown public name checks locally and keeps confirmed
     }
     assert.equal(new Headers(init.headers).has('x-domain-hound-client'), false);
     calls.push(url.hostname);
-    const kind = { 'www.tiktok.com': 'tiktok', 'graph.facebook.com': 'instagram', 'www.youtube.com': 'youtube',
-      'www.threads.net': 'threads', 'play.google.com': 'googlePlay' }[url.hostname];
-    const fixture = fixtures[kind][kind === 'threads' ? 'login' : 'taken'];
+    if (url.hostname === 'web.archive.org') return new Response(url.searchParams.get('url').startsWith('reddit.com/')
+      ? '20180308025019 200\n' : '', { headers: { 'content-type': 'text/plain' } });
+    const kind = { 'www.tiktok.com': 'tiktok', 'graph.facebook.com': url.pathname.endsWith('/picture') ? 'facebook' : 'instagram',
+      'www.youtube.com': 'youtube', 'www.threads.net': 'threads', 'www.twitch.tv': 'twitch', 'play.google.com': 'googlePlay' }[url.hostname];
+    const fixture = fixtures[kind][kind === 'threads' ? 'login' : kind === 'twitch' ? 'not-found' : 'taken'];
     const body = kind === 'googlePlay' ? fixture.body.replace('Paper Heron -', 'PaperHeron -') : fixture.body;
     return new Response(typeof body === 'string' ? body : JSON.stringify(body),
       { status: fixture.status, headers: { 'content-type': fixture.type } });
@@ -1469,9 +1473,14 @@ test('check_domains fills unknown public name checks locally and keeps confirmed
   assert.equal(checks.googlePlay.source, 'local');
   assert.deepEqual(Object.fromEntries(checks.handles.map(row => [row.platform, [row.state, row.source]])), {
     X: ['not-found', undefined], YouTube: ['taken', 'local'], Instagram: ['taken', 'local'], TikTok: ['taken', 'local'],
-    Threads: ['unknown', undefined],
+    Threads: ['unknown', undefined], Facebook: ['taken', 'local'], LinkedIn: ['not-seen', 'local'],
+    Reddit: ['taken', 'local'], Twitch: ['not-found', 'local'],
   });
   assert.match(answer.display, /Threads · \[Couldn't check\]/);
+  assert.match(answer.display, /LinkedIn · No page found in public archives · \[Search LinkedIn\]/);
+  assert.match(answer.display, /site:linkedin\.com\/company\/paperheron/);
+  assert.match(answer.display, /Reddit · \[Found · seen 2018\]/);
   assert.match(answer.display, /Google Play · Taken · \[Search Google Play\]/);
-  assert.deepEqual(calls.sort(), ['graph.facebook.com', 'play.google.com', 'www.threads.net', 'www.tiktok.com', 'www.youtube.com']);
+  assert.deepEqual(calls.sort(), ['graph.facebook.com', 'graph.facebook.com', 'play.google.com', 'web.archive.org', 'web.archive.org',
+    'www.threads.net', 'www.tiktok.com', 'www.twitch.tv', 'www.youtube.com']);
 });
