@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  DOMAIN_HOUND_OPEN: 'off'
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}

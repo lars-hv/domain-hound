@@ -10,7 +10,7 @@ import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/dom
 import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { attributed, localCheckNotice, safeLink } from './display.mjs';
-import { checkLines, nameCheckLines, pickDomain, pickLine, visibleChecks } from './hosted-results.mjs';
+import { appNameLines, checkLines, domainAnswer, nameCheckLines, pickDomain, pickLine, trademarkLines, usTrademark, visibleChecks } from './hosted-results.mjs';
 import { datedListPrices, loadCachedCatalog } from './clis/domain-check/price-catalog.mjs';
 import { alternativeEndings } from './hosted.mjs';
 import { anchor, escape, paragraph, priceDay, publicShare, renderCards } from './results-cards.mjs';
@@ -499,15 +499,13 @@ export function disclosure(data, triage) {
     + 'Up to three go to public handle APIs. Domain Hound uses your brief locally. ' + shop;
 }
 
-function hostedWarning(check) {
-  const us = check.nameChecks?.trademarks?.us;
-  return us?.status === 'exact_match_found' ? '<aside class="trademark-warning"><strong>Exact US trademark match for “'
-    + escape(check.query.name) + '”.</strong>' + us.marks.map(mark => '<p>' + (mark.owner
-      ? escape(mark.owner + ' filed for ' + (mark.mark || check.query.name) + '. ') : '')
-      + (recordLink(mark.url) ? anchor('Read the filing', recordLink(mark.url)) : '') + '</p>').join('') + '</aside>' : '';
+function hostedWarning(check, pending) {
+  const lines = trademarkLines(check, pending);
+  if (usTrademark(check)?.status !== 'exact_match_found') return '<div class="trademark-pending">' + paragraph(lines[0]) + '</div>';
+  return '<aside class="trademark-warning">' + lines.map(paragraph).join('') + '</aside>';
 }
 
-function hostedPrices(row, pick, budget, pending) {
+function hostedPrices(row, pick, budget) {
   if (row.status !== 'available' || row.priceShown === false || row.premium) return [];
   let prices = row.prices ?? [];
   // Generated ideas sometimes carry the comparison (or just the winning quote) on the pick.
@@ -519,26 +517,21 @@ function hostedPrices(row, pick, budget, pending) {
     const shop = shops[shopIds.get(quote.shop)];
     // The hosted catalog sets its own price-only flag. Match both registrar and exact domain.
     const expected = shop && shop.url + encodeURIComponent(row.domain) + (shop.suffix ?? '');
-    const canBuy = !pending && !quote.dataOnly && expected && quote.buyUrl === expected
+    const canBuy = !quote.dataOnly && expected && quote.buyUrl === expected
       && (!row.eligibility || row.eligibility.need || row.eligibility.note)
       && (budget == null || quote.firstPaymentUsd <= budget);
     return { ...quote, buyUrl: canBuy ? expected : null };
   });
 }
 
-function hostedNameChecks(details, pending, name) {
-  // The page refreshes itself; the repeat-call hint is only for the MCP reply.
+function hostedNameChecks(details, pending) {
   if (!details) return paragraph(pending ? 'Name checks are still running.' : 'Name checks could not be completed.');
-  const lines = nameCheckLines(details, pending, name);
-  const apps = [];
-  const handles = [];
-  for (const line of lines) {
+  const lines = nameCheckLines(details, pending);
+  if (!lines.length) return '';
+  return '<div class="check-grid"><dl class="handle-list">' + lines.map(line => {
     const [label, ...finding] = line.split(' · ');
-    const group = /^(?:App Store|Google Play|US trademarks)/.test(label) ? apps : handles;
-    group.push('<div class="check-line"><dt>' + escape(label) + '</dt><dd>' + paragraph(finding.join(' · ')) + '</dd></div>');
-  }
-  return '<div class="check-grid"><section><h4>Apps and trademarks</h4><dl>' + apps.join('') + '</dl></section>'
-    + (handles.length ? '<section><h4>Handles</h4><dl class="handle-list">' + handles.join('') + '</dl></section>' : '') + '</div>';
+    return '<div class="check-line"><dt>' + escape(label) + '</dt><dd>' + paragraph(finding.join(' · ')) + '</dd></div>';
+  }).join('') + '</dl></div>';
 }
 
 function hostedCard(check, pending, args, snapshot) {
@@ -548,15 +541,14 @@ function hostedCard(check, pending, args, snapshot) {
   const rows = [...check.domains, ...(alternatives?.domains ?? []).filter(row => !seen.has(row.domain))];
   const pick = check.choice?.pick ?? alternatives?.choice?.pick;
   const domains = rows.map(row => ({
-    ...row, prices: hostedPrices(row, pick, args.budget, pending && !nameChecks),
+    ...row, prices: hostedPrices(row, pick, args.budget),
     note: [row.premium, row.eligibility && (row.eligibility.note || row.eligibility.need || 'Check who can buy this domain.')]
       .filter(Boolean).join(' · '),
   }));
   const sameExact = alternatives?.domains.some(row => row.domain === query.exactDomain && row.status === 'taken');
   return { name: query.exactDomain ?? query.name, exact: query.exactDomain, domains, pick, cap: check.choice?.capUsd ?? alternatives?.choice?.capUsd,
-    warning: hostedWarning(check) || (domains.some(row => row.status === 'available') && !['no_exact_match_found', 'exact_match_found'].includes(nameChecks?.trademarks?.us?.status)
-      ? '<p class="trademark-pending">' + (pending ? 'Checking US trademarks…' : 'US trademark: couldn’t check.') + '</p>' : ''),
-    checks: hostedNameChecks(nameChecks, pending, query.name),
+    answer: domainAnswer(check), apps: appNameLines(check, pending).map(paragraph).join(''),
+    warning: hostedWarning(check, pending), checks: hostedNameChecks(nameChecks, pending),
     score: scoreText({ score }), reasons: score?.reasons, priceDate: alternatives?.priceSnapshot?.checkedAt ?? check.priceSnapshot?.checkedAt ?? snapshot,
     share: (sameExact && publicShare(alternatives.share?.url)) || publicShare(check.share?.url), complete: alternatives?.complete ?? check.complete, alternativesFailed: alternatives === null };
 }
@@ -716,7 +708,7 @@ export function resultPages({ env = process.env,
       const catalog = local && groups.length ? await loadCachedCatalog().catch(() => null) : null;
       const shown = [...visibleChecks(data.checks ?? [], args, data.generation)];
       if (data.generation?.stage === 'final') shown.sort((a, b) => (b.score?.value ?? -1) - (a.score?.value ?? -1));
-      const hiddenWarnings = (data.checks ?? []).filter(check => !shown.includes(check)).map(hostedWarning).join('');
+      const hiddenWarnings = (data.checks ?? []).filter(check => !shown.includes(check) && usTrademark(check)?.status === 'exact_match_found').map(check => hostedWarning(check)).join('');
       const cards = data.hosted ? shown.map(check => hostedCard(check, data.pending, args, data.generation?.priceSnapshot?.checkedAt))
         : groups.map((group, index) => localCard(group, data.pending ? null : selection.names[index].pick, data, args, catalog));
       const page = render(groups, local ? [localCheckNotice, ...lines] : lines, at, data.sources, watch ? data : null, args.companyType,

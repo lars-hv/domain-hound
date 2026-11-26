@@ -51,12 +51,13 @@ function shopTable(domain, quotes, cheapest) {
     + '</tr></thead><tbody>' + rows.join('') + '</tbody></table>';
 }
 
-function endingCard(row, card) {
+function endingCard(row, card, intro = '') {
   const prices = [...row.prices].sort((a, b) => (a.threeYearUsd ?? Infinity) - (b.threeYearUsd ?? Infinity)
     || (a.firstPaymentUsd ?? Infinity) - (b.firstPaymentUsd ?? Infinity));
-  const [first] = prices;
+  const [cheapest] = prices;
   const buy = prices.find(price => price.buyUrl);
   const best = card.pick?.domain === row.domain && Boolean(buy);
+  const first = (best && prices.find(price => price.shop === card.pick.shop)) || cheapest;
   const more = prices.length - 3;
   const labels = [row.domain === card.exact && 'You asked for this', best && 'Hound’s pick'].filter(Boolean);
   return '<section class="offer-row' + (best ? ' best-domain' : '') + '" data-domain="' + escape(row.domain) + '">'
@@ -71,20 +72,24 @@ function endingCard(row, card) {
         + escape(first.minimumYears) + ' years.'
         + (Number.isFinite(first.renewalUsd) ? ' Renewal ' + amount(first.renewalPaymentUsd ?? first.minimumYears * first.renewalUsd) + ' per payment.' : '')
         + '</p>' : '') : '<p class="offer-condition">No standard price listed.</p>')
-    + (row.note ? '<p class="offer-condition">' + escape(row.note) + '</p>' : '')
+    + intro + (row.note ? '<p class="offer-condition">' + escape(row.note) + '</p>' : '')
     + (buy ? '<a class="action" aria-label="Buy ' + escape(row.domain + ' at ' + buy.shop) + '" href="' + escape(buy.buyUrl)
       + '">Buy at ' + escape(buy.shop) + (buy !== first ? ' · ' + amount(buy.threeYearUsd) + ' for 3 years' : '') + '</a>' : '')
     + (buy?.shop === 'Cloudflare' ? '<p class="offer-condition">Requires Cloudflare DNS.</p>' : '')
     + (buy && Number.isFinite(buy.firstYearUsd) && buy.renewalUsd > 3 * buy.firstYearUsd ? '<p class="renewal-warning">Renewal at '
       + escape(buy.shop) + ' costs more than 3 times the first year.</p>' : '')
-    + (first ? shopTable(row.domain, prices.slice(0, 3), first.threeYearUsd) : '')
+    + (first ? shopTable(row.domain, prices.slice(0, 3), cheapest.threeYearUsd) : '')
     + (more > 0 ? '<details class="extra-shops"><summary class="more-shops">+' + more + ' more shop' + (more === 1 ? '' : 's')
-      + '</summary>' + shopTable(row.domain, prices.slice(3), first.threeYearUsd) + '</details>' : '') + '</section>';
+      + '</summary>' + shopTable(row.domain, prices.slice(3), cheapest.threeYearUsd) + '</details>' : '') + '</section>';
 }
 
 function nameCard(card, index, multi, perNameShare) {
   const available = card.domains.filter(row => row.status === 'available');
-  if (card.pick) available.sort((a, b) => Number(b.domain === card.pick.domain) - Number(a.domain === card.pick.domain));
+  const firstDomain = card.exact ?? card.pick?.domain;
+  if (firstDomain) available.sort((a, b) => Number(b.domain === firstDomain) - Number(a.domain === firstDomain));
+  const intro = (card.apps ? '<div class="primary-checks">' + card.apps + card.warning + '</div>' : card.warning) || '';
+  const first = available[0];
+  const introInOffer = card.apps && first && (!card.exact || first.domain === card.exact);
   const taken = card.domains.filter(row => row.status === 'taken');
   const requestedTaken = taken.some(row => row.domain === card.exact);
   const priority = new Map([['com', 0], ['ai', 1], ['io', 2]]);
@@ -93,17 +98,16 @@ function nameCard(card, index, multi, perNameShare) {
   const unknown = card.domains.filter(row => row.status === 'unknown');
   const count = available.length;
   return '<article class="hunt-card" id="name-' + index + '">'
-    + (multi ? '<h2>' + escape(card.name) + '</h2>' : '') + card.warning
+    + (multi ? '<h2>' + escape(card.name) + '</h2>' : '') + (!introInOffer && card.answer ? paragraph(card.answer) : '')
+    + (!introInOffer ? intro : '')
     + (card.score ? '<div class="name-score">' + paragraph(card.score) + '</div>' : '')
     + (requestedTaken ? '<p class="requested-actions">' + anchor('Watch ' + card.exact, watchLink(card.exact))
       + ' or ask your agent to draft an offer.</p>' : '')
     + (count ? (requestedTaken ? '<h3 class="alternatives-title">Available instead</h3>' : '<p class="offer-count">'
       + count + ' available domain' + (count === 1 ? '' : 's') + '</p>')
-      + '<div class="ending-list">' + available.map(row => endingCard(row, card)).join('') + '</div>'
+      + '<div class="ending-list">' + available.map(row => endingCard(row, card, introInOffer && row === first ? intro : '')).join('') + '</div>'
       : '<p class="ending-summary">' + (card.alternativesFailed ? 'Couldn’t check other endings.' : card.complete !== false && taken.length && !unknown.length
         ? 'All checked endings are taken.' : 'No available endings confirmed.') + '</p>')
-    + (card.checks ? '<details class="name-details"><summary>Name checks</summary><div class="local-evidence">'
-      + card.checks + '</div></details>' : '')
     + (others.length ? '<div class="taken-group"><p class="taken-list"><b>Taken</b> ' + others.map(row =>
       '<a aria-label="Watch ' + escape(row.domain) + '" href="' + escape(watchLink(row.domain)) + '">'
       + escape(row.domain.startsWith(card.name.toLowerCase().split('.')[0] + '.') || row.domain.startsWith(normalizeName(card.name) + '.')
@@ -111,6 +115,8 @@ function nameCard(card, index, multi, perNameShare) {
       + ' <span class="taken-next">Watch an ending, or ask your agent to draft an offer.</span></p></div>' : '')
     + (unknown.length ? '<details class="local-evidence"><summary>' + unknown.length + ' ending' + (unknown.length === 1 ? '' : 's')
       + ' couldn’t be confirmed</summary>' + unknown.map(row => '<p>' + escape(row.domain + ' · ' + (row.note || 'Could not confirm')) + '</p>').join('') + '</details>' : '')
+    + (card.checks ? '<details class="name-details"><summary>Name checks</summary><div class="local-evidence">'
+      + card.checks + '</div></details>' : '')
     + '<div class="suggestion-foot">' + (Array.isArray(card.reasons) && card.reasons.length ? '<details><summary>Why this name?</summary><ul class="reason-list">'
       + card.reasons.map(reason => '<li>' + escape(reason) + '</li>').join('') + '</ul></details>' : '')
     + (perNameShare && card.share ? anchor('Share ' + card.name, card.share) : '') + '</div></article>';
