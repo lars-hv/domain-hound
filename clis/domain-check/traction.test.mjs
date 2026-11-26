@@ -68,6 +68,7 @@ function fetcherFor(calls) {
         return date ? Response.json({ events: [{ eventAction: 'registration', eventDate: date }] })
           : new Response(null, { status: 404 });
       }
+      case 'web.archive.org': return new Response('', { headers: { 'content-type': 'text/plain' } });
       case 'index.commoncrawl.org':
         if (url.pathname === '/collinfo.json') return Response.json(fixture.collinfo);
         assert.equal(url.pathname, '/CC-MAIN-2026-47-index');

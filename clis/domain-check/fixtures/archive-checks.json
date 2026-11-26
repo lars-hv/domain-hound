@@ -1,0 +1,47 @@
+{
+  "wayback": {
+    "taken": {
+      "status": 200,
+      "type": "text/plain",
+      "body": "20180308025019 200\n"
+    },
+    "not-seen": {
+      "status": 200,
+      "type": "text/plain",
+      "body": ""
+    },
+    "unknown": {
+      "status": 403,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Forbidden</title>"
+    }
+  },
+  "commonCrawl": {
+    "collections": {
+      "status": 200,
+      "type": "application/json; charset=utf-8",
+      "body": [
+        {
+          "cdx-api": "https://index.commoncrawl.org/CC-MAIN-2026-47-index"
+        }
+      ]
+    },
+    "taken": {
+      "status": 200,
+      "type": "text/x-ndjson",
+      "body": "{\"url\":\"https://www.PROFILE/\",\"timestamp\":\"20261108010431\",\"status\":\"200\"}\n"
+    },
+    "not-seen": {
+      "status": 404,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "message": "No Captures found for: PROFILE"
+      }
+    },
+    "unknown": {
+      "status": 404,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Not Found</title>"
+    }
+  }
+}

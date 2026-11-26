@@ -2,6 +2,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// YouTube integration tests pass a synthetic key directly to their injected fetcher.
+delete process.env.YOUTUBE_API_KEY;
+
 // Import this first in every test file. It points the runtime cache at a throwaway folder, so tests never write
 // into the package or the real user cache. Child processes inherit the variable.
 if (!process.env.DOMAIN_HOUND_CACHE_DIR) {

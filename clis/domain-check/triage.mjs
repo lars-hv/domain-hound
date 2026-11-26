@@ -11,7 +11,7 @@ import { mapLimit } from './cache.mjs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { checkSocialHandles } from './handles.mjs';
 import { checkDomainSite } from './com-site.mjs';
-import { playSearchLink, searchAndroidApps } from './google-play.mjs';
+import { playSearchLink } from './google-play.mjs';
 import { googleSearchLink, lowerVerdict, nameCheckLines, searchGoogle } from './google-search.mjs';
 import { autocompleteWords, collectRivals, createTraction, evidenceLifetime, judgeRivals, parseGeo, siteDomain, startEvidence,
   tractionNotes, tractionSummary, tractionVerdict } from './traction.mjs';
@@ -96,7 +96,7 @@ export function memorability(name, input) {
 }
 
 function siteEvidence(row, site) {
-  if (row?.status === 'probably-free') return 'Registry free';
+  if (row?.status === 'probably-free') return 'Available at the registry';
   if (row?.status !== 'taken') return 'Registry unresolved';
   if (site?.state === 'live') return site.title ? 'Live: ' + compactText(site.title, 75) : 'Live site';
   if (site?.state === 'for-sale' || row.forSale) return 'Taken, possible resale';
@@ -146,10 +146,9 @@ function sameNameEvidence({ name, live, norway, us, entities, entity, github, ha
   };
 }
 
-function appStatus(ios, android) {
+function appStatus(ios) {
   const taken = (store, matches) => 'taken on ' + store + (matches[0].seller ? ' (' + matches[0].seller + ')' : '');
-  return 'App name: ' + (ios ? ios.length ? taken('iOS', ios) : 'free on iOS' : 'iOS not checked') + ', '
-    + (android ? android.length ? taken('Android', android) : 'free on Android' : 'Android not checked');
+  return 'App name: ' + (ios ? ios.length ? taken('iOS', ios) : 'free on iOS' : 'iOS not checked');
 }
 
 // US marks read as before; EU and Norwegian marks name their office and status first.
@@ -179,12 +178,12 @@ function verdict({ mark, otherMark, silent, waiting = [], ...evidence }) {
   return [decision, [reason, trademark !== reason && trademark, trademarkReason(otherMark), missing].filter(Boolean).join(' · ')];
 }
 
-function silentSources({ marks, offices, apps, android, entities, norway, edgar, github, handles }) {
+function silentSources({ marks, offices, apps, entities, norway, edgar, github, handles }) {
   return Object.entries({
     USPTO: marks,
     ...Object.fromEntries(offices.filter(result => result.state !== 'off')
       .map(result => [officeNames[result.office], officeAnswered(result) ? true : null])),
-    'App Store': apps, 'Google Play': android, Wikidata: entities, Brønnøysund: norway,
+    'App Store': apps, Wikidata: entities, Brønnøysund: norway,
     EDGAR: edgar, GitHub: github.status === 'check' ? null : github.status,
     npm: handles.npm === 'check' ? null : handles.npm,
   }).filter(([, value]) => value == null).map(([source]) => source);
@@ -220,7 +219,7 @@ export async function namePresence(input, options = {}) {
   if (!name) return { error: 'Enter one name without a domain ending.' };
   const started = performance.now();
   const timeLeft = () => 8500 - (performance.now() - started);
-  const sources = { ...options, signal: AbortSignal.timeout(8500), playBudgetMs: 8000, timeLeft, cacheLifetime: evidenceLifetime };
+  const sources = { ...options, signal: AbortSignal.timeout(8500), timeLeft, cacheLifetime: evidenceLifetime };
   const traction = createTraction({ ...sources, refreshTranco: options.refreshTranco === true });
   const entityCheck = searchEntities(name, input, sources);
   const siteChecks = mapLimit(coreWebsiteEndings, 3, async ending => {
@@ -229,19 +228,17 @@ export async function namePresence(input, options = {}) {
     if (site?.state === 'live') traction.evidence(domain);
     return [ending, site];
   });
-  const [ios, android, google, entities, website] = await Promise.all([
+  const [ios, google, entities, website] = await Promise.all([
     searchApps(name, input, sources),
-    searchAndroidApps(new Map([[name, input]]), sources),
     searchGoogle(name, input, { ...sources, entities: entityCheck }),
     entityCheck, siteChecks,
   ]);
   // The applet has no agent: Wikipedia/Wikidata presence stands in for GEO and is labelled so.
-  const apps = [...(ios ?? []).map(row => ({ ...row, store: 'iOS' })),
-    ...(android.get(name) ?? []).map(row => ({ ...row, store: 'Android' }))];
+  const apps = (ios ?? []).map(row => ({ ...row, store: 'iOS' }));
   const rivals = collectRivals({ name, input, sites: Object.fromEntries(website), entities, topics: google.raw?.topics, suggestions: google.raw?.suggestions, apps });
   startEvidence(traction, rivals);
   const judged = judgeRivals(rivals, await traction.settle(400), { now: (options.now ?? new Date()).getTime(),
-    answered: { wikidata: entities != null, apps: ios != null && android.has(name) }, entities });
+    answered: { wikidata: entities != null, apps: ios != null }, entities });
   const summary = tractionSummary(judged);
   const notes = tractionNotes(judged);
   return { name, ...(summary && { traction: summary }), ...(notes.length && { notes }), checks: nameCheckLines({
@@ -249,15 +246,14 @@ export async function namePresence(input, options = {}) {
     google: google.google,
     competition: {
       AppStore: ios?.map(({ name, seller, ratings }) => ({ name, developer: seller, ratings })),
-      GooglePlay: android.get(name)?.map(({ name, seller, ratings }) => ({ name, developer: seller, ratings })),
     },
   }) };
 }
 
 // Same-name rivals with measured traction follow the traction rules first; evidence whose traction could not be
 // measured keeps the earlier same-name checks. Trademark and availability guardrails stay in place.
-function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, mark, site, best, available, marks, apps, android,
-  androidAnswered = android, company, premium = [], offices = [] }) {
+function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, mark, site, best, available, marks, apps,
+  company, premium = [], offices = [] }) {
   if (rival?.[0] === 'Avoid') return rival;
   if (overlap) return ['Avoid', overlap.domain + ' is a live business in the same category'];
   if (activeApp) return ['Avoid', activeApp.name + ' is an app in the same category with ' + activeApp.ratings + ' ' + activeApp.store + ' ratings'];
@@ -269,16 +265,15 @@ function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, 
   if (mark) return ['Check first', trademarkReason(mark)];
   if (sameName.level !== 'few') return ['Check first', 'Several public sources show same-name use'];
   if (app) return ['Check first', 'An exact-name app already exists'];
-  if (android?.length) return ['Check first', 'An exact-name Android app already exists'];
   if (site) return ['Check first', site.domain + ' has a live site under this name'];
   if (entity) return ['Check first', 'An exact-name Wikidata entity already exists'];
   const answeredOffices = offices.filter(result => result.state !== 'off');
-  if (!marks || !apps || !androidAnswered || sameName.unchecked?.length || !answeredOffices.every(officeAnswered)) {
+  if (!marks || !apps || sameName.unchecked?.length || !answeredOffices.every(officeAnswered)) {
     return ['Check first', 'A competition source did not answer'];
   }
   if (!best) {
-    return ['Check first', available.length ? 'The free endings require buyer eligibility'
-      : premium.length ? 'The free endings may be premium, price at shop' : 'No domain was found free at the registry'];
+    return ['Check first', available.length ? 'The available endings require buyer eligibility'
+      : premium.length ? 'The available endings may be premium, price at shop' : 'The registry did not confirm an available domain'];
   }
   const regions = ['US', ...answeredOffices.map(result => ({ EU: 'EU', NO: 'Norwegian' })[result.office])];
   return ['No conflict found', 'No ' + regions.slice(0, -1).join(', ') + (regions.length > 1 ? ' or ' : '') + regions.at(-1)
@@ -395,18 +390,12 @@ export async function triageNames(inputs, options = {}) {
     options.onProgress?.({ stage: 'handles' });
     return evidenceHandles.then(() => checkSocialHandles(order.map(key => ({ name: key, variants: true })), { ...options, signal }));
   }).catch(() => new Map()));
-  // Google Play answers per name, so the first pass keeps the names it has.
-  const playLive = once('playLive', () => new Map());
-  let playFinished = !answerBy;
-  const play = once('play', () => searchAndroidApps(new Map(screened.map(([key, input]) => [key, input])),
-    { ...sources, onResult: (name, apps) => playLive.set(name, apps),
-      playBudgetMs: Math.min(answerBy ? 20000 : 12000, options.playBudgetMs ?? Infinity, budgetMs) }));
   const unverifiedHandles = { github: { status: 'check' }, handles: { GitHub: 'check', npm: 'check' } };
   // Share the optional office lookups between passes and keep them off the first answer's critical path.
   const officeCheck = office => mapLimit(entries, 4, ([name, input, index]) => isScreened(index)
     ? byAnswer(once(office + ':' + name, () => checkOffice(office, name, input, sources)),
       index, officeNames[office], { office, state: 'pending' }) : null);
-  const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, androidApps, edgar, googleByName, socialByName,
+  const [domains, marksByName, appsByName, entitiesByName, handlesByName, norwayByName, edgar, googleByName, socialByName,
     euByName, noByName] = await Promise.all([
       // A cold cache still gets the bundled, dated list prices, so free endings never all read "price at shop".
       // The second pass also collects the slow website checks.
@@ -419,8 +408,6 @@ export async function triageNames(inputs, options = {}) {
           ...sources, social: evidenceHandles.then(rows => rows.get(name)).catch(() => null),
         })), index, 'GitHub repositories', unverifiedHandles) : null)),
       check(8, searchNorwegianCompanies),
-      answerBy ? Promise.race([play.then(map => [map, true]), answerBy.then(() => [new Map(playLive), false])])
-        .then(([map, done]) => { playFinished = done; return map; }) : play,
       byAnswer(once('edgar', () => retry(() => loadEdgarCompanies(sources), found)), 'all', 'EDGAR'),
       mapLimit(entries, 5, ([name, input, index]) => isScreened(index) ? byAnswer(once('google:' + name, () => searchGoogle(name, input, {
         ...sources, timeoutMs: timeLeft(),
@@ -433,10 +420,7 @@ export async function triageNames(inputs, options = {}) {
   const counts = {};
   function coverage(source, answered) { counts[source] = (counts[source] ?? 0) + Number(answered); }
   const geoByName = new Map(Object.entries(options.geo ?? {}).map(([key, value]) => [normalizeName(key), parseGeo(value)]));
-  const storeAppsByName = domains.groups.map(({ name }, index) => [
-    ...(appsByName[index] ?? []).map(row => ({ ...row, store: 'iOS', ref: row })),
-    ...(androidApps.get(keys.get(name)) ?? []).map(row => ({ ...row, store: 'Android', ref: row })),
-  ]);
+  const storeAppsByName = appsByName.map(apps => (apps ?? []).map(row => ({ ...row, store: 'iOS', ref: row })));
   const rivalsByName = domains.groups.map(({ name, sites }, index) => {
     if (!isScreened(index)) return [];
     const raw = googleByName[index].raw ?? {};
@@ -449,7 +433,6 @@ export async function triageNames(inputs, options = {}) {
     startEvidence(traction, rivals);
     return rivals;
   });
-  if (!playFinished) for (const [key, , index] of screened) if (!androidApps.has(key)) wait(index, 'Google Play');
   options.onProgress?.({ stage: 'rivals' });
   // The first pass waits for rival traction only until its answer is due.
   const evidence = await traction.settle(answerBy ? Math.max(150, timeLeft() - Math.max(0, options.answerAt - performance.now())) : undefined);
@@ -501,10 +484,9 @@ export async function triageNames(inputs, options = {}) {
       const brand = entities?.find(row => row.brand);
       const entity = brand ?? entities?.[0];
       const key = keys.get(name);
-      const android = androidApps.get(key);
       const google = googleByName[index];
       const judged = judgeRivals(rivalsByName[index], evidence, { now: (options.now ?? new Date()).getTime(),
-        answered: { wikidata: entities != null, apps: apps != null && android != null },
+        answered: { wikidata: entities != null, apps: apps != null },
         geo: geoByName.get(name), entities });
       const { explained } = judged;
       const storeApps = storeAppsByName[index];
@@ -546,7 +528,7 @@ export async function triageNames(inputs, options = {}) {
       const sitesSilent = sitesWaiting || Object.values(sites).some(site => site?.state === 'unknown');
       if (answerBy && sitesWaiting) wait(index, 'websites');
       const pending = waitingFor(index);
-      const silent = silentSources({ marks, offices, apps, android, entities, norway, edgar, github, handles })
+      const silent = silentSources({ marks, offices, apps, entities, norway, edgar, github, handles })
         .filter(source => (!options.deferHandles || !['GitHub', 'npm'].includes(source)) && !pending.includes(source));
       if (sitesSilent && !pending.includes('websites')) silent.push('websites');
       const otherEntity = otherEntities?.find(row => row.brand) ?? otherEntities?.[0];
@@ -554,12 +536,12 @@ export async function triageNames(inputs, options = {}) {
         rival: tractionVerdict(judged), overlap, sameName: legacy, activeApp,
         brand: otherEntity?.brand ? otherEntity : undefined, app: apps?.find(row => !explained.has(row)), entity: otherEntity,
         mark, otherMark, site, silent, waiting: pending, best, available, marks, apps, premium: results.filter(row => row.status === 'premium'),
-        android: android?.filter(row => !explained.has(row)), androidAnswered: android, company, offices,
+        company, offices,
       });
       const googleExplained = explainedGoogle(key, googleByName[index].raw, judged, entities);
       const summary = tractionSummary(judged);
       const answered = {
-        USPTO: marks, 'App Store': apps, 'Google Play': android, Google: google.google, Wikidata: entities,
+        USPTO: marks, 'App Store': apps, Google: google.google, Wikidata: entities,
         Brønnøysund: norway, EDGAR: edgar, ...(options.memo && { Websites: sitesSilent ? null : true }),
         ...Object.fromEntries(offices.filter(result => result.state !== 'off')
           .map(result => [officeNames[result.office], officeAnswered(result) ? true : null])),
@@ -571,14 +553,14 @@ export async function triageNames(inputs, options = {}) {
         US: usMark ? trademarkReason(usMark) : marks ? [] : null,
         mark: usMark?.url ?? null,
         // EU and NO appear once a key is set: the strongest hit, [] when the office answered in full with none,
-        // null when it failed or answered in part (check yourself).
+        // null when it failed or answered in part.
         ...Object.fromEntries(offices.filter(result => result.state !== 'off').map(result => {
           const best = result.marks?.[0];
           return [result.office, officeAnswered(result) ? (best ? trademarkReason(best) : []) : null];
         })),
         ...(officeMarks.length > 0 && { marks: officeMarkEntries(officeMarks.sort(markOrder(key))) }),
         AppStore: app ? { name: app.name, developer: app.seller, ratings: app.ratings, url: app.url } : apps ? [] : null,
-        GooglePlay: android?.map(({ name, seller, url, ratings }) => ({ name, developer: seller, url, ratings })).slice(0, 3) ?? null,
+        GooglePlay: null,
         Wikidata: entity ? { name: entity.name, description: entity.description, url: entity.url,
           ...(entity.brand && { brand: true }) } : entities ? [] : null,
         sameName,
@@ -588,8 +570,8 @@ export async function triageNames(inputs, options = {}) {
       const subjectKnown = Boolean(options.about || options.category);
       const euSandbox = (options.env ?? process.env).DOMAIN_HOUND_EUIPO_SANDBOX === '1';
       const eu = euSandbox ? undefined : offices.find(result => result.office === 'EU');
-      const rivalSources = ['Google', 'Wikidata', 'App Store', 'Google Play', 'websites'];
-      const rivalsAnswered = google.google != null && entities != null && apps != null && android != null && !sitesSilent
+      const rivalSources = ['Google', 'Wikidata', 'App Store', 'websites'];
+      const rivalsAnswered = google.google != null && entities != null && apps != null && !sitesSilent
         && judged.rivals.every(row => row.level !== 'unknown');
       const sameSectorCompany = norway?.matches.some(({ match, homepage }) => {
         const domain = siteDomain(homepage);
@@ -614,8 +596,7 @@ export async function triageNames(inputs, options = {}) {
           // Web search evidence no measured rival explains: one brand owning the results, or several uses, counts as
           // a same-name use with some traction (in your subject when the search says so).
           ...googleRival(google.google, explainedGoogle(key, google.raw, judged, entities), subjectKnown)], company: sameSectorCompany },
-        apps: { state: apps != null && android != null ? 'ok'
-          : ['App Store', 'Google Play'].some(source => pending.includes(source)) ? 'pending' : 'unknown',
+        apps: { state: state(apps, 'App Store') ?? 'unknown',
         list: storeApps.map(row => ({ sameCategory: subjectKnown
           ? describedBusiness(key, [row.name, row.category, row.description].join(' '), options.about, options.category) : null })) },
         handles: options.deferHandles ? {} : social ? scoreHandles(social)
@@ -638,8 +619,8 @@ export async function triageNames(inputs, options = {}) {
           memorable: memorability(key, names.get(name)),
           presence: Object.fromEntries(Object.entries(handles).map(([service, status]) =>
             [service, status === 'check' ? null : status])),
-          sites: Object.fromEntries(seen), appName: appStatus(apps, android),
-          AndroidSearch: android ? null : playSearchLink(names.get(name)),
+          sites: Object.fromEntries(seen), appName: appStatus(apps),
+          AndroidSearch: playSearchLink(names.get(name)),
         },
       };
     });
@@ -656,7 +637,8 @@ export async function triageNames(inputs, options = {}) {
       } else row.reason += ' · Meaning: ' + meaning.note;
     }
     row.checks = options.compact ? null
-      : nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
+      : nameCheckLines(row).map(({ label, text, link, linkLabel }) =>
+        (linkLabel ? text + ' · ' + linkLabel : label + ': ' + text) + ' · ' + link);
     // Only the fully screened names get a Name score; bans and hard filters run first, inside scoreName.
     if (row._scoreInput) {
       row._scoreInput.meaning = meaning ? { how: meaning.how } : null;
@@ -709,7 +691,7 @@ export function handleOrder(groups, keys, eligible) {
 function compactHandles(entries) {
   if (!Array.isArray(entries)) return null;
   const by = state => entries.filter(entry => entry.state === state).map(entry => entry.platform);
-  const [taken, notFound, check] = [by('taken'), by('not-found'), by('check')];
+  const [taken, notFound, check] = [by('taken'), by('not-found'), by('unknown')];
   return { ...(taken.length && { taken }), ...(notFound.length && { not_found: notFound }), ...(check.length && { check }) };
 }
 
@@ -771,7 +753,7 @@ function topChoices(rows, requested, eligible, budget) {
 function packTriage(rows, sources, compact, endings, eligible, requested = [], budget) {
   const prices = {};
   const top = topChoices(rows, requested, eligible, budget);
-  // Handle states for the top names: taken, not_found (no public profile found) or check (check yourself).
+  // Compact lists of platforms with taken, missing and unknown handles.
   const handles = Object.fromEntries(rows.filter(row => row._social).map(row => [row.name, row._social]));
   const names = rows.map(({ _free, _recommendable, _pick, _mark, _googleExplained, _receiptEndings, _handles, _social, _waiting, _score, _scoreInput,
     ...row }) => {
@@ -795,7 +777,7 @@ function packTriage(rows, sources, compact, endings, eligible, requested = [], b
     if (size() > limit) for (const row of names) row.buy = null;
   }
   for (const trim of [
-    // Platforms not listed under taken or not_found are "check yourself"; the results page lists them all.
+    // The results page retains every platform, including unknowns.
     () => { for (const value of Object.values(result.handles ?? {})) delete value.check; },
     // GitHub and npm stand in the handle states and the same-name summary too.
     // The results page and say read the full score from the receipt; the machine field keeps value and band.

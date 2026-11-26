@@ -31,16 +31,15 @@ test('normalizes a name into a valid single label', () => {
   }
 });
 
-test('checks all twelve default endings and adds valid .com variants', () => {
+test('checks all ten default endings and adds valid .com variants', () => {
   assert.deepEqual(domains, [
-    'example.com', 'example.ai', 'example.io', 'example.me', 'example.co',
-    'example.dev', 'example.app', 'example.si', 'example.so', 'example.no',
-    'example.xyz', 'example.tech',
+    'example.com', 'example.ai', 'example.io', 'example.dev', 'example.co',
+    'example.so', 'example.sh', 'example.inc', 'example.tech', 'example.app',
     'getexample.com', 'tryexample.com', 'useexample.com', 'examplehq.com',
   ]);
   assert.deepEqual(nameCandidates('example', { endings: ['ai'] }).map(row => row.domain), ['example.ai']);
-  assert.equal(nameCandidates('a'.repeat(63)).length, 12);
-  assert.equal(nameCandidates('a'.repeat(61)).length, 13);
+  assert.equal(nameCandidates('a'.repeat(63)).length, 10);
+  assert.equal(nameCandidates('a'.repeat(61)).length, 11);
   // Endings on request are checked only when asked for.
   assert.deepEqual(nameCandidates('example', { endings: ['com', 'de', 'uk'], variants: false }).map(row => row.domain),
     ['example.com', 'example.de', 'example.uk']);
@@ -49,7 +48,7 @@ test('checks all twelve default endings and adds valid .com variants', () => {
 test('uses system NS evidence and falls back to the authoritative registry for absence or timeout', async () => {
   const lookedUp = [];
   const result = await searchName('example', {
-    directory: null, comSite: async () => ({ state: 'parked' }),
+    directory: null, endings: ['com', 'io', 'me', 'no', 'so'], comSite: async () => ({ state: 'parked' }),
     resolveNs: async domain => {
       if (domain === 'example.com') return ['ns.example.net'];
       throw Object.assign(new Error(), { code: domain.endsWith('.me') ? 'ETIMEOUT' : 'ENOTFOUND' });
@@ -101,11 +100,11 @@ test('retries transport failures, 429 and 5xx with at most four concurrent reque
   });
   assert.equal(peak.get('rdap.example'), 4);
   assert.ok([...peak.values()].every(count => count <= 4));
-  assert.equal(attempts.size, 14);
+  assert.equal(attempts.size, 11);
   assert.equal(attempts.get('example.dev'), 3);
   assert.equal(attempts.get('example.io'), 2);
   assert.equal(result.results.find(row => row.tld === 'io').status, 'probably-free');
-  assert.equal(result.results.find(row => row.tld === 'me').status, 'probably-free');
+  assert.equal(result.results.find(row => row.tld === 'co').status, 'probably-free');
   const dev = result.results.find(row => row.tld === 'dev');
   assert.equal(dev.status, 'check-at-shop');
   assert.match(dev.registryReason, /503/);
@@ -113,7 +112,7 @@ test('retries transport failures, 429 and 5xx with at most four concurrent reque
 
 test('reads all exact Spaceship cards, including icon-only cart, premium, and taken', () => {
   // .net is checked on request only since 0.1.8; the fixture card still parses when it is asked for.
-  const parsed = parseSpaceshipRows(nameFixture, [...domains, 'example.net']);
+  const parsed = parseSpaceshipRows(nameFixture, [...domains, 'example.me', 'example.net']);
   assert.deepEqual([...parsed.keys()], ['example.com', 'example.co', 'example.me', 'example.io', 'example.ai', 'example.net']);
   assert.deepEqual(parsed.get('example.me'), { available: true, premium: false, price: 8.7, renewal: 15.53 });
   assert.deepEqual(parsed.get('example.io'), { available: true, premium: true, price: 1200, renewal: 52 });
@@ -122,18 +121,18 @@ test('reads all exact Spaceship cards, including icon-only cart, premium, and ta
   assert.equal(parsed.get('example.co').available, false);
   assert.equal(parseSpaceshipRows([{
     domain: 'example.me', text: 'example\n.me\n$15.53\n$8.70\nRenews $15.53\nAdd to cart', canBuy: true,
-  }], domains).get('example.me').price, 8.7);
+  }], ['example.me']).get('example.me').price, 8.7);
 });
 
 test('ranks exact names in the quality order, cheapest first within an ending, and retains high-priced free endings', () => {
   const pricing = { com: [140, 150], dev: [8, 20], app: [10, 11], me: [8.7, 15.53], co: [3, 30], ai: [80, 80] };
-  const rows = nameCandidates('example').filter(row => !row.exact || pricing[row.tld]).map(row => {
+  const rows = nameCandidates('example', { endings: Object.keys(pricing) }).map(row => {
     const [price, renewal] = row.exact ? pricing[row.tld] : [5, 11];
     return { ...row, price, renewal, status: 'probably-free' };
   });
   const ranked = rankName(rows.reverse());
   assert.deepEqual(ranked.map(row => row.domain), [
-    'example.com', 'example.ai', 'example.dev', 'example.app', 'example.co', 'example.me',
+    'example.com', 'example.ai', 'example.dev', 'example.co', 'example.app', 'example.me',
     'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com',
   ]);
   assert.equal(ranked.find(row => row.tld === 'co').renewalJump, true);
@@ -301,7 +300,7 @@ test('agent returns the registry result when the one live shop check runs out of
   const started = new Promise(resolve => { confirming = resolve; });
   const seen = [];
   const checking = agentResult(['example'], {
-    ...registryOptions, budgetMs: 1200, browser: true,
+    ...registryOptions, endings: ['me'], budgetMs: 1200, browser: true,
     resolveNs: async domain => domain.endsWith('.me') ? [] : ['ns.example.net'],
     confirm: async (_shop, domain) => {
       seen.push(domain);
@@ -332,7 +331,7 @@ test('agent batch accepts bare names and exact domains together in one native ca
   assert.deepEqual(result.names.map(row => row.name), ['example', 'oakenroom.me', 'sample.io']);
   assert.deepEqual(result.names[1], { name: 'oakenroom.me', taken: ['me'] });
   assert.deepEqual(result.names[2], { name: 'sample.io', taken: ['io'] });
-  assert.equal(attempted.filter(domain => domain.startsWith('example.')).length, 12);
+  assert.equal(attempted.filter(domain => domain.startsWith('example.')).length, 10);
   assert.deepEqual(attempted.filter(domain => !domain.startsWith('example.')).sort(), ['oakenroom.me', 'sample.io']);
   for (const names of [['a', 'x..com'], ['a', 'x.example.co.uk'], ['a', '.com']]) {
     assert.equal(typeof (await agentResult(names, registryOptions)).error, 'string', names.join());
@@ -368,7 +367,7 @@ test('agent batch retries Google endings once and names an evidenced registry ra
 test('agent returns a confirmed row, single-query variants and exact-domain support', async () => {
   const checkedAt = '2026-11-24T10:00:00.000Z';
   const payload = await agentResult('Example', {
-    ...registryOptions, now: new Date(checkedAt), browser: true,
+    ...registryOptions, endings: ['com', 'io', 'so', 'me'], now: new Date(checkedAt), browser: true,
     resolveNs: async domain => /\.(me|so)$/.test(domain) ? [] : ['ns.example.net'],
     confirm: async () => ({ status: 'confirmed', shopName: 'Spaceship', price: 8.701, renewal: 15.531, checkedAt }),
   });
@@ -378,8 +377,8 @@ test('agent returns a confirmed row, single-query variants and exact-domain supp
   assert.equal(json.priceListDate, undefined);
   assert.equal(json.results, undefined);
   assert.equal(json.options, undefined);
-  assert.equal(json.legend.nc, 'Free at the registry; list price, not confirmed');
-  assert.equal(json.legend.ok, 'Free, price confirmed at the shop (at = quote time)');
+  assert.equal(json.legend.nc, 'Available at the registry. List price, not confirmed');
+  assert.equal(json.legend.ok, 'Available. Price confirmed at the shop (at = quote time)');
   // Neither free ending has a list price here, so the quality order sends the one shop quote to .so (above .me).
   assert.deepEqual(json.best, {
     domain: 'example.so', status: 'free-confirmed', priceNow: 8.7, at: '10:00', renewal: 15.53, threeYear: 39.76, shop: 'Spaceship',
@@ -387,7 +386,7 @@ test('agent returns a confirmed row, single-query variants and exact-domain supp
   });
   assert.deepEqual(json.names, [{
     name: 'example',
-    taken: ['com', 'ai', 'io', 'dev', 'app', 'co', 'si', 'xyz', 'tech', 'no', 'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com'],
+    taken: ['com', 'io', 'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com'],
     free: [{ d: 'so', s: 'ok', now: 8.7, renew: 15.53, y3: 39.76, shop: 'Spaceship', at: '10:00' },
       { d: 'me', s: 'nc', shop: 'Spaceship' }],
   }]);
@@ -417,14 +416,14 @@ test('classifies marketplace NS from the existing DNS reply, including on non-.c
     assert.equal(saleMarketplace([host]), null, host);
   }
   const result = await searchName('example', {
-    directory: null, skipComSite: true,
+    directory: null, endings: ['com', 'me'], skipComSite: true,
     resolveNs: async domain => [domain === 'example.me' ? 'ns2.undeveloped.com' : 'ns1.domaincontrol.com'],
     fetcher: async () => assert.fail('DNS already returned registration'),
   });
   assert.deepEqual(result.results.filter(row => row.forSale).map(row => row.domain), ['example.me']);
 });
 
-test('agent checks all twelve endings for 20 names and keeps the priced output under 8 KB', async t => {
+test('agent checks all ten endings for 20 names and keeps the priced output under 8 KB', async t => {
   const cache = await mkdtemp(join(tmpdir(), 'hound-batch-'));
   t.after(() => rm(cache, { recursive: true, force: true }));
   const directory = pathToFileURL(cache + '/');
@@ -454,13 +453,13 @@ test('agent checks all twelve endings for 20 names and keeps the priced output u
   });
   assert.equal(result.complete, true);
   assert.deepEqual(result.names.map(row => row.name), queries.map(normalizeName));
-  assert.equal(attempted.length, 240);
+  assert.equal(attempted.length, 200);
   assert.equal(started.length, 1);
   assert.equal(result.best.domain, started[0][1]);
   assert.equal(result.names.flatMap(row => row.free ?? []).filter(row => row.s === 'ok').length, 1);
   const domains = result.names.flatMap(({ name, taken = [], resale = [], free = [], shop_check = [] }) =>
     [...taken, ...resale, ...free.map(row => row.d), ...shop_check].map(ending => `${name}.${ending}`));
-  assert.equal(domains.length, 240);
+  assert.equal(domains.length, 200);
   assert.deepEqual(new Set(domains), new Set(attempted));
   assert.deepEqual(result.names[0].resale, ['io']);
   assert.ok(result.names[0].free.some(row => row.d === 'so'));
@@ -486,7 +485,7 @@ test('agent preserves duplicate input positions while looking up each candidate 
   });
   assert.deepEqual(result.names.map(row => row.name), ['example', 'another', 'example']);
   assert.deepEqual(result.names[0], result.names[2]);
-  assert.equal(attempted.length, 24);
+  assert.equal(attempted.length, 20);
 });
 
 test('existing direct shop hosts remain exact HTTPS allowlist entries', () => {

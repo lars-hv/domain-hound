@@ -281,8 +281,8 @@ function quoteTime(value) {
 }
 
 const agentLegend = {
-  nc: 'Free at the registry; list price, not confirmed',
-  ok: 'Free, price confirmed at the shop (at = quote time)',
+  nc: 'Available at the registry. List price, not confirmed',
+  ok: 'Available. Price confirmed at the shop (at = quote time)',
   prem: 'Premium: price at the shop, never a list price',
   resale: 'Taken, possible resale',
   shop_check: 'Registry did not settle; check at a shop',
@@ -293,7 +293,7 @@ const agentLegend = {
   term: 'Years per payment when more than one',
   jump: 'Renewal over twice the first annual price',
   risk: 'Short name: may be premium, price at the shop',
-  likely_free: 'Registry silent, DNS has no delegation: likely free, confirm at a shop',
+  likely_free: 'Registry silent, DNS has no delegation: possibly available, confirm at a shop',
   likely_taken: 'Registry silent, DNS has a delegation: likely taken',
 };
 const googleEndings = new Set(['app', 'dev']);
@@ -438,7 +438,7 @@ function compactAgentResult(groups, names, complete, checkedAt, batch, rateLimit
   // Fourteen endings for twenty long names: an unconfirmed list-price row drops its s, as the display layer does.
   if (batch && Buffer.byteLength(JSON.stringify(result)) >= 7900) {
     for (const row of byName.values()) if (row.free) row.free = row.free.map(({ s, ...option }) => s === 'nc' ? option : { ...option, s });
-    result.legend = { ...result.legend, d: agentLegend.d + '; a free entry without s is nc' };
+    result.legend = { ...result.legend, d: agentLegend.d + '; an available entry without s is nc' };
   }
   return result;
 }
@@ -571,7 +571,8 @@ async function endingBenchmarks(domain, options) {
   const bundled = options.bundledCatalog === undefined ? bundledCatalog : options.bundledCatalog;
   const catalog = await loadCachedCatalog(options.directory).catch(() => null);
   const prices = {};
-  for (const tld of defaultEndings.filter(ending => ending !== 'com' && canRecommend(ending, options.eligible))) {
+  const endings = [...new Set([...defaultEndings, ...(options.eligible ?? [])])];
+  for (const tld of endings.filter(ending => ending !== 'com' && canRecommend(ending, options.eligible))) {
     const quote = listQuote(catalog, { domain: label + '.' + tld, tld }, now, bundled);
     if (quote.price == null) continue;
     const costs = termCosts(tld, quote.price, quote.renewal);
@@ -714,7 +715,8 @@ function lookupArgs(args) {
 function triageOutput(result, options) {
   if (options.compact) {
     for (const row of result.names ?? []) {
-      row.checks = nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
+      row.checks = nameCheckLines(row).map(({ label, text, link, linkLabel }) =>
+        (linkLabel ? text + ' · ' + linkLabel : label + ': ' + text) + ' · ' + link);
     }
   }
   return result;

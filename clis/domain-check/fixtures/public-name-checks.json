@@ -1,0 +1,289 @@
+{
+  "tiktok": {
+    "taken": {
+      "status": 200,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "provider_name": "TikTok",
+        "type": "rich",
+        "embed_type": "profile",
+        "embed_product_id": "paperheron",
+        "author_url": "https://www.tiktok.com/@paperheron",
+        "html": "<blockquote class=\"tiktok-embed\"></blockquote>"
+      }
+    },
+    "not-found": {
+      "status": 400,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "message": "Something went wrong",
+        "code": 400
+      }
+    },
+    "unknown": {
+      "status": 400,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "code": 400,
+        "message": "Invalid URL"
+      }
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    }
+  },
+  "instagram": {
+    "taken": {
+      "status": 200,
+      "type": "text/javascript; charset=UTF-8",
+      "body": {
+        "provider_name": "Instagram",
+        "type": "rich",
+        "html": "<blockquote class=\"instagram-media\" data-instgrm-permalink=\"https://www.instagram.com/paperheron/?utm_source=ig_embed&amp;utm_campaign=loading\"></blockquote>"
+      }
+    },
+    "not-found": {
+      "status": 400,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "error": {
+          "message": "The requested resource does not exist",
+          "type": "OAuthException",
+          "code": 24,
+          "error_subcode": 2207045,
+          "is_transient": false,
+          "error_user_title": "Media Not Found",
+          "error_user_msg": "The requested media could not be embedded either because it does not exist or you don't have permission to embed it."
+        }
+      }
+    },
+    "unknown": {
+      "status": 400,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "error": {
+          "type": "OAuthException",
+          "code": 190,
+          "message": "Invalid OAuth access token"
+        }
+      }
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    }
+  },
+  "x": {
+    "taken": {
+      "status": 200,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "url": "https://x.com/PaperHeron",
+        "html": "<a class=\"twitter-timeline\" href=\"https://x.com/PaperHeron\">Posts by Paper Heron</a>",
+        "type": "rich",
+        "provider_name": "X"
+      }
+    },
+    "not-found": {
+      "status": 404,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>X / ?</title><h1 id=\"header\">Nothing to see here</h1>"
+    },
+    "unknown": {
+      "status": 404,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Not Found</title>"
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    }
+  },
+  "youtube": {
+    "taken": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><link rel=\"canonical\" href=\"https://www.youtube.com/channel/UCabcdefghijklmnopqrstuv\"><link rel=\"alternate\" media=\"handheld\" href=\"https://m.youtube.com/@paperheron\"><title>Paper Heron - YouTube</title><meta property=\"og:type\" content=\"profile\">"
+    },
+    "not-found": {
+      "status": 404,
+      "type": "text/html; charset=utf-8",
+      "body": "<html lang=\"en\" dir=\"ltr\"><head><title>404 Not Found</title></head><body><iframe src=\"/error?src=404&amp;ifr=1&amp;error=\"></iframe></body></html>"
+    },
+    "unknown": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>YouTube</title><link rel=\"canonical\" href=\"https://www.youtube.com/watch?v=x\">"
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    }
+  },
+  "threads": {
+    "taken": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Paper Heron (&#064;paperheron) • Threads, Say more</title>"
+    },
+    "not-found": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Threads • Log in</title>"
+    },
+    "unknown": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Threads</title>"
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    }
+  },
+  "googlePlay": {
+    "taken": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Paper Heron - Android Apps on Google Play</title><a href=\"/store/apps/details?id=test.example.heron\" aria-label=\"PaperHeron\" class=\"Qfxief\"></a>"
+    },
+    "not-found": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Absent Brand - Android Apps on Google Play</title><a class=\"Si6A0c Gy4nib\" href=\"/store/apps/details?id=test.example.absentbrand\"><span class=\"DdYX5\">Absent Brands Studio</span></a>"
+    },
+    "empty": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Absent Brand - Android Apps on Google Play</title><span>No results for <b>Absent Brand</b></span>"
+    },
+    "unknown": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Changed Brand - Android Apps on Google Play</title><a href=\"/store/apps/details?id=test.example.changedbrand\"><span class=\"other\">Changed Brand</span></a>"
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    },
+    "prefix": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Paper Heron - Android Apps on Google Play</title><a href=\"/store/apps/details?id=test.example.heron\" aria-label=\"Paper Heron: Notes &amp; Stories\" class=\"Qfxief\"></a>"
+    }
+  },
+  "facebook": {
+    "taken": {
+      "status": 200,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "data": {
+          "url": "https://example.test/profile.png",
+          "is_silhouette": false
+        }
+      }
+    },
+    "not-found": {
+      "status": 400,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "error": {
+          "type": "GraphMethodException",
+          "code": 100,
+          "error_subcode": 33,
+          "message": "Unsupported get request. Object with ID 'absentbrand' does not exist, cannot be loaded due to missing permissions, or does not support this operation."
+        }
+      }
+    },
+    "unknown": {
+      "status": 400,
+      "type": "application/json; charset=utf-8",
+      "body": {
+        "error": {
+          "type": "OAuthException",
+          "code": 190,
+          "message": "Access token required"
+        }
+      }
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    }
+  },
+  "twitch": {
+    "taken": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><head><title>Paper Heron - Twitch</title><meta content=\"Paper Heron - Twitch\" property=\"og:title\"><meta property=\"og:profile:username\" content=\"paperheron\"></head>"
+    },
+    "not-found": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><head><title>Twitch</title><meta property='og:site_name' content='Twitch'><meta property='og:title' content='Twitch'><meta property=\"og:url\" content=\"https://www.twitch.tv/absentbrand\"></head>"
+    },
+    "unknown": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><head><title>Paper Heron - Twitch</title><meta property=\"og:title\" content=\"Paper Heron - Twitch\"><meta property=\"og:profile:username\" content=\"paperheron\"></head>"
+    },
+    "login": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Log in to continue</title><form action=\"/login/\"></form>"
+    },
+    "limited": {
+      "status": 429,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><title>Too many requests</title>"
+    },
+    "generic": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><head><title>Twitch</title><meta property='og:site_name' content='Twitch'><meta property='og:title' content='Twitch'></head>"
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { dnsNeed } from './clis/domain-check/prices.mjs';
 export const dossierTool = {
   name: 'taken_domain_dossier',
   description: 'Investigate a taken domain: registry, site and public listing evidence, likely owner type, and a price range when supported, '
-    + 'plus up to three free alternatives with upfront, renewal and three-year prices and a quick trademark, app and rival screen. '
+    + 'plus up to three available alternatives with upfront, renewal and three-year prices and a quick trademark, app and rival screen. '
     + 'Relay the display and sources. Keep maxBudget private and send no drafts. Share follow-up drafts and start a watch only on request.',
   annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, openWorldHint: true },
   inputSchema: {

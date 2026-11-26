@@ -14,6 +14,8 @@ import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
+import { HostedRateLimit, hostedClient } from './hosted.mjs';
+import { generatedChecks, hostedChecks, hostedResult } from './hosted-results.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -37,7 +39,7 @@ const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entr
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: supportedEndings.length, uniqueItems: true,
   items: { type: 'string', enum: supportedEndings },
-  description: 'Endings to consider for the recommendation, in preference order; listed endings rank first. For .com only use ["com"]. The page still shows all twelve default endings for bare names. '
+  description: 'Endings to consider for the recommendation, in preference order; listed endings rank first. For .com only use ["com"]. The page still shows all ten default endings for bare names. '
     + 'On request only (add them here when the person asks or names a country): ' + requestEndings.map(ending => '.' + ending).join(', ') + '.',
 };
 const countryEnding = {
@@ -48,7 +50,7 @@ function regionalEnding(country) {
   const code = country?.toUpperCase();
   return Object.hasOwn(countryEnding, code) ? countryEnding[code] : europeanCountries.has(code) ? 'eu' : null;
 }
-const selectedEndings = args => [...new Set([...(args.endings ?? []), regionalEnding(args.country), ...defaultEndings].filter(Boolean))];
+const selectedEndings = args => [...new Set([...(args.endings ?? []), ...(args.eligible ?? []), regionalEnding(args.country), ...defaultEndings].filter(Boolean))];
 const lookupProperties = {
   country: { type: 'string', pattern: '^[A-Za-z]{2}$', description: 'Buyer country code if supplied, such as SE, DK, DE or GB for .co.uk. Do not infer it from language alone.' },
   ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
@@ -88,12 +90,17 @@ const legacyTool = { ...checkTool, name: 'broker_find',
 
 const triageTool = {
   name: 'triage_names',
-  description: 'Find or vet a product name before any other search. For naming, generate five distinct, easy-to-say names, with the supplied name first. '
-    + 'Call triage_names once with those names, a short about description and shortlist: true. Checks domains, trademarks, apps, rivals and meanings. '
-    + 'Use the returned verdicts and label unfinished checks as pending. ' + relay,
+  description: 'Find or vet a product name. Pass idea to use the website’s name generator, or pass names to check supplied candidates. '
+    + 'For a second round, pass the same idea with wanted, avoid and round. Use the returned verdicts and label unfinished checks as pending. ' + relay,
   inputSchema: {
     type: 'object',
     properties: {
+      idea: { type: 'string', minLength: 3, maxLength: 400, description: 'A short product idea. Use idea or names.' },
+      wanted: { type: 'array', maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 40 },
+        description: 'Names the person liked in the previous round.' },
+      avoid: { type: 'array', maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 40 },
+        description: 'Names the person rejected in the previous round.' },
+      round: { type: 'integer', minimum: 1, maximum: 20, description: 'Which naming round this is.' },
       ...lookupProperties,
       names: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 },
         description: '1 to 20 bare names without endings, e.g. ["Quiet Otter","Hush Room"].' },
@@ -102,7 +109,7 @@ const triageTool = {
       companyType: { type: 'string', enum: Object.keys(handlePriorities),
         description: 'Use developer, consumer, b2b or media when it fits, to highlight the handles that matter.' },
       additionalHandles: { type: 'array', uniqueItems: true, items: { type: 'string', enum: requestPlatforms.map(platform => platform.id) },
-        description: 'Extra check links only when requested. Snapchat, Reddit, Twitch, Threads, Pinterest or Discord.' },
+        description: 'Extra check links only when requested. Snapchat, Reddit, Twitch, Pinterest or Discord. Threads is checked by default.' },
       category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for relevant trademark classes and competitors. Use travel, software, finance, retail, health, education, food or media.' },
       about: { type: 'string', minLength: 1, maxLength: 160, description: 'A short description of what your product does, to identify overlapping sites and apps.' },
       candidates: { type: 'object', maxProperties: 20,
@@ -118,7 +125,7 @@ const triageTool = {
         additionalProperties: { type: 'string', minLength: 1, maxLength: 160, pattern: '^\\s*(?:[Kk]nown\\b.*\\S.*|[Uu]nknown)\\s*$' },
         description: geoInstruction + ' Example: {"ExampleBoard":"known: a team notes workspace","QuietOtter":"unknown"}.' },
     },
-    required: ['names'],
+    oneOf: [{ required: ['names'] }, { required: ['idea'] }],
     additionalProperties: false,
   },
 };
@@ -279,6 +286,9 @@ function triageArguments(args) {
   if (!Array.isArray(args.names) || args.names.length < 1 || args.names.length > 20) {
     throw new Error('names must list 1 to 20 names' + (Array.isArray(args.names) ? '; it has ' + args.names.length : '') + '.');
   }
+  if (['idea', 'wanted', 'avoid', 'round'].some(key => Object.hasOwn(args, key))) {
+    throw new Error('Use wanted, avoid and round only with idea.');
+  }
   const bad = args.names.findIndex(name => typeof name !== 'string' || !name.trim() || name.length > 100 || /[,.\p{Cc}]/u.test(name));
   if (bad >= 0) {
     throw new Error('names[' + bad + '] is not valid. Supply 1 to 20 bare names of up to 100 characters, without commas or domain endings.');
@@ -310,6 +320,24 @@ function triageArguments(args) {
   if (Object.hasOwn(args, 'geo')) flags.push('--geo', JSON.stringify(geoValue(args.geo, args.names)));
   if (Object.hasOwn(args, 'candidates')) flags.push('--candidates', JSON.stringify(candidatesValue(args.candidates, args.names)));
   return ['--triage', args.names.join(','), '--compact', '--receipt', ...flags];
+}
+
+function generationArguments(args) {
+  if (Object.keys(args).some(key => !['idea', 'wanted', 'avoid', 'round'].includes(key))) {
+    throw new Error('Supply idea and optional wanted, avoid and round.');
+  }
+  const { idea, wanted, avoid, round } = args;
+  if (typeof idea !== 'string' || idea.trim().length < 3 || idea.length > 400 || !/\p{L}/u.test(idea) || /[\p{Cc}\p{Cf}]/u.test(idea)) {
+    throw new Error('Give a product idea between 3 and 400 characters.');
+  }
+  for (const value of [wanted, avoid]) {
+    if (value !== undefined && (!Array.isArray(value) || value.length > 5
+      || value.some(name => typeof name !== 'string' || !name.trim() || name.length > 40 || !/^[\p{L}\p{M}\p{N} '.-]+$/u.test(name)))) {
+      throw new Error('Wanted and avoid can list up to five names, each up to 40 characters.');
+    }
+  }
+  if (round !== undefined && (!Number.isInteger(round) || round < 1 || round > 20)) throw new Error('Choose a round from 1 to 20.');
+  return { idea: idea.trim(), ...(wanted && { wanted }), ...(avoid && { avoid }), ...(round && { round }) };
 }
 
 // The capability prints one JSON object on stdout.
@@ -451,18 +479,18 @@ function pendingTriage(progress, rows) {
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
   pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
-  onLookupEvent, scoreLog = scoreLogger(),
+  onLookupEvent, scoreLog = scoreLogger(), hosted = cwd === capabilityDir ? hostedClient(serverVersion) : null,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
   const pending = new Set();
   const lookups = new Map();
+  const generations = new Map();
   const background = new Set();
 
   // Join the running or finished lookup for the same input, or start one. Answer within the budget with the
   // result, or with the progress so far while the lookup keeps running for a repeated call to collect.
-  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}) {
-    const started = performance.now();
+  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}, started = performance.now()) {
     let cliArgs;
     let rows;
     try {
@@ -513,6 +541,75 @@ export async function serve({
     return tracked;
   };
 
+  async function hostedLookup(args, triage) {
+    if (!hosted || args?.confirm === true || (triage && args?.additionalHandles?.length)) return null;
+    let checks;
+    try {
+      (triage ? triageArguments : cliArguments)(args);
+      const rows = (triage ? triageRows : checkRows)(args);
+      if (!rows.length || (triage && args.names.some(name => !normalizeName(name)))) return null;
+      const extra = selectedEndings(args).filter(ending => !defaultEndings.includes(ending));
+      const signal = AbortSignal.timeout(Math.max(1, Math.min(13_000, Math.floor(timeout - 750))));
+      checks = await Promise.all(rows.map(({ name }) => hosted.check(name, name.includes('.') ? [] : extra, signal)));
+    } catch (problem) {
+      if (problem instanceof HostedRateLimit) return errorResult('The Hound needs a breather. Try again in a few minutes.');
+      return null;
+    }
+    try {
+      const evidence = hostedChecks(checks, args, triage);
+      const page = await pages(hostedResult(evidence, args), args, { triage });
+      if (triage && scoreLog?.enabled) {
+        const scored = evidence.filter(check => Number.isInteger(check.score?.value))
+          .sort((a, b) => compareScores(a.score, b.score));
+        track(scoreLog.shown(scored.slice(0, args.shortlist ? 8 : scored.length).map(({ query, score }) => ({
+          label: query.ascii, name: query.name, score,
+        }))));
+      }
+      return toolResult(JSON.stringify(triage ? page : withCheckQuoteOffer(page, args)));
+    } catch {
+      return errorResult('Domain Hound could not format the result.');
+    }
+  }
+
+  async function generateNames(args) {
+    let input;
+    try {
+      input = generationArguments(args);
+    } catch (problem) {
+      return errorResult(problem.message);
+    }
+    const local = () => toolResult(JSON.stringify({ display: attributed(
+      'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n'
+      + namingRecipe(input.idea)), source: 'local' }));
+    if (!hosted) return local();
+    const key = JSON.stringify(input);
+    let job = generations.get(key);
+    if (!job) {
+      job = { page: null };
+      generations.set(key, job);
+      const write = (generation, pending = false, failed = false) => pages(
+        hostedResult(generatedChecks(generation), {}, generation, { pending, failed }), {},
+        { triage: true, reuse: job.page?.resultPage, refresh: pending },
+      ).then(page => { job.page = page; });
+      job.initial = (async () => {
+        const initial = await hosted.generate(input, AbortSignal.timeout(Math.max(1, Math.floor(timeout - 750))));
+        const pending = initial.stage === 'initial' && typeof initial.details?.id === 'string';
+        await write(initial, pending);
+        if (pending) track(hosted.finishGeneration(initial).then(final => write(final), () => write(initial, false, true)));
+      })();
+      job.initial.then(() => {
+        setTimeout(() => { if (generations.get(key) === job) generations.delete(key); }, keepFinishedMs).unref();
+      }, () => generations.delete(key));
+    }
+    try {
+      await job.initial;
+      return toolResult(JSON.stringify(job.page));
+    } catch (problem) {
+      return problem instanceof HostedRateLimit
+        ? errorResult('The Hound needs a breather. Try again in a few minutes.') : local();
+    }
+  }
+
   // The handle rows for one set of extra platforms, shared by every call on the same lookup.
   function handleCheck(lookup, args) {
     const extraPlatforms = args.additionalHandles ?? [];
@@ -554,7 +651,8 @@ export async function serve({
       evidence.handles = Object.fromEntries(entries.map(([name, rows]) => [name, {
         taken: rows.filter(row => row.state === 'taken').map(row => row.platform),
         not_found: rows.filter(row => row.state === 'not-found').map(row => row.platform),
-        check: rows.filter(row => row.state === 'check').map(row => row.platform),
+        not_seen: rows.filter(row => row.state === 'not-seen').map(row => row.platform),
+        check: rows.filter(row => row.state === 'unknown').map(row => row.platform),
       }]));
       if (!check.rows) {
         evidence.handlesPending = true;
@@ -683,7 +781,7 @@ export async function serve({
         protocolVersion: versions.includes(version) ? version : versions[0],
         capabilities: { tools: {} },
         serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: serverVersion },
-        instructions: 'When you use Domain Hound, include its clickable Results page link in your final answer, including for a single exact domain. Copy the first line of say for the link, then give your short answer. For a new product name, generate five candidates and call triage_names once with shortlist: true.',
+        instructions: 'When you use Domain Hound, include its clickable Results page link in your final answer, including for a single exact domain. Copy the first line of say for the link, then give your short answer. For a new product name, call triage_names with idea. To check names you already have, pass names.',
       });
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
@@ -725,7 +823,11 @@ export async function serve({
       }
     }
     const purchase = isObject(args) && args.purchase === true;
+    const started = performance.now();
     if (name === triageTool.name) {
+      if (isObject(args) && Object.hasOwn(args, 'idea')) return reply(await generateNames(args));
+      const fromHost = await hostedLookup(args, true);
+      if (fromHost) return reply(fromHost);
       let current;
       const result = await runLookup(args, triageArguments, triageRows, (data, lookup) => triageReceipt(lookup, args, data),
         async (progress, timing, lookup) => {
@@ -741,7 +843,7 @@ export async function serve({
           const shown = JSON.parse(summary);
           shown.display = resultsLine(resultPage) + '\n' + shown.display;
           return JSON.stringify({ ...shown, resultPage });
-        }, lookup => { current = lookup; });
+        }, lookup => { current = lookup; }, started);
       reply(result);
       if (!result.isError && current?.finished && current.outcome?.data) followUp(current);
       return;
@@ -749,8 +851,10 @@ export async function serve({
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    const result = await runLookup(args, cliArguments, checkRows, data => pages(data, args).then(page => withCheckQuoteOffer(page, args)),
-      (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact }));
+    const result = await hostedLookup(args, false) ?? await runLookup(
+      args, cliArguments, checkRows, data => pages(data, args).then(page => withCheckQuoteOffer(page, args)),
+      (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact }), undefined, started,
+    );
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
     }

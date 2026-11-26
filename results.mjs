@@ -6,7 +6,8 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canRecommend, choosePick, comparePicks, defaultEndings, domainEnding, eligibilityNeed, lowestTotal, lowestUpfront, normalizeName,
   qualityRank } from './clis/domain-check/name-search.mjs';
-import { handlePriorities, handleStates, handleSummary } from './clis/domain-check/handles.mjs';
+import { handleLabel, handlePriorities, handleSummary, linkedInSearchHint } from './clis/domain-check/handles.mjs';
+import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { safeLink } from './display.mjs';
@@ -28,14 +29,14 @@ const markOf = row => row.competition?.US;
 const waitingOn = (row, source) => Array.isArray(row.waiting) && row.waiting.includes(source);
 const notScreened = row => row.competition?.sameName?.summary === 'Not screened';
 const missing = (row, source) => waitingOn(row, source) ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete';
-// EU and Norway marks appear once their key is set: a hit, [] for none, null for check yourself.
+// EU and Norway marks appear once their key is set: a hit, [] for none, null for an incomplete check.
 const offices = [['EU', 'EU', 'EUIPO'], ['NO', 'Norway', 'Patentstyret']];
 const officeText = (row, office, name) => {
   const mark = row.competition?.[office];
   if (typeof mark === 'string') return evidenceText(mark);
   if (mark === true) return 'match found';
   if (mark != null) return 'no match found';
-  return waitingOn(row, name) ? 'still checking' : 'check yourself';
+  return waitingOn(row, name) ? 'still checking' : "couldn't check";
 };
 const marksText = (row, skip = []) => {
   const mark = markOf(row);
@@ -95,12 +96,12 @@ function resultGroups(data, eligibleEndings, preferred = []) {
       const risk = Boolean(option?.risk || raw?.risk);
       const premium = Boolean(match(row.premium) || option?.s === 'prem' || option?.prem || risk);
       const includePrice = !reserved && (!premium || confirmed) && (!taken || exact);
-      const likely = match(row.likely_free) ? 'likely free by DNS' : match(row.likely_taken) ? 'likely taken by DNS' : null;
+      const likely = match(row.likely_free) ? 'possibly available by DNS' : match(row.likely_taken) ? 'likely taken by DNS' : null;
       const state = taken ? 'taken' : premium ? 'premium' : option ? 'free' : 'check';
       const status = taken ? (match(row.resale) ? 'Taken, possible resale' : 'Taken')
         : reserved ? 'Not offered for registration' : confirmed ? 'Confirmed at shop'
           : premium ? (risk ? 'May be premium, price at shop' : 'Premium, price at shop')
-          : option ? 'Free at the registry' : likely ? 'Check at shop, ' + likely
+          : option ? 'Available at the registry' : likely ? 'Check at shop, ' + likely
             : data.pending && !data.failed && !match(row.shop_check) ? 'Still checking' : 'Check at shop';
       const usd = includePrice ? { now: quote.now, renew: quote.renew, y3: quote.y3, term: quote.term,
         jump: quote.jump, shop: quote.shop } : {};
@@ -131,7 +132,7 @@ function availabilityScore(group, args) {
   const { row, records } = group;
   if (row.name.includes('.')) return group;
   const label = normalizeName(row.name);
-  const domains = records.filter(record => record.status === 'Free at the registry' && record.eligible
+  const domains = records.filter(record => record.status === 'Available at the registry' && record.eligible
     && record.domain === label + '.' + record.ending && (!args.endings?.length || args.endings.includes(record.ending))
     && (args.budget == null || (record.now ?? Infinity) <= args.budget))
     .map(record => ({ ending: record.ending, total: record.total, registry: true }));
@@ -169,7 +170,9 @@ function signals(group, triage = true) {
         : waitingOn(row, 'websites') ? 'still checking' : states.includes('unknown') ? 'check incomplete'
           : checked ? 'no live site found on checked endings' : 'not checked';
   if (!triage) return 'web: ' + web;
-  return 'iOS: ' + appFinding(comp.AppStore, row, 'App Store') + ' | Android: ' + appFinding(comp.GooglePlay, row, 'Google Play') + ' | web: ' + web;
+  const android = comp.GooglePlay != null || waitingOn(row, 'Google Play')
+    ? ' | Android: ' + appFinding(comp.GooglePlay, row, 'Google Play') : '';
+  return 'iOS: ' + appFinding(comp.AppStore, row, 'App Store') + android + ' | web: ' + web;
 }
 
 // One selection feeds the receipt lines and the share link: preferred endings, budget, eligibility, verdict and
@@ -249,7 +252,7 @@ function summary(groups, args, triage, selection) {
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
     + reason.replaceAll(' · ', '. ') + '.'
     + markScreen(wanted.row, reason) + shortScore(wanted.row)
-    + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best free rename: ' : ' Next name to check: ')
+    + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best available alternative: ' : ' Next name to check: ')
       + plain(best.group.row.name) + '.' : '')
     + (picks.some(item => item.group === wanted) ? '' : ' | ' + signals(wanted, triage)) : null;
   const next = watch ?? (!triage && args.shortlist ? 'Next: screen the best names.' : best ? 'Next: check your pick at the shop.' : 'Next: try another name.');
@@ -275,6 +278,8 @@ function summary(groups, args, triage, selection) {
     keep,
     !triage && shortScore(wanted.row) ? shortScore(wanted.row).trim() : null,
     handles && 'Handles for ' + evidenceText(wanted.row.name) + ': ' + plain(handles) + '.',
+    triage && wanted.row.competition?.GooglePlay == null && !waitingOn(wanted.row, 'Google Play')
+      ? googlePlayLabel + ' · [' + googlePlayLinkLabel + '](' + playSearchLink(wanted.row.name) + ')' : null,
     running.length ? 'Still checking ' + running.join(', ') + '. The results page updates by itself.' : null,
     ...offerLines,
     // Cheapest upfront and best value over 3 years each get a line only when they are not the pick.
@@ -323,7 +328,7 @@ function markScreen(row, reason) {
   const link = hit && recordLink(hit.url);
   return (named.length ? ' ' + named.map(office => office === 'NO' ? 'Norway' : office).join(' and ') + ' trademark screen.' : '')
     + (rest ? ' ' + rest + '.' : '') + (link ? ' [' + plain(hit.office) + ' record](' + link + ').' : '')
-    + manual.map(([, label, name]) => ' [' + name + '](' + trademarkSearches[label] + '): check yourself.').join('');
+    + manual.map(([, label, name]) => ' [' + name + '](' + trademarkSearches[label] + "): couldn't check.").join('');
 }
 
 function httpsLink(value) {
@@ -346,16 +351,16 @@ function details(group) {
   const matches = [
     ['US marks: ' + (typeof markOf(row) === 'string' ? plain(markOf(row)) : markOf(row) == null ? missing(row, 'USPTO') : 'no match found'), httpsLink(comp.mark)],
     ...officeMarks(row).map(entry => [markLabel(entry), recordLink(entry.url)]),
-    // An office without a key, or one that did not answer in full, reads check yourself with its search.
+    // An office without a key, or one that did not answer in full, links to its search.
     ...offices.filter(([office]) => typeof comp[office] !== 'string').map(([office, label, name]) => [
-      label + ' marks: ' + (!Object.hasOwn(comp, office) ? 'not checked automatically, check yourself'
+      label + ' marks: ' + (!Object.hasOwn(comp, office) ? "couldn't check"
         : waitingOn(row, name) ? 'still checking'
-           : comp[office] == null ? 'check yourself, ' + name + ' did not answer in full' : 'no match found'),
+           : comp[office] == null ? "couldn't check, " + name + ' did not answer in full' : 'no match found'),
       Array.isArray(comp[office]) ? null : trademarkSearches[label]]),
-    ['WIPO marks: check yourself', trademarkSearches.WIPO],
+    ['WIPO marks', trademarkSearches.WIPO, 'Search WIPO'],
     ...(row.meaning ? [['Meaning: ' + plain(row.meaning)]] : []),
     ...(comp.AppStore == null ? [['iOS: ' + missing(row, 'App Store')]] : []),
-    ...(comp.GooglePlay == null ? [['Android: ' + missing(row, 'Google Play')]] : []),
+    ...(waitingOn(row, 'Google Play') ? [['Android: still checking']] : []),
     ...ios.map(value => ['iOS: ' + titleAndLink(value)[0], titleAndLink(value)[1]]),
     ...android.map(value => ['Android: ' + titleAndLink(value)[0], titleAndLink(value)[1]]),
     ...[...(comp.sameName?.Norway ?? []), ...(comp.sameName?.EDGAR ?? [])].map(company => [plain(
@@ -367,23 +372,22 @@ function details(group) {
     ['Web search: ' + plain(row.google?.why === 'still checking' ? 'still checking' : row.google?.result ?? 'check incomplete'), httpsLink(row.google?.link)],
     ...(waitingOn(row, 'websites') ? [['Websites on taken endings: still checking']] : []),
     ['iOS search', 'https://apps.apple.com/us/iphone/search?term=' + encodeURIComponent(row.name)],
-    ['Android search', 'https://play.google.com/store/search?q=' + encodeURIComponent(row.name) + '&c=apps'],
+    [comp.GooglePlay == null ? googlePlayLabel : '', playSearchLink(row.name), googlePlayLinkLabel],
     ...(row.traction ? [[plain(row.traction.rival ?? row.traction.name ?? ''),
       httpsLink(row.traction.domain && 'https://' + row.traction.domain)],
     ...Object.values(row.traction).flat().filter(value => typeof value === 'string').map(value => [plain(value)])] : []),
     ...(typeof row.reason === 'string' ? row.reason.split(' · ').slice(1).map(value => [plain(value)]) : []),
   ];
-  return matches.filter(([text, href]) => text && (href || !/ search$/.test(text)));
+  return matches.filter(([text, href, linkLabel]) => linkLabel || text && (href || !/ search$/.test(text)));
 }
 
-// One line per platform in display order: Taken, No public profile found or Check yourself, with the profile link.
 function handleLines(group) {
   const rows = Array.isArray(group.row.handles) ? group.row.handles : [];
   return rows.flatMap(row => {
-    const label = row.platform + ' @' + plain(row.handle) + ': ' + (handleStates[row.state] ?? handleStates.check);
+    const label = row.platform + ' @' + plain(row.handle) + ' · ' + handleLabel(row);
     const detail = row.why === 'still checking' ? ' · still checking' : row.checkedAt ? ' · checked ' + plain(row.checkedAt) : '';
-    return [[label + detail, httpsLink(row.link)], ...(row.variants ?? []).map(variant => [
-      row.platform + ' alternative @' + plain(variant.handle) + ': ' + (handleStates[variant.state] ?? handleStates.check),
+    return [[label + detail, httpsLink(row.link), row.linkLabel], ...(row.variants ?? []).map(variant => [
+      row.platform + ' alternative @' + plain(variant.handle) + ' · ' + handleLabel(variant),
       httpsLink(variant.link),
     ])];
   });
@@ -400,13 +404,15 @@ function trademarkSnapshot(row) {
 }
 
 function nameSnapshot({ row, records }) {
-  const apps = [row.competition?.AppStore, row.competition?.GooglePlay];
+  const apps = [row.competition?.AppStore, ...(row.competition?.GooglePlay != null || waitingOn(row, 'Google Play')
+    ? [row.competition?.GooglePlay] : [])];
   const open = records.filter(record => record.state === 'free' && record.eligible).length;
   const blocked = records.filter(record => record.state === 'taken').length;
   const handles = Array.isArray(row.handles) ? row.handles : [];
   const taken = handles.filter(handle => handle.state === 'taken').length;
   const absent = handles.filter(handle => handle.state === 'not-found').length;
-  const checks = handles.filter(handle => handle.state === 'check').length;
+  const notSeen = handles.filter(handle => handle.state === 'not-seen').length;
+  const checks = handles.length - taken - absent - notSeen;
   return [
     'Domains ' + open + ' open' + (blocked ? ', ' + blocked + ' taken' : ''),
     'Trademark ' + trademarkSnapshot(row),
@@ -414,7 +420,8 @@ function nameSnapshot({ row, records }) {
     'Apps ' + (apps.some(value => value?.length) ? 'same-name listing' : apps.some(value => value == null)
       ? (waitingOn(row, 'App Store') || waitingOn(row, 'Google Play') ? 'still checking' : notScreened(row) ? 'not screened' : 'check incomplete') : 'no match'),
     'Handles ' + (handles.length ? [taken ? taken + ' taken' : null,
-      absent + taken ? absent + ' of ' + (absent + taken) + ' with no public match' : null, checks ? checks + ' to check' : null].filter(Boolean).join(', ')
+      absent ? absent + ' with no profile found' : null, notSeen ? notSeen + ' with no page found in public archives' : null,
+      checks ? "couldn't check " + checks : null].filter(Boolean).join(', ')
       : 'outside top three'),
   ].join(' / ');
 }
@@ -423,11 +430,20 @@ function handlePriority({ row }, companyType) {
   if (!Array.isArray(row.handles) || !row.handles.length || !Object.hasOwn(handlePriorities, companyType)) return '';
   return 'Handles to secure for this business: ' + handlePriorities[companyType].map(platform => {
     const entry = row.handles.find(handle => handle.platform === platform);
-    return platform + ' ' + (entry?.why === 'still checking' ? 'still checking' : handleStates[entry?.state ?? 'check'].toLowerCase());
+    return platform + ' · ' + (entry?.why === 'still checking' ? 'still checking' : handleLabel(entry));
   }).join(', ') + '.';
 }
 
 const anchor = (label, url) => '<a href="' + escape(url) + '">' + escape(label) + '</a>';
+function evidenceHtml([label, url, linkLabel]) {
+  if (!url) return escape(label);
+  return (linkLabel && label ? escape(label) + ' · ' : '') + anchor(linkLabel ?? label, url);
+}
+
+function evidenceMarkdown([label, url, linkLabel]) {
+  if (!url) return markdown(label);
+  return (linkLabel && label ? markdown(label) + ' · ' : '') + '[' + markdown(linkLabel ?? label) + '](' + url + ')';
+}
 function summaryHtml(line) {
   return Array.from(line.matchAll(/\[([^\]]+)\]\((https:\/\/[^\s)]+)\)/g)).reduce(({ html, offset }, match) =>
     ({ html: html + escape(line.slice(offset, match.index)) + anchor(match[1], match[2]), offset: match.index + match[0].length }),
@@ -455,9 +471,9 @@ export function disclosure(data, triage) {
     + 'Up to three go to public handle APIs. Domain Hound uses your brief locally. ' + shop;
 }
 
-function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [] } = {}) {
+function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [], hostedShare } = {}) {
   const title = watch ? 'Domain watch' : 'Domain results';
-  const shared = shareUrl(groups, checkedAt, shareFacts);
+  const shared = hostedShare ?? shareUrl(groups, checkedAt, shareFacts);
   const shareLabel = groups.length > 5 ? 'Share first five names' : 'Share';
   const [intro, ...body] = lines;
   const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
@@ -482,9 +498,9 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { saving
       + '<table><caption>Endings · USD before tax</caption><thead><tr><th scope="col">Ending</th><th scope="col">Today</th><th scope="col">Renewal</th></tr></thead><tbody>'
       + rows.join('') + '</tbody></table>'
       + (row.verdict ? '<details><summary>Trademark, app and web evidence</summary><ul>'
-        + details(group).map(([label, url]) => '<li>' + (url ? anchor(label, url) : escape(label)) + '</li>').join('') + '</ul></details>' : '')
+        + details(group).map(line => '<li>' + evidenceHtml(line) + '</li>').join('') + '</ul></details>' : '')
       + (handles.length ? '<details><summary>Handles</summary>' + (priority ? paragraph(priority) : '') + '<ul>'
-        + handles.map(([label, url]) => '<li>' + (url ? anchor(label, url) : escape(label)) + '</li>').join('') + '</ul></details>'
+        + handles.map(line => '<li>' + evidenceHtml(line) + '</li>').join('') + '</ul></details>'
         : row.verdict ? '<p><small>Handles: checked for the top three names.</small></p>' : '')
       + '</article>';
   });
@@ -508,9 +524,9 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { saving
       '| Ending | Today (USD) | Renewal (USD) | Evidence | Shop |', '| --- | --- | --- | --- | --- |',
       ...group.records.map(record => '| ' + [record.domain, ...amountsFor(record), markdown(rowNote(record)),
         record.checkout ? '[' + markdown(record.shop ?? 'Check at shop') + '](' + record.checkout + ')' : ''].join(' | ') + ' |'),
-      '', ...(group.row.verdict ? details(group).map(([label, url]) => '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label))) : []),
-      ...(handleLines(group).length ? ['', '### Handles', '', ...(handlePriority(group, companyType) ? [markdown(handlePriority(group, companyType)), ''] : []), ...handleLines(group).map(([label, url]) =>
-        '- ' + (url ? '[' + markdown(label) + '](' + url + ')' : markdown(label)))] : []), '']),
+      '', ...(group.row.verdict ? details(group).map(line => '- ' + evidenceMarkdown(line)) : []),
+      ...(handleLines(group).length ? ['', '### Handles', '', ...(handlePriority(group, companyType) ? [markdown(handlePriority(group, companyType)), ''] : []),
+        ...handleLines(group).map(line => '- ' + evidenceMarkdown(line))] : []), '']),
     ...(sources ? [markdown(sources), ''] : []), ...(note ? [markdown(note), ''] : []), 'You hold the leash.', ''].join('\n');
   return { html, md };
 }
@@ -603,14 +619,14 @@ export function resultPages({ env = process.env,
   return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
-      let groups = watch ? [] : resultGroups(data, args.eligible, args.endings);
-      if (!watch && !triage && !data.pending) groups = groups.map(group => availabilityScore(group, args));
+      let groups = watch || data.hosted ? [] : resultGroups(data, args.eligible, args.endings);
+      if (!watch && !triage && !data.hosted && !data.pending) groups = groups.map(group => availabilityScore(group, args));
       if (triage && args.shortlist && !data.pending && groups.some(({ row }) => row.score != null)) {
         groups = groups.filter(({ row }) => Number.isInteger(row.score?.value) && scoreEligible(row))
           .sort((a, b) => compareScores(a.row.score, b.row.score)).slice(0, 8);
       }
       const selection = receiptSelection(groups, args, triage, args.eligible ?? data.eligible ?? []);
-      const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
+      const { lines, savings, shortLines } = data.hosted ? { lines: data.lines, savings: [] } : watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
         ...(args.purchase ? ['This check leaves checkout to you.'] : []),
@@ -618,7 +634,7 @@ export function resultPages({ env = process.env,
         : { lines: ['No names passed the checks.'], savings: [] };
       // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
       const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);
-      const title = watch ? data.domain : groups[0]?.row.name;
+      const title = watch ? data.domain : groups[0]?.row.name ?? data.names?.[0]?.name;
       await mkdir(directory, { recursive: true, mode: 0o700 });
       // If a caller points us at a shared directory, don't expose the searched name in its listing.
       const privateListing = process.platform === 'win32' || ((await stat(directory)).mode & 0o077) === 0;
@@ -627,7 +643,9 @@ export function resultPages({ env = process.env,
       const base = kept ?? new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
       const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType,
-        { savings, note: watch ? '' : disclosure(data, triage), refresh: Boolean(refresh), shareFacts });
+        { savings, note: watch ? '' : data.hosted ? 'Domain Hound’s hosted service checks registries, prices and public name sources.' : disclosure(data, triage),
+          refresh: Boolean(refresh), shareFacts,
+          hostedShare: data.checks?.length === 1 ? httpsLink(data.checks[0].share?.url) : null });
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {
@@ -636,7 +654,7 @@ export function resultPages({ env = process.env,
         await unlink(markdownPath).catch(() => {});
         throw error;
       }
-      const exact = !triage && groups.length === 1 && groups[0].row.name.includes('.');
+      const exact = !triage && data.names?.length === 1 && data.names[0].name.includes('.');
       const latest = resolve(directory, 'session-' + session + '.html');
       if (kept && sessionBase === kept) {
         // The open tab shows the session copy; update it in place, without opening another tab.
@@ -655,7 +673,14 @@ export function resultPages({ env = process.env,
       await prune(directory, base).catch(() => {});
       const url = pathToFileURL(filename).href.replaceAll('(', '%28').replaceAll(')', '%29');
       // The link uses the client's local-file Markdown form. Keep the file URI for structured consumers.
-      const say = [resultsLine(url), ...(shortLines ?? lines)].join('\n');
+      const handles = data.hosted ? data.checks.flatMap(check => check.nameChecks?.handles ?? [])
+        : groups.flatMap(group => group.row.handles ?? []);
+      const hints = [...new Set(handles.map(linkedInSearchHint).filter(Boolean))];
+      const say = [resultsLine(url), ...(shortLines ?? lines), ...hints].join('\n');
+      if (data.hosted) {
+        const { hosted, lines, ...structured } = data;
+        return { display: say, say, ...structured, resultPage: url };
+      }
       if (triage && args.shortlist) return { display: say, say, checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({

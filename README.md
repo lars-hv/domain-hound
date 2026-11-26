@@ -47,19 +47,30 @@ Then ask, for example: “Is lanternbay.com available?”, “Find a name for my
 
 ## Find and check
 
-### What it checks
+The package uses the same hosted search as [domainhound.dev](https://domainhound.dev). `check_domains` compares ten
+endings by default: .com, .ai, .io, .dev, .co, .so, .sh, .inc, .tech and .app. A typed domain checks that exact ending.
+An affordable .inc result appears in a bare-name search only after the registry confirms availability.
 
-- **Domains:** registry RDAP or WHOIS for twelve endings by default (.com, .ai, .io, .me, .co, .dev, .app, .si, .so, .no, .xyz, .tech) and, on request, .net, .org, .sh, .gg, .inc, .studio, .se, .dk, .de, .uk, .co.uk and .eu. A domain is never called free without a registry or shop answer.
-- **Pick:** one quality order for AI-native companies: .com, .ai, .io, .dev, .app, .co, .so, .me, .si, then .xyz and .tech; other endings follow. The pick is the highest-quality free ending you can register whose payments over 3 years stay within $60, or within your budget when you give one; if none fits, it is the one with the least paid over 3 years. .ai is never the default pick unless you ask for it or its 3-year total fits your budget. Endings you list come first, in your order. A budget also drops endings that cost more than it upfront. The cheapest upfront payment and the best 3-year value get their own lines when they differ from the pick. Every checked ending stays on the page.
-- **Prices:** first payment, renewal and three-year cost from first-party registrar price lists, each with its date and label; renewal jumps and premium risk are flagged. Cloudflare's standard at-cost prices come from its official public table ([pricing.registrar.cloudflare.com](https://pricing.registrar.cloudflare.com/)), checked 2026-11-25 and shipped as a dated estimate; they compete with the other registrars, and rows priced there say Needs Cloudflare DNS.
-- **Trademarks:** live US marks (USPTO). EU (EUIPO) and Norwegian (Patentstyret) marks too when you set their free keys; otherwise, and for WIPO, search links to check yourself. Exact and near-identical live marks in the relevant classes (9, 35 and 42 for software) count the same at every office.
-- **Meaning:** names that are, contain or sound like a rude word in 14 languages get a note and Check first, never Avoid. Word lists: [LDNOOBW](https://github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words), © Shutterstock, CC BY 4.0, adapted (see `clis/domain-check/meaning-words.LICENSE.txt`).
-- **Apps and rivals:** same-name iOS and Android apps, companies, Wikidata entities and live sites, weighed by their traction.
-- **Handles:** GitHub, npm and Bluesky through their public APIs; YouTube, X, Instagram, TikTok, Facebook, LinkedIn and PyPI as links to check yourself. Each handle reads Taken, No public profile found, or Check yourself.
+Each available domain shows the listed shops, first-year price, renewal and three-year cost, plus the cheapest shop
+over three years. The Hound picks the highest-ranked available ending within $60 over three years when one qualifies.
+The results put exact live US trademark matches first, followed by the domains, App Store, Google Play and public
+handle checks. The package retries unknown public profile and Google Play results from your device. LinkedIn and
+Reddit use the Wayback Machine CDX index, with the latest Common Crawl index as a fallback when Wayback cannot answer.
+A capture includes its year. A successful empty archive search returns `not-seen`. Google Play matches a title or
+a title starting with the name followed by a non-letter, ignoring case. Set `DOMAIN_HOUND_EMBED_CHECKS=off` for search
+or profile links only on TikTok, Instagram, X, Threads, Facebook, LinkedIn, Reddit, Twitch and Google Play.
+The package also tries Apple from your device when the hosted App Store lookup is rate-limited.
 
-Registry answers and prices cover every name. Trademark, app and rival checks cover the first five. Slow checks and public handles for the top three fill in the same results page after the first answer. A three-year savings line appears when the pick beats the middle price from at least three dated registrar lists.
+Pass `idea` to `triage_names` to generate names on the same service. The results page updates as the checks finish.
+Pass `names` to screen names you already have. For a second generation round, pass the same `idea` with the `wanted`
+and `avoid` names and the next `round` number.
 
-The default install checks the registry and shows dated list prices. For a confirmed price, set `DOMAIN_HOUND_SPACESHIP_KEY` and `DOMAIN_HOUND_SPACESHIP_SECRET` (Spaceship permission `domains:read`), or `DOMAIN_HOUND_DYNADOT_KEY` (a production API key). Dynadot gives its production key account-wide access. Domain Hound only uses it to search. It shows premium pricing when it has a quote and points you to the shop when it has a premium signal without a price.
+Set `DOMAIN_HOUND_API_URL` to use a different HTTPS API origin or a loopback HTTP origin for development. The package
+uses local registry and price checks if the API is unavailable. Set `DOMAIN_HOUND_LOCAL=1` to choose local checks.
+Local naming uses the naming method to come up with candidates, then checks the supplied names. The local name screen
+can also use EUIPO and Patentstyret credentials and check rival websites.
+
+For a live price quote, use `quote_domain` or explicitly request a shop check. Set `DOMAIN_HOUND_SPACESHIP_KEY` and `DOMAIN_HOUND_SPACESHIP_SECRET` (Spaceship permission `domains:read`), or `DOMAIN_HOUND_DYNADOT_KEY` (a production API key). Dynadot gives its production key account-wide access. Domain Hound only uses it to search. It shows premium pricing when it has a quote and points you to the shop when it has a premium signal without a price.
 
 GitHub allows 60 anonymous API requests an hour. To check GitHub handles more often, set `DOMAIN_HOUND_GITHUB_TOKEN` to a token with no scopes; Domain Hound sends it only to `api.github.com`.
 
@@ -71,13 +82,13 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 - [Find an available startup name](https://domainhound.dev/guides/find-an-available-startup-name/)
 - [Check whether an app name is taken](https://domainhound.dev/guides/is-my-app-name-available/)
 
-Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to screen a short list or a name you already have. Ask for `naming_method` to see how a shortlist is generated.
+Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to generate names for an idea or screen names you already have. Ask for `naming_method` to see the naming process.
 
 ### Naming skill and Name score
 
 Brainstorm names all day. If they're not available, it's pointless. The naming skill gives your agent one method: subject words, six territories, five recipes (odd pair, pun, blend, insider term, phrase or character), hard bans, and one steering question: "Which two do you love, and which one do you hate?" The Claude Code plugin ships it as `skills/naming/SKILL.md`; any MCP client gets the same method from `naming_method`.
 
-`triage_names` gives each of the first five names a **Name score**, 0 to 100: how clear the road is. It is not a probability. Points come from the best free ending (22), its 3-year price (3), trademarks (25), rivals (20), apps (8), handles (7) and name quality (15). Bans (digits, hyphens, -ly, -ify, -io, AI, GPT, bot, smart, generic words like hub or labs, over 12 letters) and hard filters (no free ending within $60 over 3 years, an identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning) run first, in code; those names get no score and are never a pick. A check that failed counts 40% of its points and says "Not checked". Trademarks stay at 20 of 25 until the EU office answers. A failed US trademark or rival check keeps the total at 79 or less, and so does missing `candidates` evidence for the bans code cannot judge on its own. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Picks rank by score. Each scored name shows up to three reasons. A bare name in `check_domains` gets a preliminary score from its registry and price evidence. Use `triage_names` for the rest of the checks.
+`triage_names` gives each of the first five names a **Name score**, 0 to 100: how clear the road is. It is not a probability. Points come from the best available ending (22), its 3-year price (3), trademarks (25), rivals (20), apps (8), handles (7) and name quality (15). Bans (digits, hyphens, -ly, -ify, -io, AI, GPT, bot, smart, generic words like hub or labs, over 12 letters) and hard filters (no available ending within $60 over 3 years, an identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning) run first, in code; those names get no score and are never a pick. A check that failed counts 40% of its points and says "Not checked". Trademarks stay at 20 of 25 until the EU office answers. A failed US trademark or rival check keeps the total at 79 or less, and so does missing `candidates` evidence for the bans code cannot judge on its own. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Picks rank by score. Each scored name shows up to three reasons. The hosted generator includes its own Name score in each suggestion. A local bare-name lookup can also provide a preliminary score.
 
 Set `DOMAIN_HOUND_SCORE_LOG=1` to keep a local calibration log in `~/.domain-hound/score-log.jsonl`: component points, weights version, rank, and whether the person explicitly picked a shown name. Once they choose, the agent can record it with `check_domains`, using the exact domain and `picked: true`. It is off by default, never leaves your machine, and holds no names unless you also set `DOMAIN_HOUND_SCORE_LOG_NAMES=1`.
 
@@ -159,10 +170,13 @@ Quotes, transfer quotes, DNS plans, order and transfer claims and receipts stay 
 
 ## Privacy and lookup hosts
 
-Domain Hound uses your brief locally. Availability queries use registries and DNS. The name screen shares candidate names with public evidence sources. Catalog downloads carry no candidate name. With shop keys configured, one pick per lookup goes to the shop for a quote by default. Set `DOMAIN_HOUND_SHOP_QUOTES=top4` to include up to three runners-up. Clicking a results link to a shop or search site sends the name in that link.
+Hosted checks send the name or domain to Domain Hound. A hosted naming round sends its idea and steering words to
+Domain Hound and Cloudflare Workers AI. Set `DOMAIN_HOUND_LOCAL=1` for local lookups. Local lookups share candidates
+with public evidence sources. Catalog downloads carry no candidate name. Clicking a results link sends the name in that link.
 
 | Host or service | What the lookup sends |
 | --- | --- |
+| `domainhound-mcp.domainhound.workers.dev` | The name or domain, or the idea and steering words for generation. Shop credentials and approval tokens stay on your device during hosted checks. |
 | `data.iana.org`; `whois.iana.org` | RDAP routing table request with no name; WHOIS referral request with only the ending. |
 | The DNS resolvers configured on your device, authoritative DNS servers, and the registry’s RDAP or WHOIS host. RDAP routes come from IANA or use `rdap.registry.co`, `rdap.identitydigital.services`, `rdap.norid.no` and `rdap.nic.so`. WHOIS for .ai, .io and .me goes to `whois.nic.ai`, `whois.nic.io` and `whois.nic.me`. | Candidate or rival domain. A DNS routing query can contain just an ending or a nameserver hostname. Registry referrals and redirects can select another registry host. |
 | Candidate website and public hosts it redirects to | The domain in a homepage request; an onward request can include a URL provided by that website. |
@@ -170,7 +184,11 @@ Domain Hound uses your brief locally. Availability queries use registries and DN
 | `api.euipo.europa.eu` and `euipo.europa.eu` (sandbox: `api-sandbox.euipo.europa.eu` and `auth-sandbox.euipo.europa.eu`) | With EUIPO credentials, the token host gets the client ID and secret. The search host gets the client ID, access token and candidate spellings. |
 | `api.patentstyret.no` | With a subscription key, the Norwegian office gets the key and candidate spellings. |
 | `mcp.atom.com` | The taken domain for an exact listing lookup. The buyer's ceiling stays local. |
-| `itunes.apple.com`, `play.google.com` | Candidate name for US store search; Google Play may also get the ID of a matched app. |
+| `itunes.apple.com` | Candidate name for US App Store search. |
+| `www.tiktok.com`, `graph.facebook.com`, `publish.twitter.com` / `publish.x.com`, `www.threads.net` / `www.threads.com`, `www.youtube.com`, `www.twitch.tv` | The candidate's handle. |
+| `web.archive.org`, `index.commoncrawl.org` | Candidate LinkedIn company or Reddit profile URL for the public archive search. |
+| `play.google.com` | Candidate name for Google Play app search. |
+| `www.googleapis.com` | The candidate's YouTube handle and optional local `YOUTUBE_API_KEY` when the key is configured. |
 | `www.wikidata.org`, `www.google.com`, `trends.google.com`, `data.brreg.no` | Candidate name; Wikidata also gets entity or class IDs for matches. |
 | `api.github.com`, `registry.npmjs.org`, `public.api.bsky.app` | Candidate name or handle, handle variants and public controls. With a GitHub token configured, it goes only to GitHub. |
 | `www.sec.gov`, `tranco-list.eu` | Public company and site lists with no candidate name. |

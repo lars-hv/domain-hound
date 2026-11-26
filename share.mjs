@@ -23,7 +23,10 @@ export function shareUrl(groups, checkedAt, facts = []) {
     let jumps = 0;
     let cloudflare = 0;
     for (const [position, { domain, status, now, renew, term, jump, dns }] of records.entries()) {
-      const state = shareStatuses.indexOf(status);
+      // Older receipt readers use these status strings at the same wire positions.
+      const wireStatus = status === 'Available at the registry' ? 'Free at the registry'
+        : status === 'Check at shop, possibly available by DNS' ? 'Check at shop, likely free by DNS' : status;
+      const state = shareStatuses.indexOf(wireStatus);
       if (typeof domain !== 'string' || domain.length > 253 || !shareDomain.test(domain) || state < 0) return null;
       const part = domain.startsWith(base + '.') ? domain.slice(base.length) : domain;
       endings.push([part, state, cents(now), cents(renew), term ?? 1]);

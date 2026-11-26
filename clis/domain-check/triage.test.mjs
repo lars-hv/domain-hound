@@ -148,7 +148,8 @@ test('applet presence returns all three checks and direct searches with no Googl
   assert.deepEqual(result.checks.map(({ label }) => label), ['Google', 'App Store (iOS)', 'Google Play (Android)']);
   assert.equal(result.checks[0].text, 'crowded');
   assert.match(result.checks[1].text, /Cloud Otter/);
-  assert.equal(result.checks[2].text, 'no exact-name app');
+  assert.equal(result.checks[2].text, 'Google Play has no public search');
+  assert.equal(result.checks[2].linkLabel, 'Search Google Play');
   for (const row of result.checks) assert.match(row.link, /^https:/);
 });
 
@@ -207,6 +208,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   const options = {
     // This catalog lists only some endings; the bundled snapshot stays out so the others have no price.
     directory, now, env: {}, cachedOnly: true, bundledCatalog: null, about: 'find and buy domains for AI builders',
+    endings: ['com', 'ai', 'io', 'dev', 'co', 'me', 'no', 'app'],
     launch: playBrowser([]),
     resolveNs: async domain => (/\.(com|io|app)$/.test(domain) || domain === 'domainsparrow.dev') ? ['ns.example.test'] : [],
     comSite: async domain => domain === 'domainsparrow.dev'
@@ -246,7 +248,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   assert.equal(brand.competition.sameName.level, 'crowded');
   assert.match(brand.competition.sameName.summary, /2 EDGAR-listed companies/);
   assert.equal(clear.verdict, 'No conflict found');
-  assert.equal(clear.details.appName, 'App name: free on iOS, free on Android');
+  assert.equal(clear.details.appName, 'App name: free on iOS');
   // Free endings follow the quality order (0.1.8): .ai first, but never the default pick.
   assert.equal(clear.free[0], 'ai');
   assert.match(report.eligibility.no, /Norwegian/);
@@ -375,13 +377,6 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   });
   assert.equal(crowded.names[0].competition.sameName.level, 'crowded');
   assert.equal(crowded.names[0].verdict, 'Check first');
-  const androidRisk = await triageNames(['Cloud Otter'], {
-    ...options, directory: null, about: 'cloud hosting', fetcher: withoutMarksOrApps,
-    launch: playBrowser([{ id: 'test.example.cloud', name: 'Cloud Otter: Cloud Hosting', seller: 'Example Tools' }], undefined,
-      '<script type="application/ld+json">{"@type":"SoftwareApplication","url":"https://play.google.com/store/apps/details?id=test.example.cloud","aggregateRating":{"ratingCount":"100"}}</script>'),
-  });
-  assert.equal(androidRisk.names[0].verdict, 'Avoid');
-  assert.match(androidRisk.names[0].reason, /^Same-business rival with traction: Cloud Otter \(100 Android ratings\)/);
   const nearMark = await triageNames(['Cloud Otter'], {
     ...options, category: 'retail', fetcher: async (value, init) => new URL(value).hostname === 'tmsearch.uspto.gov'
       ? Response.json({ hits: { hits: [{ source: { ...fixture.marks.hits.hits[1].source, internationalClass: ['IC 035'] } }] } })
@@ -389,16 +384,22 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   });
   assert.equal(nearMark.names[0].verdict, 'Avoid');
   assert.match(nearMark.names[0].reason, /^Near-identical: CLOUD OTTERS .*035/);
+  let playRequests = 0;
   const unchecked = await triageNames(['Moss Finch'], {
-    ...options, launch: async () => { throw new Error('Missing browser'); },
+    ...options,
+    fetcher: (value, init) => {
+      if (new URL(value).hostname === 'play.google.com') playRequests++;
+      return options.fetcher(value, init);
+    },
   });
+  assert.equal(playRequests, 0);
   assert.equal(unchecked.names[0].competition.GooglePlay, null);
   assert.equal(new URL(unchecked.names[0].details.AndroidSearch).searchParams.get('q'), 'Moss Finch');
-  assert.equal(unchecked.sources['Google Play'], 0);
+  assert.equal(unchecked.sources['Google Play'], undefined);
   assert.deepEqual(unchecked.names[0].checks, [
     'Google: open · https://www.google.com/search?q=%22Moss+Finch%22',
     'App Store (iOS): no exact-name app · https://apps.apple.com/us/iphone/search?term=Moss+Finch',
-    'Google Play (Android): not checked · https://play.google.com/store/search?q=Moss+Finch&c=apps&hl=en&gl=US',
+    'Google Play has no public search · Search Google Play · https://play.google.com/store/search?q=Moss+Finch&c=apps&hl=en&gl=US',
   ]);
   assert.equal(unchecked.sources.Google, 100);
   assert.equal(unchecked.names[0].google.search, true);
@@ -667,7 +668,7 @@ test('slow sources screen the first five names; handle rows go to the top three,
   assert.deepEqual(Object.keys(report.handles), ['Alpha Wren', 'Delta Wren', 'Echo Wren']);
   assert.deepEqual(report.handles['Alpha Wren'].not_found, ['GitHub', 'npm', 'Bluesky']);
   const rows = report.receiptDetails[0].handles;
-  assert.deepEqual(rows.map(row => row.platform), ['YouTube', 'X', 'Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'GitHub', 'npm', 'PyPI', 'Bluesky']);
+  assert.deepEqual(rows.map(row => row.platform), ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'Facebook', 'LinkedIn', 'GitHub', 'npm', 'PyPI', 'Bluesky']);
   assert.equal(report.receiptDetails[1].handles, null);
   assert.doesNotMatch(JSON.stringify(report.handles), /free/);
 });

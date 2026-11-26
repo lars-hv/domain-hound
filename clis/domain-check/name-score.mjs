@@ -216,7 +216,7 @@ function handlePart(handles = {}) {
   if (unknown.length) losses.push({ loss: missing - unknownPart(missing),
     text: unknownText(pending ? 'pending' : 'unknown', 'handles (' + listed(unknown) + ')'), unknown: true });
   return { points, state: unknown.length ? pending ? 'pending' : 'unknown' : 'ok', losses,
-    best: points === 7 ? 'GitHub, npm and Bluesky handles are free' : null };
+    best: points === 7 ? 'No public profiles found on GitHub, npm or Bluesky' : null };
 }
 
 function qualityPart(name, candidate, meaning) {
@@ -260,13 +260,13 @@ export function scoreName(input) {
   if (ban) return { version: scoreVersion, filtered: ban, kind: 'ban' };
   if (input?.meaning?.how === 'is' || candidate.badMeaning === 'severe') return { version: scoreVersion, filtered: 'Severe bad meaning', kind: 'filter' };
   const domain = domainParts(input?.domains, scoreCapUsd);
-  if (!domain) return { version: scoreVersion, filtered: 'No free ending with a known price within ' + money(scoreCapUsd) + ' over 3 years', kind: 'filter' };
+  if (!domain) return { version: scoreVersion, filtered: 'No available ending with a known price within ' + money(scoreCapUsd) + ' over 3 years', kind: 'filter' };
   const trademark = trademarkPart(input.marks);
   const rivals = rivalPart(input.rivals);
   for (const part of [trademark, rivals]) if (part.filtered) return { version: scoreVersion, filtered: part.filtered, kind: 'filter' };
   const parts = {
-    domain: { points: domain.points, state: 'ok', best: '.' + domain.ending + ' is free, ' + money(domain.total) + ' for 3 years',
-      losses: domain.points < 22 ? [{ loss: 22 - domain.points, text: 'Best free ending is .' + domain.ending }] : [] },
+    domain: { points: domain.points, state: 'ok', best: '.' + domain.ending + ' is available, ' + money(domain.total) + ' for 3 years',
+      losses: domain.points < 22 ? [{ loss: 22 - domain.points, text: 'Best available ending is .' + domain.ending }] : [] },
     price: { points: domain.price, state: 'ok', losses: domain.price < 3 ? [{ loss: 3 - domain.price, text: money(domain.total) + ' for 3 years' }] : [] },
     trademark, rivals, apps: appPart(input.apps), handles: handlePart(input.handles),
     quality: qualityPart(name, candidate, input.meaning),

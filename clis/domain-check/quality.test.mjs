@@ -43,16 +43,15 @@ const cards = shared => shared.groups.map(({ records }) => ({ pick: records.find
   value: records.filter(row => 'bestValue' in row).map(row => row.domain + ' ' + row.bestValue),
   rows: records.map(row => row.domain + (row.jump ? ' jump' : '') + (row.dns ? ' cf' : '')) }));
 
-test('one quality order: .com, .ai, .io, .dev, .app, .co, .so, .me, .si, then .xyz and .tech; .net and .org on request', () => {
-  assert.deepEqual(qualityEndings, ['com', 'ai', 'io', 'dev', 'app', 'co', 'so', 'me', 'si', 'xyz', 'tech']);
+test('the local fallback uses the ten hosted endings in the same order', () => {
+  assert.deepEqual(qualityEndings, defaultEndings);
   assert.equal(pickCapUsd, 60);
-  assert.deepEqual(defaultEndings, ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no', 'xyz', 'tech']);
+  assert.deepEqual(defaultEndings, ['com', 'ai', 'io', 'dev', 'co', 'so', 'sh', 'inc', 'tech', 'app']);
   assert.ok(!targetEndings.includes('net') && !targetEndings.includes('org'));
   assert.ok(requestEndings.includes('net') && requestEndings.includes('org'));
   const order = ['a.tech', 'a.org', 'a.no', 'a.me', 'a.com', 'a.xyz', 'a.net', 'a.so', 'a.ai', 'a.si', 'a.dev', 'a.io', 'a.co', 'a.app']
     .sort((a, b) => qualityRank(a) - qualityRank(b));
-  assert.deepEqual(order, ['a.com', 'a.ai', 'a.io', 'a.dev', 'a.app', 'a.co', 'a.so', 'a.me', 'a.si', 'a.xyz', 'a.tech',
-    'a.no', 'a.net', 'a.org']);
+  assert.deepEqual(order, ['a.com', 'a.ai', 'a.io', 'a.dev', 'a.co', 'a.so', 'a.tech', 'a.app', 'a.me', 'a.si', 'a.no', 'a.xyz', 'a.net', 'a.org']);
   // Asked-for endings and typed domains come first in the person's order; an eligibility opt-in follows .com.
   assert.ok(qualityRank('a.xyz', ['xyz']) < qualityRank('a.com', ['xyz']));
   assert.ok(qualityRank('a.xyz', ['a.xyz']) < qualityRank('a.com'));
@@ -103,7 +102,7 @@ test('baseline prices: the pick is .com, with distinct cheapest-upfront and 3-ye
     const label = card.pick.split('.')[0];
     assert.deepEqual(card, { pick: label + '.com', value: [label + '.xyz 30.4'],
       rows: [label + '.com', label + '.xyz jump', ...card.rows.slice(2)] });
-    assert.equal(card.rows.length, defaultEndings.length);
+    assert.equal(card.rows.length, defaultEndings.length + 1);
   }
 });
 
@@ -198,7 +197,7 @@ test('the light confirm sends the shop quote to the same pick, and rows rank in 
   const rows = [row('exampleheron.xyz', 1.5, 30.4), row('exampleheron.tech', 6.64, 111.94),
     row('exampleheron.ai', 159.96, 319.92), row('exampleheron.com', 9.48, 30.84), row('exampleheron.dev', 8.28, 33.12)];
   assert.deepEqual(rankName(rows).map(item => item.domain),
-    ['exampleheron.com', 'exampleheron.ai', 'exampleheron.dev', 'exampleheron.xyz', 'exampleheron.tech']);
+    ['exampleheron.com', 'exampleheron.ai', 'exampleheron.dev', 'exampleheron.tech', 'exampleheron.xyz']);
   assert.equal(pickName(rows).domain, 'exampleheron.com');
   assert.equal(lightTargets(rows, [], 1)[0].domain, 'exampleheron.com');
   const noCom = rows.filter(item => item.tld !== 'com');

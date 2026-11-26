@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { PassThrough } from 'node:stream';
 import { serve } from './server.mjs';
+import { hostedClient } from './hosted.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { deadlineClock } from './test-support/deadline-clock.mjs';
 import { promisify } from 'node:util';
@@ -38,7 +39,7 @@ function exchange(messages, { legacy = false, fastTimeout = false } = {}) {
 function runServer(args, messages, env = {}, cwd = undefined) {
   return new Promise((resolve, reject) => {
     const child = execFile(process.execPath, args, {
-      env: { ...process.env, ...env }, cwd,
+      env: { ...process.env, DOMAIN_HOUND_LOCAL: '1', ...env }, cwd,
       timeout: 5000,
     }, (error, stdout) => {
       if (error) return reject(error);
@@ -143,16 +144,16 @@ test('advertises all lookup, naming, watch, dossier and Spaceship tools and the 
   }
   assert.match(description, /purchase: true/);
   assert.match(description, /explicit live shop check/);
-  assert.match(triage.description, /Call triage_names once.*shortlist: true/);
+  assert.match(triage.description, /idea.*website.*name generator/);
   assert.match(naming.description, /asks for the method/);
   assert.equal(triage.inputSchema.properties.shortlist.type, 'boolean');
   assert.equal(watch.annotations.readOnlyHint, false);
   assert.deepEqual(watch.inputSchema.required, ['domain']);
   assert.equal(inputSchema.properties.budget.type, 'number');
   assert.equal(triage.inputSchema.properties.names.maxItems, 20);
-  assert.deepEqual(triage.inputSchema.required, ['names']);
+  assert.deepEqual(triage.inputSchema.oneOf, [{ required: ['names'] }, { required: ['idea'] }]);
   assert.deepEqual(alias.inputSchema, inputSchema);
-  assert.match(inputSchema.properties.endings.description, /preference order.*all twelve default endings/);
+  assert.match(inputSchema.properties.endings.description, /preference order.*all ten default endings/);
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   const { query, names } = inputSchema.properties;
   assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
@@ -535,8 +536,8 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
     checking: unanswered }]);
   const lines = progress.display.split('\n');
   assert.equal(lines[0], '**Still checking** after 1.0 s (answer budget 1.0 s). The lookup keeps running.');
-  assert.equal(lines[1], 'Registry answers so far: 3 of 12 domains.');
-  assert.equal(lines[2], '- slowroom: free .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
+  assert.equal(lines[1], 'Registry answers so far: 3 of 10 domains.');
+  assert.equal(lines[2], '- slowroom: available .dev .app · taken .com · still checking .' + unanswered.join(' .') + ', ask again');
   assert.match(progress.display, /Call the same tool again with the same input/);
 
   // The repeat joins the running lookup and returns its finished result when it ends, before its own budget.
@@ -569,7 +570,7 @@ test('lists all seven requested names in order on a timeout and collects the cac
     assert.equal(progress.complete, false);
     assert.deepEqual(progress.names.map(row => row.name), names);
     const lines = progress.display.split('\n');
-    assert.equal(lines[1], 'Registry answers so far: 3 of 73 domains.');
+    assert.equal(lines[1], 'Registry answers so far: 3 of 61 domains.');
     // A row without any answer yet shows every default ending; the exact domain stays exact.
     assert.deepEqual(progress.names[0], { name: 'quietbook', checking: defaultEndings });
     assert.deepEqual(progress.names[2], { name: 'oakenroom.me', checking: ['oakenroom.me'] });
@@ -605,7 +606,7 @@ test('a slow triage answers with every requested name and its verdict once finis
   // The progress page is complete before the reply; the lookup is still held, so nothing rewrites it meanwhile.
   const opened = await readFile(new URL(progress.resultPage), 'utf8');
   assert.match(opened, /Still checking trademark, app and web sources/);
-  assert.match(progress.display, /^- Slow Room: free \.dev \.app · taken \.com · still checking .*, ask again$/m);
+  assert.match(progress.display, /^- Slow Room: available \.dev \.app · taken \.com · still checking .*, ask again$/m);
   assert.match(progress.display, /trademark, app and rival checks are still running/);
   // The page link leads the progress answer, and that page reloads itself while the lookup runs.
   assert.equal(progress.display.split('\n')[0], resultsLine(progress.resultPage));
@@ -694,7 +695,7 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
   const two = callData(responses, 2);
   assert.deepEqual(two.names.map(row => row.name), ['Example One', 'Example Two']);
   // Requested endings reach the screen so its own picks never demote them to the fallback tier.
-  assert.deepEqual(two.flags, ['--compact', '--eligible', 'no', '--prefer-endings', 'app,ai', '--category', 'Calendar app']);
+  assert.deepEqual(two.flags, ['--compact', '--eligible', 'no', '--endings', [...defaultEndings, 'no'].join(','), '--prefer-endings', 'app,ai', '--category', 'Calendar app']);
   for (const id of [3, 4]) assert.match(errorText(responses, id), /1 to 20/);
   assert.match(errorText(responses, 3), /^names must list 1 to 20 names; it has 21\.$/);
   assert.match(errorText(responses, 4), /^names\[0\] is not valid/);
@@ -834,7 +835,7 @@ test('renders the triage shortlist as one priced, linked row per candidate', () 
   assert.equal(lines[0], '**Top picks**');
   assert.equal(lines[4], '');
   for (const pick of lines.slice(1, 4)) assert.match(pick, /^- \*\*.+\*\* — .+, pick [a-z]+\.[a-z]+ \$[\d.]+(?:\/\$[\d.]+|, then \$[\d.]+\/yr, \d+x jump)/);
-  assert.ok(lines.includes('| Name | Verdict and reason | Free endings, one per line, today/renewal | Checkout | Search checks |'));
+  assert.ok(lines.includes('| Name | Verdict and reason | Available endings, one per line, today/renewal | Checkout | Search checks |'));
   const rows = lines.filter(line => /^\| (?!Name|---)/.test(line));
   assert.deepEqual(rows.map(line => line.split(' | ')[0].slice(2)), five);
   assert.ok(rows[1].startsWith('| Hush Room | Check first: Several public sources show same-name use | .me $2.50, then $20.00/yr, 8x jump<br>.co $3.11, then $31.05/yr, 10x jump<br>'
@@ -844,7 +845,7 @@ test('renders the triage shortlist as one priced, linked row per candidate', () 
   for (const row of rows) {
     assert.match(row, /Google: not checked · .*google\.com\/search\?q=/);
     assert.match(row, /App Store \(iOS\): not checked · .*apps\.apple\.com\/us\/iphone\/search\?term=/);
-    assert.match(row, /Google Play \(Android\): not checked · .*play\.google\.com\/store\/search\?q=/);
+    assert.match(row, /Google Play has no public search · .*play\.google\.com\/store\/search\?q=/);
   }
   assert.match(rows[2], /\.ai \$160\.02\/\$160\.02 2y/);
   assert.match(lines.at(-1), /^Choose a favorite/);
@@ -881,7 +882,7 @@ test('puts display first with ranked picks and shows all sources for twenty name
   assert.equal(Object.keys(result)[0], 'display');
   assert.match(result.display, /^\*\*Top picks\*\*\n- .*Check first.*\$3\.11, then \$31\.05\/yr, 10x jump/);
   assert.equal(result.names.length, 20);
-  for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+  for (const source of ['Google', 'App Store (iOS)', 'Search Google Play']) {
     assert.ok(result.display.includes(source), source);
   }
 });
@@ -940,7 +941,7 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
     if (index < 5) assert.match(row.reason, /^Near-identical: ex.*010\/011/);
     else assert.match(row.reason, /^Not screened/);
     assert.notEqual(row.verdict, 'No conflict found');
-    assert.equal(row.free.length, 12);
+    assert.equal(row.free.length, defaultEndings.length);
     // Free endings follow the quality order (0.1.8), not the cheapest first payment.
     assert.equal(row.free[0], 'com');
     assert.equal(row.bestValue, 'com');
@@ -956,8 +957,8 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   assert.ok(report.top.every(row => labels.indexOf(row.name) >= 5));
   assert.ok(parsed.display.includes('Best value: ' + labels[5] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
-  assert.ok(parsed.names.every(row => row.free.length === 12));
-  for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+  assert.ok(parsed.names.every(row => row.free.length === defaultEndings.length));
+  for (const source of ['Google', 'App Store (iOS)', 'Search Google Play']) {
     assert.ok(parsed.display.includes(source), source);
   }
 });
@@ -988,10 +989,12 @@ test('preserves each price in dense five-name triage and the three source lines 
         assert.ok(row.includes(expected), row);
       }
     }
-    for (const label of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+    const checksCount = display.includes('**Search checks for every name**') ? 1 : count;
+    for (const label of ['Google', 'App Store (iOS)']) {
       const countLines = display.split('[' + label + '](').length + display.split(label + ':').length - 2;
-      assert.equal(countLines, count, label);
+      assert.equal(countLines, checksCount, label);
     }
+    assert.equal(display.split('Google Play has no public search').length - 1, checksCount);
   }
 });
 
@@ -1177,7 +1180,7 @@ const exactLive = {
 test('without Playwright an unconfirmed free domain says check at shop with a link and keeps its list price', () => {
   const display = body(JSON.parse(checkText(exactLive)).display);
   const lines = display.split('\n');
-  assert.match(lines[0], /^\*\*quietotter\.me is free\.\*\* The registry shows it free; the price is a list price, not a shop quote\./);
+  assert.match(lines[0], /^\*\*quietotter\.me is available\.\*\* The registry shows it available; the price is a list price, not a shop quote\./);
   assert.ok(lines.includes('| quietotter.me | $2.99 | $19.99/yr, 7x jump | $42.97 | '
     + '[quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me) at Spaceship |'), display);
   assert.ok(lines.includes('Check at shop: [quietotter.me](https://www.spaceship.com/domain-search/?query=quietotter.me). '
@@ -1313,4 +1316,172 @@ test('replies before checking handles and collects the completed handle rows wit
   await completed;
   output.end();
   await lines.return();
+});
+
+
+test('hosted domain checks keep shop order and recover a rate-limited App Store result locally', async t => {
+  const paths = [];
+  const offer = { shop: 'Dynadot', firstYearUsd: 5, renewalUsd: 10, firstPaymentUsd: 5,
+    threeYearUsd: 25, buyUrl: 'https://www.dynadot.com/domain/search?domain=exampleheron.dev' };
+  const domain = { domain: 'exampleheron.dev', ending: 'dev', status: 'available', prices: [offer, { ...offer, shop: 'Porkbun', threeYearUsd: 30 }] };
+  const appStore = { status: 'unknown', reason: 'rate-limited', matches: [] };
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' },
+    fetchFn: async (url, init) => {
+      const parsed = new URL(url);
+      paths.push(parsed.pathname);
+      if (parsed.hostname === 'itunes.apple.com') {
+        assert.equal(parsed.searchParams.get('term'), 'exampleheron');
+        assert.equal(new Headers(init.headers).get('X-Domain-Hound-Client'), null);
+        return Response.json({ results: [{ trackName: 'Exampleheron', trackId: 12345 }] });
+      }
+      assert.equal(init.headers['X-Domain-Hound-Client'], 'mcp/' + version);
+      assert.equal(parsed.hostname, 'api.example.test');
+      if (parsed.pathname === '/v1/check') return Response.json({
+        version: 1, query: { name: 'exampleheron', ascii: 'exampleheron', exactDomain: null }, complete: true,
+        domains: [domain, { domain: 'exampleheron.com', ending: 'com', status: 'taken', prices: [] }],
+        choice: { pick: { ...offer, domain: domain.domain } }, details: { id: 'fixture-id' },
+      });
+      assert.equal(parsed.searchParams.get('id'), 'fixture-id');
+      return Response.json({ version: 1, appStore, googlePlay: { status: 'not-found', link: 'https://play.google.com/store' },
+        handles: ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'Facebook', 'Twitch'].map(platform => ({ platform, state: 'not-found',
+          ...(platform === 'Threads' && { why: 'no Instagram account' }) })).concat(
+          ['LinkedIn', 'Reddit'].map(platform => ({ platform, state: 'not-seen' }))),
+        trademarks: { us: { status: 'exact_match_found', marks: [{ mark: 'EXAMPLEHERON', owner: 'Example Company',
+          status: 'applied', url: 'https://tsdr.uspto.gov/' }] } } });
+    },
+  });
+  const mcp = await local(t, { hosted: host });
+  const reply = await mcp.ask(call(2, { query: 'exampleheron' }));
+  callText([reply], 2);
+  const answer = reply.result.structuredContent;
+  assert.deepEqual(paths, ['/v1/check', '/v1/check/details', '/search']);
+  assert.equal(answer.checks[0].nameChecks.appStore.source, 'local');
+  assert.equal(answer.checks[0].nameChecks.appStore.status, 'taken');
+  assert.deepEqual(answer.checks[0].domains[0].prices.map(row => row.shop), ['Dynadot', 'Porkbun']);
+  assert.match(answer.display, /US trademark warning[\s\S]*The Hound’s pick[\s\S]*Dynadot.*cheapest over three years[\s\S]*Porkbun/);
+  assert.match(answer.display, /App Store · Matching app found.*Exampleheron/);
+  assert.match(answer.display, /Taken · exampleheron\.com.*Watch.*Draft an offer.*Try a new name/);
+  assert.equal(answer.checks[0].details, undefined);
+});
+
+test('the package uses the local check when the hosted request cannot connect', async t => {
+  assert.equal(hostedClient(version, { env: { DOMAIN_HOUND_LOCAL: '1' } }), null);
+  let attempts = 0;
+  const host = hostedClient(version, { env: {}, fetchFn: async () => {
+    attempts++;
+    throw new Error('connection refused');
+  } });
+  const mcp = await local(t, { hosted: host });
+  const answer = structured(await mcp.ask(call(2, { query: 'oakenroom.me' })));
+  assert.equal(attempts, 1);
+  assert.equal(answer.names[0].name, 'oakenroom.me');
+  assert.equal(answer.checks, undefined);
+  assert.match(answer.display, /oakenroom\.me/);
+});
+
+test('the MCP checks YouTube locally only when the hosted YouTube state is unknown', async t => {
+  const calls = [];
+  const key = 'fixture-placeholder';
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', YOUTUBE_API_KEY: key,
+    DOMAIN_HOUND_EMBED_CHECKS: 'off' },
+    fetchFn: async (input, init) => {
+      const url = new URL(input);
+      if (url.hostname === 'www.googleapis.com') {
+        assert.equal(new Headers(init.headers).get('x-goog-api-key'), key);
+        calls.push(url.searchParams.get('forHandle'));
+        return Response.json({ items: [{ id: 'UC0123456789abcdefghijkl' }] });
+      }
+      assert.equal(url.hostname, 'api.example.test');
+      assert.equal(new Headers(init.headers).has('x-goog-api-key'), false);
+      const name = url.searchParams.get('name') ?? url.searchParams.get('id');
+      if (url.pathname === '/v1/check') return Response.json({
+        version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
+        domains: [], choice: { pick: null }, details: { id: name },
+      });
+      return Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] },
+        googlePlay: { link: 'https://play.google.com/store/search?q=' + name },
+        handles: [{ platform: 'YouTube', handle: name, state: name === 'knownbrand' ? 'not-found' : 'unknown',
+          link: 'https://www.youtube.com/@' + name, why: 'not connected' }],
+        trademarks: { us: { status: 'no_exact_match_found', marks: [] } } });
+    },
+  });
+  const mcp = await local(t, { hosted: host });
+  const checked = resultOf([await mcp.ask(call(2, { query: 'localbrand' }))], 2).structuredContent;
+  assert.match(checked.display, /YouTube · \[Taken\]\(https:\/\/www\.youtube\.com\/@localbrand\)/);
+  assert.match(checked.display, /LinkedIn · Couldn't check · \[Search LinkedIn\]/);
+  assert.match(checked.display, /Google Play has no public search · \[Search Google Play\]/);
+  assert.equal(checked.checks[0].nameChecks.handles[0].source, 'local');
+  assert.doesNotMatch(JSON.stringify(checked), /fixture-placeholder/);
+  const known = resultOf([await mcp.ask(call(3, { query: 'knownbrand' }))], 3).structuredContent;
+  assert.match(known.display, /YouTube · \[No profile found\]/);
+  assert.deepEqual(calls, ['@localbrand']);
+});
+
+test('triage_names sends the steering to hosted generation and refreshes the same receipt', async t => {
+  const requests = [];
+  const input = { idea: 'A tool for planning workshops', wanted: ['Exampleheron'], avoid: ['Examplefox'], round: 2 };
+  const initial = { version: 2, stage: 'initial', names: [], round: 2, complete: false, details: { id: 'test-job' } };
+  const final = { ...initial, stage: 'final', complete: true, details: null,
+    question: 'Which two do you love, and which one do you hate?' };
+  let finish;
+  const followUp = new Promise(resolve => { finish = resolve; });
+  const host = {
+    generate: async args => { requests.push(args); return initial; },
+    finishGeneration: async value => { assert.equal(value, initial); return followUp; },
+  };
+  const mcp = await local(t, { hosted: host });
+  const first = await mcp.ask(call(2, input, 'triage_names')).then(structured).finally(() => finish(final));
+  const updated = await mcp.waitForPage(data => data.generation?.stage === 'final');
+  assert.deepEqual(requests, [input]);
+  assert.equal(first.pending, true);
+  assert.equal(first.generation.details, undefined);
+  assert.equal(updated.resultPage, first.resultPage);
+  assert.match(updated.display, /Which two do you love/);
+});
+
+test('check_domains fills unknown public name checks locally and keeps confirmed hosted answers', async t => {
+  const calls = [];
+  const name = 'paperheron';
+  const fixtures = JSON.parse(await readFile(new URL('./clis/domain-check/fixtures/public-name-checks.json', import.meta.url), 'utf8'));
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' }, fetchFn: async (input, init) => {
+    const url = new URL(input);
+    if (url.hostname === 'api.example.test') {
+      if (url.pathname === '/v1/check') return Response.json({
+        version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
+        domains: [], choice: { pick: null }, details: { id: name },
+      });
+      return Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] }, googlePlay: { status: 'unknown' },
+        handles: [{ platform: 'X', handle: name, state: 'not-found', link: 'https://x.com/' + name },
+          ...['YouTube', 'Instagram', 'TikTok', 'Threads'].map(platform => ({ platform, handle: name, state: 'unknown' }))],
+        trademarks: { us: { status: 'no_exact_match_found', marks: [] } } });
+    }
+    assert.equal(new Headers(init.headers).has('x-domain-hound-client'), false);
+    calls.push(url.hostname);
+    if (url.hostname === 'web.archive.org') return new Response(url.searchParams.get('url').startsWith('reddit.com/')
+      ? '20180308025019 200\n' : '', { headers: { 'content-type': 'text/plain' } });
+    const kind = { 'www.tiktok.com': 'tiktok', 'graph.facebook.com': url.pathname.endsWith('/picture') ? 'facebook' : 'instagram',
+      'www.youtube.com': 'youtube', 'www.threads.net': 'threads', 'www.twitch.tv': 'twitch', 'play.google.com': 'googlePlay' }[url.hostname];
+    const fixture = fixtures[kind][kind === 'threads' ? 'login' : kind === 'twitch' ? 'not-found' : 'taken'];
+    const body = kind === 'googlePlay' ? fixture.body.replace('Paper Heron -', 'PaperHeron -')
+      : kind === 'twitch' ? fixture.body.replace('absentbrand', name) : fixture.body;
+    return new Response(typeof body === 'string' ? body : JSON.stringify(body),
+      { status: fixture.status, headers: { 'content-type': fixture.type } });
+  } });
+  const mcp = await local(t, { hosted: host });
+  const answer = resultOf([await mcp.ask(call(2, { query: name }))], 2).structuredContent;
+  const checks = answer.checks[0].nameChecks;
+  assert.equal(checks.googlePlay.status, 'taken');
+  assert.equal(checks.googlePlay.source, 'local');
+  assert.deepEqual(Object.fromEntries(checks.handles.map(row => [row.platform, [row.state, row.source]])), {
+    X: ['not-found', undefined], YouTube: ['taken', 'local'], Instagram: ['taken', 'local'], TikTok: ['taken', 'local'],
+    Threads: ['unknown', undefined], Facebook: ['taken', 'local'], LinkedIn: ['not-seen', 'local'],
+    Reddit: ['taken', 'local'], Twitch: ['not-found', 'local'],
+  });
+  assert.match(answer.display, /Threads · \[Couldn't check\]/);
+  assert.match(answer.display, /LinkedIn · No page found in public archives · \[Search LinkedIn\]/);
+  assert.match(answer.display, /site:linkedin\.com\/company\/paperheron/);
+  assert.match(answer.display, /Reddit · \[Found · seen 2018\]/);
+  assert.match(answer.display, /Google Play · Taken · \[Search Google Play\]/);
+  assert.deepEqual(calls.sort(), ['graph.facebook.com', 'graph.facebook.com', 'play.google.com', 'web.archive.org', 'web.archive.org',
+    'www.threads.net', 'www.tiktok.com', 'www.twitch.tv', 'www.youtube.com']);
 });

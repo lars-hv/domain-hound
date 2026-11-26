@@ -46,10 +46,8 @@ export { requestEndings, supportedEndings };
 export const restrictedEndings = Object.keys(facts).filter(tld => facts[tld].eligibility);
 const firstCost = row => row.firstPayment ?? Infinity;
 
-// One quality order for every recommender: the CLI and name rankings, the receipt, its share link and the broker
-// dossier. Domain Hound is for AI-native companies, so these endings lead in this order; .xyz and .tech come last.
-// Other supported endings (.net, .org, regional endings) rank after them in catalog order.
-export const qualityEndings = ['com', 'ai', 'io', 'dev', 'app', 'co', 'so', 'me', 'si', 'xyz', 'tech'];
+// The local fallback keeps the hosted checker's order. Explicit requests can override it.
+export const qualityEndings = defaultEndings;
 // The default pick stays within this many dollars of payments due in 3 years; a budget the person gave replaces it.
 export const pickCapUsd = 60;
 

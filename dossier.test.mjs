@@ -381,8 +381,8 @@ test('a natural variant gets its own slot even when the exact .com is available'
   assert.deepEqual(repeated.picks.map(row => row.domain), ['getexample.dev', 'getexamplehq.com']);
   assert.equal(repeated.priceContext, null, 'a repeated add-on is excluded from price context too');
   const fallback = pickAlternatives(priced([['example', 'xyz', 1, 14], ['example', 'tech', 5, 5]]), domain);
-  // Both fit within $60, so the quality order picks .xyz over .tech; its renewal jump still lists it below the cheaper .tech.
-  assert.deepEqual(fallback.picks.map(row => [row.domain, row.role]), [['example.tech', 'exact-ending'], ['example.xyz', 'pick']]);
+  // Both fit within $60, so the quality order picks .tech before .xyz.
+  assert.deepEqual(fallback.picks.map(row => [row.domain, row.role]), [['example.tech', 'pick'], ['example.xyz', 'exact-ending']]);
   assert.equal(fallback.priceContext, null);
   const short = pickAlternatives(priced([['abc', 'dev', 5, 5]], 'abc'), 'abc.com');
   assert.deepEqual(short.picks, [], 'a possible premium short name is never a pick');
