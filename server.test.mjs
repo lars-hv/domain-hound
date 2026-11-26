@@ -1345,7 +1345,8 @@ test('keeps a fully priced hosted check and a twenty-name batch within the MCP r
     const expected = input.names ?? [input.query];
     assert.deepEqual(otherFields, {});
     assert.deepEqual(rows, expected.map(name => ({ name, statuses: { available: defaultEndings } })));
-    assert.ok(text.startsWith(resultsLine(resultPage)));
+    assert.match(text, /^The Hound’s pick is lanternotter0\.com/);
+    assert.ok(text.includes(resultsLine(resultPage)));
     assert.ok(expected.every(name => text.includes(name)));
     assert.match(text, /Dynadot \$5\.00\/\$10\.00, \$25\.00 over 3y/);
     const wire = JSON.stringify(reply);
@@ -1395,8 +1396,8 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
   assert.equal(answer.checks[0].nameChecks.appStore.source, 'local');
   assert.equal(answer.checks[0].nameChecks.appStore.status, 'taken');
   assert.deepEqual(answer.checks[0].domains[0].prices.map(row => row.shop), ['Dynadot', 'Porkbun']);
-  assert.match(answer.display, /US trademark warning[\s\S]*The Hound’s pick[\s\S]*Dynadot.*cheapest over three years[\s\S]*Porkbun/);
-  assert.match(answer.display, /App Store · Matching app found.*Exampleheron/);
+  assert.match(answer.display, /The Hound’s pick[\s\S]*App Store \(iOS\)[\s\S]*Google Play \(Android\)[\s\S]*Heads-up[\s\S]*Dynadot.*cheapest over three years[\s\S]*Porkbun/);
+  assert.match(answer.display, /App Store \(iOS\) · Taken.*Exampleheron/);
   assert.match(answer.display, /Taken · exampleheron\.com.*Watch.*Draft an offer.*Try a new name/);
   assert.equal(answer.checks[0].details, undefined);
 });
@@ -1498,7 +1499,7 @@ test('the MCP checks YouTube locally only when the hosted YouTube state is unkno
   const checked = resultOf([await mcp.ask(call(2, { query: 'localbrand' }, 'broker_find'))], 2).structuredContent;
   assert.match(checked.display, /YouTube · \[Taken\]\(https:\/\/www\.youtube\.com\/@localbrand\)/);
   assert.match(checked.display, /LinkedIn · Couldn't check · \[Search LinkedIn\]/);
-  assert.match(checked.display, /Google Play has no public search · \[Search Google Play\]/);
+  assert.match(checked.display, /Google Play \(Android\) · Couldn’t check · \[Search Google Play\]/);
   assert.equal(checked.checks[0].nameChecks.handles[0].source, 'local');
   assert.doesNotMatch(JSON.stringify(checked), /fixture-placeholder/);
   const known = resultOf([await mcp.ask(call(3, { query: 'knownbrand' }, 'broker_find'))], 3).structuredContent;
@@ -1570,9 +1571,49 @@ test('check_domains fills unknown public name checks locally and keeps confirmed
   assert.match(answer.display, /LinkedIn · No page found in public archives · \[Search LinkedIn\]/);
   assert.match(answer.display, /site:linkedin\.com\/company\/paperheron/);
   assert.match(answer.display, /Reddit · \[Found · seen 2018\]/);
-  assert.match(answer.display, /Google Play · Taken · \[Search Google Play\]/);
+  assert.match(answer.display, /Google Play \(Android\) · Taken · \[Search Google Play\]/);
   assert.deepEqual(calls.sort(), ['graph.facebook.com', 'graph.facebook.com', 'play.google.com', 'web.archive.org', 'web.archive.org',
     'www.threads.net', 'www.tiktok.com', 'www.twitch.tv', 'www.youtube.com']);
+});
+
+test('the package first call and saved page show both app stores before an exact US filing', async t => {
+  const name = 'exampleheron';
+  const domain = name + '.dev';
+  const offer = { shop: 'Dynadot', firstYearUsd: 5, renewalUsd: 10, firstPaymentUsd: 5, threeYearUsd: 25,
+    buyUrl: 'https://www.dynadot.com/domain/search?domain=' + domain };
+  let finish;
+  const held = new Promise(resolve => { finish = resolve; });
+  t.after(() => finish(new Response(null, { status: 500 })));
+  const trademark = { status: 'exact_match_found', marks: [{ mark: 'EXAMPLEHERON', owner: 'Example Studio',
+    url: 'https://tsdr.uspto.gov/#caseNumber=12345678' }] };
+  const appStore = { status: 'no_match_found', matches: [] };
+  const googlePlay = { status: 'taken', link: 'https://play.google.com/store/search?q=exampleheron' };
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', DOMAIN_HOUND_EMBED_CHECKS: 'off' },
+    fetchFn: async url => {
+      if (url.pathname === '/v1/check/details') return held;
+      assert.equal(url.pathname, '/v1/check');
+      return Response.json({ version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
+        domains: [{ domain, ending: 'dev', status: 'available', prices: [offer] }],
+        choice: { pick: { ...offer, domain } }, appStore, googlePlay, trademarks: { us: trademark },
+        details: { id: 'token' } });
+    } });
+  const mcp = await local(t, { hosted: host });
+  const first = await mcp.ask(call(2, { query: name }));
+  const { resultPage, pending } = structured(first);
+  assert.equal(pending, true);
+  const lines = first.result.content[0].text.split('\n');
+  assert.match(lines[0], /^The Hound’s pick is exampleheron\.dev.*\$25\.00/);
+  assert.equal(lines[1], 'App Store (iOS) · No matching app found');
+  assert.match(lines[2], /^Google Play \(Android\) · Taken/);
+  assert.match(lines[3], /^Heads-up:.*EXAMPLEHERON.*12345678.*Example Studio/);
+  assert.equal(lines[4], 'Search aid, not legal advice.');
+  const early = await readFile(new URL(resultPage), 'utf8');
+  assert.match(early.split('<body>')[1], /Hound’s pick.*App Store \(iOS\).*Google Play \(Android\).*trademark-warning.*Example Studio.*Buy at Dynadot/s);
+  finish(Response.json({ version: 1, appStore: { status: 'unknown', matches: [] }, googlePlay: { status: 'unknown' },
+    trademarks: { us: { status: 'unknown', marks: [] } }, handles: [] }));
+  await mcp.waitForPage(data => data?.hosted && !data.pending);
+  const final = await readFile(new URL(resultPage), 'utf8');
+  assert.match(final.split('<body>')[1], /No matching app found.*Google Play \(Android\).*Taken.*12345678/s);
 });
 
 test('check_domains returns a client-recovered pick before name checks and rewrites the same receipt', async t => {
@@ -1601,13 +1642,17 @@ test('check_domains returns a client-recovered pick before name checks and rewri
       return Response.json({ version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
         domains: [{ domain, ending: 'dev', status: seen ? 'available' : 'unknown', prices: [offer],
           ...(seen ? { checkedFrom: 'local' } : { rdapUrl }) }],
-        choice: { pick: seen ? { ...offer, domain } : null }, details: { id: 'token' } });
+        choice: { pick: seen ? { ...offer, domain } : null }, details: { id: 'token' },
+        appStore: { status: 'pending' }, googlePlay: { status: 'pending' }, trademarks: { us: { status: 'pending', marks: [] } } });
     } });
   const mcp = await local(t, { hosted: host });
   const first = await mcp.ask(call(2, { query: name }));
   const { resultPage, pending } = structured(first);
   assert.equal(pending, true);
-  assert.match(first.result.content[0].text, /pick is brightboard\.dev at Dynadot/);
+  assert.match(first.result.content[0].text, /^The Hound’s pick is brightboard\.dev at Dynadot/);
+  assert.match(first.result.content[0].text, /App Store \(iOS\) · Still checking/);
+  assert.match(first.result.content[0].text, /Google Play \(Android\) · Still checking/);
+  assert.match(first.result.content[0].text, /^Trademark check still running\.$/m);
   assert.match(first.result.content[0].text, /same tool with the same input/);
   const early = await readFile(new URL(resultPage), 'utf8');
   assert.match(early, /http-equiv="refresh"/);

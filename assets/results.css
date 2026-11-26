@@ -76,7 +76,8 @@ body { font-size: var(--body-size); line-height: 1.5; }
 .trademark-warning strong { font-size: 1.15rem; }
 .trademark-warning p, .trademark-pending { font-size: .93rem; }
 .trademark-pending { border-left: 2px solid; padding-left: 10px; }
-.hunt-card[data-check-pending] .offer-row > :is(.action, .buy-note) { display: none; }
+.primary-checks { width: 100%; margin: 12px 0; font-size: .93rem; }
+.primary-checks > p { padding: 4px 0; border-top: 1px solid #10238540; }
 .ending-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 2px; background: var(--blue); }
 .offer-row, .detail-checks { min-width: 0; background: var(--cream); padding: 15px 16px 0; }
 .offer-row { display: flex; flex-direction: column; align-items: flex-start; }

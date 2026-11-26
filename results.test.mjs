@@ -196,7 +196,7 @@ test('the progress frame names the handle stage while the top names are checked'
   assert.match(text.display, /still checking \.de, ask again/);
 });
 
-test('hosted receipts put the trademark before the pick and fold shops after the cheapest three', async t => {
+test('hosted receipts put the pick, app stores and trademark before shop comparisons', async t => {
   const { pages } = await tempPages(t);
   const domain = 'example.dev';
   const prices = ['Spaceship', 'Dynadot', 'Namecheap', 'Cloudflare'].map((shop, index) => ({
@@ -214,9 +214,12 @@ test('hosted receipts put the trademark before the pick and fold shops after the
   const html = await readFile(new URL(result.resultPage), 'utf8');
   const body = html.split('<body>')[1];
   assert.ok(body.includes('class="trademark-warning"'));
-  assert.match(body, /Example Labs filed for example\./);
-  assert.match(body, /https:\/\/tsdr\.uspto\.gov\/#caseNumber=12345678">Read the filing/);
-  assert.ok(body.indexOf('class="trademark-warning"') < body.indexOf('Hound’s pick'));
+  assert.match(body, /has an exact live US trademark match \(Example Labs\)/);
+  assert.match(body, /https:\/\/tsdr\.uspto\.gov\/#caseNumber=12345678">example/);
+  const order = ['Hound’s pick', 'App Store (iOS)', 'Google Play (Android)', 'class="trademark-warning"', 'Buy at Cloudflare'];
+  const positions = order.map(value => body.indexOf(value));
+  assert.ok(positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])));
+  assert.match(body, /Search aid, not legal advice\./);
   assert.match(body, /Buy at Cloudflare/);
   assert.match(body, /Renewal at Cloudflare costs more than 3 times the first year/);
   assert.match(body, /<details[^>]*><summary[^>]*>\+1 more shop<\/summary>/);

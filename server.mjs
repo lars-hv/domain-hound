@@ -15,7 +15,7 @@ import { callPurchaseTool, purchaseToolNames, registeredTools, quoteOfferLine, w
 import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
 import { HostedRateLimit, hostedClient, hostedDebug } from './hosted.mjs';
-import { generatedChecks, hostedChecks, hostedResult } from './hosted-results.mjs';
+import { generatedChecks, hostedChecks, hostedIntroLines, hostedResult } from './hosted-results.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -73,7 +73,7 @@ const checkTool = {
   description: 'Use this when checking whether a name or exact domain is available, what an ending such as .ai costs, or where to register. '
     + 'Use query for one exact domain or bare name ({"query":"lanternbay.dev"}), or names for a batch ({"names":["lanternbay.dev","lanternbay"]}). '
     + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
-    + 'This checks availability and compares prices. Use triage_names for name ideas or trademark screening and quote_domain for a live Spaceship purchase quote.',
+    + 'The hosted check returns domains and prices, followed by app names and exact US trademark matches. Repeat to collect pending checks. Use triage_names for name ideas and quote_domain for a live Spaceship purchase quote.',
   annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
   _meta: batchResultMeta,
   inputSchema: {
@@ -202,7 +202,12 @@ function compactCheckResult(result) {
     const date = checks?.[0]?.priceSnapshot?.checkedAt?.slice(0, 10) ?? priceListDate;
     // Keep the rich single-name answer when it fits. In a batch, the short price line shows the
     // best listed offer for every available ending, with the payment term made explicit.
-    const withStatuses = display.replace(resultsLine(resultPage), resultsLine(resultPage) + '\n' + statusLines.join('\n'));
+    const pageLink = resultsLine(resultPage);
+    const intro = checks?.[0] && hostedIntroLines(checks[0], pending);
+    const pageAndIntro = intro && [pageLink, ...intro].join('\n') + '\n';
+    const withStatuses = pageAndIntro && display.startsWith(pageAndIntro)
+      ? [...intro, pageLink, ...statusLines, display.slice(pageAndIntro.length)].join('\n')
+      : display.replace(pageLink, [pageLink, ...statusLines].join('\n'));
     const fits = value => {
       const wire = JSON.stringify({ content: [{ type: 'text', text: value }], structuredContent, isError: false });
       return rows.length <= 1 ? Buffer.byteLength(wire) < 8_000 : wire.length < 40_000;
@@ -236,11 +241,12 @@ function compactCheckResult(result) {
       ];
       const highlights = display.split('\n')
         .filter(line => /^(?:US trademark warning for |The Hound’s pick is |Cheapest: |Best value: )/.test(line)).slice(0, 8);
+      const intro = checks?.flatMap(check => hostedIntroLines(check, pending, 1, false)) ?? [];
       const priceHeader = 'USD before tax, upfront/renewal per term, list prices' + (date ? ' from ' + date : '') + ' unless marked confirmed.';
       const render = (offerLimit, highlights) => {
         const priceLines = prices.filter(({ list }) => list.length).map(({ name, list }) => name + ' · ' + list.slice(0, offerLimit).join(', '));
-        return attributed([...lead, ...statusLines, '', ...(priceLines.length ? [priceHeader, ...priceLines, ''] : []),
-          ...highlights, ...notes].join('\n'), purchase);
+        return attributed([...intro, ...lead, ...statusLines, '', ...(priceLines.length ? [priceHeader, ...priceLines, ''] : []),
+          ...(checks ? [] : highlights), ...notes].join('\n'), purchase);
       };
       text = render(Infinity, highlights);
       if (!fits(text)) text = render(Infinity, []);

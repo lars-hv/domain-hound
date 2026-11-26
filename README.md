@@ -68,13 +68,13 @@ An affordable .inc result appears in a bare-name search only after the registry 
 
 Each available domain shows the listed shops, first-year price, renewal and three-year cost, plus the cheapest shop
 over three years. The Hound picks the highest-ranked available ending within $60 over three years when one qualifies.
-The results put exact live US trademark matches first, followed by the domains, App Store, Google Play and public
-handle checks. The package retries unknown public profile and Google Play results from your device. LinkedIn and
+The hosted first answer leads with the domain status or the Hound’s pick and price. The App Store and Google Play
+findings come next, followed by an exact US trademark finding. Public profiles appear in the saved results page. The package retries unknown public profile and Google Play results from your device. LinkedIn and
 Reddit use the Wayback Machine CDX index, with the latest Common Crawl index as a fallback when Wayback cannot answer.
 A capture includes its year. A successful empty archive search returns `not-seen`. Google Play matches a title or
 a title starting with the name followed by a non-letter, ignoring case. Set `DOMAIN_HOUND_EMBED_CHECKS=off` for search
 or profile links only on TikTok, Instagram, X, Threads, Facebook, LinkedIn, Reddit, Twitch and Google Play.
-`check_domains` returns registry results and prices first. If the reply says name checks are pending, repeat the same call to collect them. The saved results page updates at the same link.
+If `check_domains` says a check is pending, repeat the same call to collect it. The saved results page updates at the same link.
 
 When the hosted lookup cannot check a .dev or .app domain, the package can ask Google Registry from your device and pass the result back to the hosted service to calculate the pick. It also tries Apple from your device when the hosted App Store lookup is rate-limited.
 

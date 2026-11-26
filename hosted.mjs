@@ -217,6 +217,9 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
         hostedDebug('/v1/check did not provide a name-check token', env);
       }
       if (nameChecks) {
+        const definite = row => row && !['pending', 'unknown'].includes(row.status);
+        if (definite(answer.appStore)) nameChecks.appStore = answer.appStore;
+        if (definite(answer.googlePlay)) nameChecks.googlePlay = answer.googlePlay;
         const recovered = await Promise.allSettled([
           recoverApple(nameChecks.appStore, main.query.name, signal).then(app => { nameChecks.appStore = app; }),
           recoverNameChecks([{ name: main.query.name, nameChecks }], signal),
@@ -225,7 +228,13 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           if (result.status === 'rejected') hostedDebug('Optional ' + (index ? 'handle' : 'App Store') + ' recovery failed', env);
         }
       }
-      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }), nameChecks };
+      const best = (first, next) => first && !['unknown', 'pending'].includes(first.status) ? first
+        : next ?? (first?.status === 'pending' ? { ...first, status: 'unknown' } : first);
+      const appStore = best(answer.appStore, nameChecks?.appStore);
+      const googlePlay = best(answer.googlePlay, nameChecks?.googlePlay);
+      const mark = best(answer.trademarks?.us, nameChecks?.trademarks?.us);
+      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }), nameChecks,
+        ...(appStore && { appStore }), ...(googlePlay && { googlePlay }), ...(mark && { trademarks: { us: mark } }) };
     },
 
     async generate(args, signal) {
