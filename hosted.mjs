@@ -27,6 +27,9 @@ const validCheck = body => body?.version === 1 && typeof body.query?.ascii === '
 const validDetails = body => body?.version === 1 && body.appStore && body.googlePlay &&
   Array.isArray(body.trademarks?.us?.marks) && Array.isArray(body.handles);
 const validGeneration = body => body?.version === 2 && ['initial', 'final'].includes(body.stage) && Array.isArray(body.names);
+const definite = row => row && !['pending', 'unknown'].includes(row.status);
+const best = (first, next) => definite(first) ? first
+  : next ?? (first?.status === 'pending' ? { ...first, status: 'unknown' } : first);
 
 // Only the IANA-listed Google Registry route for the returned .app or .dev domain is eligible.
 async function observeRdap(row, ascii, fetchFn, signal) {
@@ -133,10 +136,10 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
   }
 
   async function recoverApple(app, name, signal) {
-    if (app?.status !== 'unknown' || app.reason !== 'rate-limited') return app;
+    if (app?.status !== 'unknown') return app;
     const label = normalizeName(name);
     if (!label) return app;
-    const checked = await apple(label, name, { signal: AbortSignal.any([signal, AbortSignal.timeout(2800)]), fetcher: fetchFn })
+    const checked = await apple(label, name, { signal, fetcher: fetchFn })
       .catch(() => null);
     if (!Array.isArray(checked)) return app;
     return { ...app, status: checked.length ? 'taken' : 'no_match_found', reason: null,
@@ -207,30 +210,35 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           domains: comparison.domains, choice: comparison.choice, priceSnapshot: comparison.priceSnapshot,
           share: comparison.share, complete: comparison.complete,
         } : null).catch(() => null) : null;
-      let nameChecks = null;
-      if (typeof details?.id === 'string') {
-        onDomains?.(answer);
-        nameChecks = await read('/v1/check/details', {
-          params: { id: details.id }, timeout: 5300, signal: AbortSignal.any([signal, AbortSignal.timeout(5700)]), valid: validDetails,
-        }, true).catch(() => null);
-      } else {
-        hostedDebug('/v1/check did not provide a name-check token', env);
+      const hasDetails = typeof details?.id === 'string';
+      const detailCheck = hasDetails ? read('/v1/check/details', {
+        params: { id: details.id }, timeout: 5300, signal: AbortSignal.any([signal, AbortSignal.timeout(5700)]), valid: validDetails,
+      }, true).catch(() => null) : Promise.resolve(null);
+      if (!hasDetails) hostedDebug('/v1/check did not provide a name-check token', env);
+
+      const initialApp = answer.appStore;
+      // The first response can already know Apple failed. Start the retry without waiting for handles.
+      const localApple = initialApp?.status === 'unknown' ? recoverApple(initialApp, main.query.name, signal) : null;
+      const detailsApp = detailCheck.then(data => data?.appStore);
+      const appCheck = localApple
+        ? Promise.race([localApple, detailsApp.then(row => definite(row) ? row : localApple)])
+          .then(async row => definite(row) ? row : best(row, await detailsApp))
+        : detailsApp.then(row => definite(initialApp) ? initialApp
+          : recoverApple(best(initialApp, row), main.query.name, signal));
+      const waitingForApple = !definite(initialApp) && Boolean(initialApp || hasDetails);
+      if (hasDetails || waitingForApple) {
+        onDomains?.(waitingForApple ? { ...answer, appStore: { ...initialApp, status: 'pending' } } : answer,
+          waitingForApple ? appCheck : undefined);
       }
+
+      const nameChecks = await detailCheck;
       if (nameChecks) {
-        const definite = row => row && !['pending', 'unknown'].includes(row.status);
-        if (definite(answer.appStore)) nameChecks.appStore = answer.appStore;
         if (definite(answer.googlePlay)) nameChecks.googlePlay = answer.googlePlay;
-        const recovered = await Promise.allSettled([
-          recoverApple(nameChecks.appStore, main.query.name, signal).then(app => { nameChecks.appStore = app; }),
-          recoverNameChecks([{ name: main.query.name, nameChecks }], signal),
-        ]);
-        for (const [index, result] of recovered.entries()) {
-          if (result.status === 'rejected') hostedDebug('Optional ' + (index ? 'handle' : 'App Store') + ' recovery failed', env);
-        }
+        await recoverNameChecks([{ name: main.query.name, nameChecks }], signal)
+          .catch(() => hostedDebug('Optional handle recovery failed', env));
       }
-      const best = (first, next) => first && !['unknown', 'pending'].includes(first.status) ? first
-        : next ?? (first?.status === 'pending' ? { ...first, status: 'unknown' } : first);
-      const appStore = best(answer.appStore, nameChecks?.appStore);
+      const appStore = await appCheck;
+      if (nameChecks && appStore) nameChecks.appStore = appStore;
       const googlePlay = best(answer.googlePlay, nameChecks?.googlePlay);
       const mark = best(answer.trademarks?.us, nameChecks?.trademarks?.us);
       return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }), nameChecks,
