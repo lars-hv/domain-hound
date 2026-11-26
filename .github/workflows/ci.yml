@@ -50,3 +50,5 @@ jobs:
       - run: npm ci
 
       - run: node scripts/package-smoke.mjs
+        env:
+          DOMAIN_HOUND_LOCAL: '1'
