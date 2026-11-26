@@ -5,8 +5,8 @@ import { saleSignal } from './parking.mjs';
 import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
 
 export const bootstrapUrl = 'https://data.iana.org/rdap/dns.json';
-// A conclusive registry answer is reused: a registration for a day, an absence for an hour. DNS still runs first,
-// so a name registered since then shows up through its name servers.
+// Cache confirmed availability for ten minutes, or thirty for Google Registry. A taken result lasts a day.
+// DNS still runs first so a newly delegated name can be found before the cache expires.
 export const takenLifetime = 24 * 3_600_000;
 export const freeLifetime = 10 * 60_000;
 const googleFreeLifetime = 30 * 60_000;
