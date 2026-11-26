@@ -72,6 +72,20 @@ test('retention bounds receipt storage and preserves both files for the newest r
   }
 });
 
+test('a local check uses the hosted pick cap and wording while keeping expensive offers visible', async t => {
+  const { pages } = await tempPages(t);
+  const name = { name: 'exampleheron', free: [{ d: 'co', s: 'nc', now: 10, renew: 30, y3: 70, shop: 'Cloudflare' }] };
+  const data = { source: 'local', names: [name] };
+  const expensive = await pages(data, {});
+  assert.match(expensive.say, /Available · exampleheron\.co\n.*\$70\.00 over three years · requires Cloudflare DNS/);
+  assert.doesNotMatch(expensive.say, /The Hound’s pick/);
+
+  const withinCap = await pages({ ...data, names: [{ ...name, free: [
+    ...name.free, { d: 'dev', s: 'nc', now: 8, renew: 12.5, y3: 33, shop: 'Spaceship' },
+  ] }] }, {});
+  assert.match(withinCap.say, /The Hound’s pick is exampleheron\.dev at Spaceship for \$33\.00 over three years\./);
+});
+
 test('a partial shop quote keeps renewal unknown and an exact offer above budget is not recommended', async t => {
   const { pages } = await tempPages(t);
   const quote = { d: 'com', s: 'ok', now: 18, shop: 'Dynadot' };

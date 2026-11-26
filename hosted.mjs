@@ -7,6 +7,17 @@ import { searchApps } from './clis/domain-check/triage-sources.mjs';
 export const hostedBase = 'https://domainhound-mcp.domainhound.workers.dev';
 export class HostedRateLimit extends Error {}
 
+export function hostedDebug(message, env = process.env) {
+  if (env.DOMAIN_HOUND_DEBUG === '1') process.stderr.write('Domain Hound: ' + message + '\n');
+}
+
+class HostedRequestError extends Error {
+  constructor(message, transient = false) {
+    super(message);
+    this.transient = transient;
+  }
+}
+
 const validCheck = body => body?.version === 1 && typeof body.query?.ascii === 'string' &&
   Array.isArray(body.domains) && body.domains.every(row => typeof row.domain === 'string' &&
     ['available', 'taken', 'unknown'].includes(row.status) && Array.isArray(row.prices)) && body.choice;
@@ -20,33 +31,62 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
   try {
     base = new URL(env.DOMAIN_HOUND_API_URL || hostedBase);
     const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname);
-    if (base.username || base.password || (base.protocol !== 'https:' && !(loopback && base.protocol === 'http:'))) return null;
+    if (base.username || base.password || (base.protocol !== 'https:' && !(loopback && base.protocol === 'http:'))) {
+      throw new Error('Invalid hosted API origin');
+    }
   } catch {
+    hostedDebug('Hosted API origin is invalid; using the local check.', env);
     return null;
   }
 
-  async function read(path, { body, params, timeout, signal } = {}) {
+  async function request(path, { body, params, timeout, signal, valid } = {}) {
     const url = new URL(path, base);
     if (params) url.search = new URLSearchParams(params).toString();
-    const res = await fetchFn(url, {
-      redirect: 'error',
-      headers: { 'X-Domain-Hound-Client': 'mcp/' + version, ...(body && { 'Content-Type': 'application/json' }) },
-      ...(body && { method: 'POST', body: JSON.stringify(body) }),
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
-    });
+    const deadline = AbortSignal.timeout(timeout);
+    let res;
+    try {
+      res = await fetchFn(url, {
+        redirect: 'error',
+        headers: { 'X-Domain-Hound-Client': 'mcp/' + version, ...(body && { 'Content-Type': 'application/json' }) },
+        ...(body && { method: 'POST', body: JSON.stringify(body) }),
+        signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+      });
+    } catch (error) {
+      const code = error?.cause?.code;
+      const reason = signal?.aborted ? 'lookup stopped' : deadline.aborted ? 'request timed out'
+        : 'connection failed' + (/^(?:E[A-Z_0-9]+|UND_ERR_[A-Z_0-9]+)$/.test(code ?? '') ? ' (' + code + ')' : '');
+      throw new HostedRequestError(reason, true);
+    }
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
-      if (res.status === 429) throw new HostedRateLimit();
-      throw new Error('Hosted check unavailable');
+      if (res.status === 429) throw new HostedRateLimit('HTTP 429');
+      throw new HostedRequestError('HTTP ' + res.status, res.status === 408 || res.status >= 500);
     }
-    return res.json();
+    const answer = await res.json().catch(() => {
+      throw new HostedRequestError(signal?.aborted ? 'lookup stopped' : deadline.aborted
+        ? 'response timed out' : 'invalid or incomplete JSON response', true);
+    });
+    if (valid && !valid(answer)) throw new HostedRequestError('response did not match the API format', true);
+    return answer;
   }
 
-  const get = async (name, signal) => {
-    const body = await read('/v1/check', { params: { name }, timeout: 5600, signal });
-    if (!validCheck(body)) throw new Error('Invalid hosted check');
-    return body;
-  };
+  async function read(path, options, retry = false) {
+    for (let attempt = 1; ; attempt++) {
+      const started = performance.now();
+      try {
+        return await request(path, options);
+      } catch (error) {
+        const retrying = retry && attempt === 1 && error.transient && !options.signal?.aborted;
+        hostedDebug(path + ' attempt ' + attempt + ' failed after ' + Math.round(performance.now() - started)
+          + ' ms (' + (error instanceof HostedRequestError || error instanceof HostedRateLimit ? error.message : 'unexpected error')
+          + ')' + (retrying ? '; retrying' : ''), env);
+        if (!retrying) throw error;
+        await wait(200, undefined, { signal: options.signal });
+      }
+    }
+  }
+
+  const get = (name, signal) => read('/v1/check', { params: { name }, timeout: 5600, signal, valid: validCheck }, true);
 
   async function recoverApple(app, name, signal) {
     if (app?.status !== 'unknown' || app.reason !== 'rate-limited') return app;
@@ -115,14 +155,19 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       let nameChecks = null;
       if (typeof main.details?.id === 'string') {
         nameChecks = await read('/v1/check/details', {
-          params: { id: main.details.id }, timeout: 6600, signal,
-        }).then(body => validDetails(body) ? body : null, () => null);
+          params: { id: main.details.id }, timeout: 6600, signal, valid: validDetails,
+        }, true).catch(() => null);
+      } else {
+        hostedDebug('/v1/check did not provide a name-check token', env);
       }
       if (nameChecks) {
-        await Promise.all([
+        const recovered = await Promise.allSettled([
           recoverApple(nameChecks.appStore, main.query.name, signal).then(app => { nameChecks.appStore = app; }),
           recoverNameChecks([{ name: main.query.name, nameChecks }], signal),
         ]);
+        for (const [index, result] of recovered.entries()) {
+          if (result.status === 'rejected') hostedDebug('Optional ' + (index ? 'handle' : 'App Store') + ' recovery failed', env);
+        }
       }
       const { details, ...answer } = main;
       return { ...answer, domains: [...main.domains, ...extras.flatMap(extra => extra.domains)], nameChecks,
