@@ -1,5 +1,6 @@
 import { setTimeout as wait } from 'node:timers/promises';
-import { checkSocialHandles, handleLabel } from './clis/domain-check/handles.mjs';
+import { checkGooglePlayNames, checkSocialHandles, embedChecksEnabled, handleLabel, handleStates, publicProfiles } from './clis/domain-check/handles.mjs';
+import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 import { normalizeName } from './clis/domain-check/name-search.mjs';
 import { searchApps } from './clis/domain-check/triage-sources.mjs';
 
@@ -58,27 +59,46 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       matches: checked.map(({ name, url }) => ({ name, url })), checkedAt: new Date().toISOString(), source: 'local' };
   }
 
-  async function recoverYouTube(entries, signal) {
-    const wanted = entries.flatMap(({ name, nameChecks }) => {
-      if (!nameChecks || !Array.isArray(nameChecks.handles)) return [];
-      const row = nameChecks.handles.find(row => row.platform === 'YouTube');
-      if (['taken', 'not-found'].includes(row?.state)) return [];
+  async function recoverNameChecks(entries, signal) {
+    const enabled = embedChecksEnabled(env);
+    const definite = value => value === 'taken' || value === 'not-found';
+    const checked = entries.filter(entry => Array.isArray(entry.nameChecks?.handles));
+    const profiles = checked.flatMap(({ name, nameChecks }) => Object.keys(publicProfiles).flatMap(platform => {
+      const row = nameChecks.handles.find(row => row.platform === platform);
+      if ((enabled || platform === 'YouTube') && definite(row?.state)) return [];
       const handle = row?.handle ?? normalizeName(name);
-      return handle ? [{ handle, row, nameChecks }] : [];
-    });
-    if (!wanted.length) return;
-    const names = [...new Set(wanted.map(({ handle }) => handle))];
-    const local = await checkSocialHandles(names.map(name => ({ name, platforms: ['YouTube'], links: false })),
-      { fetcher: fetchFn, env, signal, freshRun: true }).catch(() => null);
-    for (const { handle, row, nameChecks } of wanted) {
-      const result = local?.get(handle)?.[0];
-      // Keep a hosted failure reason when the local machine has no key to try again.
-      if (row && result?.state === 'unknown' && result.why === 'not connected' && row.state === 'unknown') continue;
+      return handle ? [{ platform, handle, row, nameChecks }] : [];
+    }));
+    const wanted = new Map();
+    for (const { handle, platform } of profiles) {
+      if (!wanted.has(handle)) wanted.set(handle, new Set());
+      wanted.get(handle).add(platform);
+    }
+    const rows = [...wanted].map(([name, platforms]) => ({ name, platforms: [...platforms], links: false }));
+    const play = checked.filter(({ nameChecks }) => !enabled || !definite(nameChecks.googlePlay?.status));
+    const options = { fetcher: fetchFn, env, signal };
+    const [handles, playResults] = await Promise.all([
+      checkSocialHandles(rows, options).catch(() => null),
+      checkGooglePlayNames(play.map(({ name }) => name), options).catch(() => null),
+    ]);
+    for (const { platform, handle, row, nameChecks } of profiles) {
+      const result = handles?.get(handle)?.find(result => result.platform === platform);
       if (!result) continue;
       const profile = { ...row, ...result, label: handleLabel(result), checkedAt: result.checkedAt ?? null,
-        why: result.why ?? null, ...(result.state !== 'unknown' && { source: 'local' }) };
+        why: result.why ?? null, ...(definite(result.state) && { source: 'local' }) };
       nameChecks.handles = row ? nameChecks.handles.map(entry => entry === row ? profile : entry)
         : [...nameChecks.handles, profile];
+    }
+    for (const { name, nameChecks } of play) {
+      const result = playResults?.get(name);
+      const status = result?.state ?? 'unknown';
+      nameChecks.googlePlay = {
+        ...nameChecks.googlePlay, status, checkedAt: result?.checkedAt ?? null,
+        label: enabled ? handleStates[status] : googlePlayLabel,
+        link: nameChecks.googlePlay?.link ?? playSearchLink(name), linkLabel: googlePlayLinkLabel,
+        why: enabled ? result?.why ?? (status === 'unknown' ? 'no clear answer in time' : null) : 'no public search',
+        ...(definite(status) && { source: 'local' }),
+      };
     }
   }
 
@@ -95,7 +115,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       if (nameChecks) {
         await Promise.all([
           recoverApple(nameChecks.appStore, main.query.name, signal).then(app => { nameChecks.appStore = app; }),
-          recoverYouTube([{ name: main.query.name, nameChecks }], signal),
+          recoverNameChecks([{ name: main.query.name, nameChecks }], signal),
         ]);
       }
       const { details, ...answer } = main;
@@ -106,6 +126,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     async generate(args, signal) {
       const generation = await read('/v1/generate', { body: args, timeout: 9400, signal });
       if (!validGeneration(generation)) throw new Error('Invalid hosted generation');
+      if (generation.stage === 'final') await recoverNameChecks(generation.names, signal);
       return generation;
     },
 
@@ -122,7 +143,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
         }
         if (!validGeneration(body) || body.stage !== 'final') throw new Error('Invalid hosted generation details');
         await Promise.all([
-          recoverYouTube(body.names, signal),
+          recoverNameChecks(body.names, signal),
           ...body.names.map(async entry => {
             const app = await recoverApple(entry.nameChecks?.appStore ?? entry.appStore, entry.name, signal);
             if (entry.nameChecks) entry.nameChecks.appStore = app;

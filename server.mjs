@@ -109,7 +109,7 @@ const triageTool = {
       companyType: { type: 'string', enum: Object.keys(handlePriorities),
         description: 'Use developer, consumer, b2b or media when it fits, to highlight the handles that matter.' },
       additionalHandles: { type: 'array', uniqueItems: true, items: { type: 'string', enum: requestPlatforms.map(platform => platform.id) },
-        description: 'Extra check links only when requested. Snapchat, Reddit, Twitch, Threads, Pinterest or Discord.' },
+        description: 'Extra check links only when requested. Snapchat, Reddit, Twitch, Pinterest or Discord. Threads is checked by default.' },
       category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for relevant trademark classes and competitors. Use travel, software, finance, retail, health, education, food or media.' },
       about: { type: 'string', minLength: 1, maxLength: 160, description: 'A short description of what your product does, to identify overlapping sites and apps.' },
       candidates: { type: 'object', maxProperties: 20,

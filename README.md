@@ -53,8 +53,11 @@ An affordable .inc result appears in a bare-name search only after the registry 
 
 Each available domain shows the listed shops, first-year price, renewal and three-year cost, plus the cheapest shop
 over three years. The Hound picks the highest-ranked available ending within $60 over three years when one qualifies.
-The results put exact live US trademark matches first, followed by the domains, App Store search, Google Play search
-link and public handle checks. If the hosted App Store lookup is rate-limited, the package tries Apple from your device.
+The results put exact live US trademark matches first, followed by the domains, App Store, Google Play and public
+handle checks. When the hosted check leaves TikTok, Instagram, X, YouTube, Threads or Google Play unknown, the
+package tries the public source from your device. Google Play matches exact titles, ignoring case and spaces.
+Set `DOMAIN_HOUND_EMBED_CHECKS=off` for search or profile links only on TikTok, Instagram, X, Threads and Google Play.
+The package also tries Apple from your device when the hosted App Store lookup is rate-limited.
 
 Pass `idea` to `triage_names` to generate names on the same service. The results page updates as the checks finish.
 Pass `names` to screen names you already have. For a second generation round, pass the same `idea` with the `wanted`
@@ -180,7 +183,9 @@ with public evidence sources. Catalog downloads carry no candidate name. Clickin
 | `api.patentstyret.no` | With a subscription key, the Norwegian office gets the key and candidate spellings. |
 | `mcp.atom.com` | The taken domain for an exact listing lookup. The buyer's ceiling stays local. |
 | `itunes.apple.com` | Candidate name for US App Store search. |
-| `www.googleapis.com` | With the optional local `YOUTUBE_API_KEY`, the candidate's YouTube handle and key. The local lookup runs when a hosted YouTube answer is unavailable or in local mode. |
+| `www.tiktok.com`, `graph.facebook.com`, `publish.twitter.com` / `publish.x.com`, `www.threads.net` / `www.threads.com`, `www.youtube.com` | The candidate's handle. |
+| `play.google.com` | Candidate name for Google Play app search. |
+| `www.googleapis.com` | The candidate's YouTube handle and optional local `YOUTUBE_API_KEY` when the key is configured. |
 | `www.wikidata.org`, `www.google.com`, `trends.google.com`, `data.brreg.no` | Candidate name; Wikidata also gets entity or class IDs for matches. |
 | `api.github.com`, `registry.npmjs.org`, `public.api.bsky.app` | Candidate name or handle, handle variants and public controls. With a GitHub token configured, it goes only to GitHub. |
 | `www.sec.gov`, `tranco-list.eu` | Public company and site lists with no candidate name. |

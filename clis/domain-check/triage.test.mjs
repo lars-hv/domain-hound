@@ -668,7 +668,7 @@ test('slow sources screen the first five names; handle rows go to the top three,
   assert.deepEqual(Object.keys(report.handles), ['Alpha Wren', 'Delta Wren', 'Echo Wren']);
   assert.deepEqual(report.handles['Alpha Wren'].not_found, ['GitHub', 'npm', 'Bluesky']);
   const rows = report.receiptDetails[0].handles;
-  assert.deepEqual(rows.map(row => row.platform), ['YouTube', 'X', 'Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'GitHub', 'npm', 'PyPI', 'Bluesky']);
+  assert.deepEqual(rows.map(row => row.platform), ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads', 'Facebook', 'LinkedIn', 'GitHub', 'npm', 'PyPI', 'Bluesky']);
   assert.equal(report.receiptDetails[1].handles, null);
   assert.doesNotMatch(JSON.stringify(report.handles), /free/);
 });

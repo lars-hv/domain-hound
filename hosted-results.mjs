@@ -2,11 +2,11 @@ import { attributed, md } from './display.mjs';
 import { canRecommend, choosePick, normalizeName } from './clis/domain-check/name-search.mjs';
 import { compareScores, scoreEligible, scoreHandles, scoreName } from './clis/domain-check/name-score.mjs';
 import { relevantClasses } from './clis/domain-check/triage-sources.mjs';
-import { handleLabel, linkedInLabel, linkedInSearch } from './clis/domain-check/handles.mjs';
+import { handleLabel, handleStates, linkedInLabel, linkedInSearch } from './clis/domain-check/handles.mjs';
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 
 const money = value => Number.isFinite(value) ? '$' + value.toFixed(2) : 'price at shop';
-const platforms = ['LinkedIn', 'X', 'Instagram', 'TikTok', 'YouTube', 'GitHub'];
+const platforms = ['LinkedIn', 'X', 'Instagram', 'TikTok', 'YouTube', 'Threads', 'GitHub'];
 
 function link(label, value) {
   try {
@@ -39,7 +39,8 @@ function nameCheckLines(details, pending, name) {
   return [
     ...(markText ? ['US trademarks · ' + markText] : []),
     'App Store · ' + appText + (apps ? ' · ' + apps : ''),
-    googlePlayLabel + ' · ' + link(googlePlayLinkLabel, googlePlay.link ?? playSearchLink(name)),
+    (googlePlay.why === 'no public search' ? googlePlayLabel : 'Google Play · ' + (handleStates[googlePlay.status] ?? handleStates.unknown))
+      + ' · ' + link(googlePlayLinkLabel, googlePlay.link ?? playSearchLink(name)),
     ...platforms.map(platform => {
       const handle = handles.find(row => row.platform === platform);
       if (platform === 'LinkedIn') return linkedInLabel + ' · ' + link('Search LinkedIn', linkedInSearch(name));

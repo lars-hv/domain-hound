@@ -1342,7 +1342,8 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
         choice: { pick: { ...offer, domain: domain.domain } }, details: { id: 'fixture-id' },
       });
       assert.equal(parsed.searchParams.get('id'), 'fixture-id');
-      return Response.json({ version: 1, appStore, googlePlay: { link: 'https://play.google.com/store' }, handles: [],
+      return Response.json({ version: 1, appStore, googlePlay: { status: 'not-found', link: 'https://play.google.com/store' },
+        handles: ['YouTube', 'X', 'Instagram', 'TikTok', 'Threads'].map(platform => ({ platform, state: 'not-found' })),
         trademarks: { us: { status: 'exact_match_found', marks: [{ mark: 'EXAMPLEHERON', owner: 'Example Company',
           status: 'applied', url: 'https://tsdr.uspto.gov/' }] } } });
     },
@@ -1379,7 +1380,8 @@ test('the package uses the local check when the hosted request cannot connect', 
 test('the MCP checks YouTube locally only when the hosted YouTube state is unknown', async t => {
   const calls = [];
   const key = 'fixture-placeholder';
-  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', YOUTUBE_API_KEY: key },
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', YOUTUBE_API_KEY: key,
+    DOMAIN_HOUND_EMBED_CHECKS: 'off' },
     fetchFn: async (input, init) => {
       const url = new URL(input);
       if (url.hostname === 'www.googleapis.com') {
@@ -1433,4 +1435,43 @@ test('triage_names sends the steering to hosted generation and refreshes the sam
   assert.equal(first.generation.details, undefined);
   assert.equal(updated.resultPage, first.resultPage);
   assert.match(updated.display, /Which two do you love/);
+});
+
+test('check_domains fills unknown public name checks locally and keeps confirmed hosted answers', async t => {
+  const calls = [];
+  const name = 'paperheron';
+  const fixtures = JSON.parse(await readFile(new URL('./clis/domain-check/fixtures/public-name-checks.json', import.meta.url), 'utf8'));
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' }, fetchFn: async (input, init) => {
+    const url = new URL(input);
+    if (url.hostname === 'api.example.test') {
+      if (url.pathname === '/v1/check') return Response.json({
+        version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
+        domains: [], choice: { pick: null }, details: { id: name },
+      });
+      return Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] }, googlePlay: { status: 'unknown' },
+        handles: [{ platform: 'X', handle: name, state: 'not-found', link: 'https://x.com/' + name },
+          ...['YouTube', 'Instagram', 'TikTok', 'Threads'].map(platform => ({ platform, handle: name, state: 'unknown' }))],
+        trademarks: { us: { status: 'no_exact_match_found', marks: [] } } });
+    }
+    assert.equal(new Headers(init.headers).has('x-domain-hound-client'), false);
+    calls.push(url.hostname);
+    const kind = { 'www.tiktok.com': 'tiktok', 'graph.facebook.com': 'instagram', 'www.youtube.com': 'youtube',
+      'www.threads.net': 'threads', 'play.google.com': 'googlePlay' }[url.hostname];
+    const fixture = fixtures[kind][kind === 'threads' ? 'login' : 'taken'];
+    const body = kind === 'googlePlay' ? fixture.body.replace('Paper Heron -', 'PaperHeron -') : fixture.body;
+    return new Response(typeof body === 'string' ? body : JSON.stringify(body),
+      { status: fixture.status, headers: { 'content-type': fixture.type } });
+  } });
+  const mcp = await local(t, { hosted: host });
+  const answer = resultOf([await mcp.ask(call(2, { query: name }))], 2).structuredContent;
+  const checks = answer.checks[0].nameChecks;
+  assert.equal(checks.googlePlay.status, 'taken');
+  assert.equal(checks.googlePlay.source, 'local');
+  assert.deepEqual(Object.fromEntries(checks.handles.map(row => [row.platform, [row.state, row.source]])), {
+    X: ['not-found', undefined], YouTube: ['taken', 'local'], Instagram: ['taken', 'local'], TikTok: ['taken', 'local'],
+    Threads: ['unknown', undefined],
+  });
+  assert.match(answer.display, /Threads · \[Couldn't check\]/);
+  assert.match(answer.display, /Google Play · Taken · \[Search Google Play\]/);
+  assert.deepEqual(calls.sort(), ['graph.facebook.com', 'play.google.com', 'www.threads.net', 'www.tiktok.com', 'www.youtube.com']);
 });

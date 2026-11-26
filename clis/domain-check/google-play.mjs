@@ -3,15 +3,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { withShopPages } from './confirm.mjs';
 import { appNameMatches, compactText, day, request } from './triage-sources.mjs';
 
+import { parsePlayCards, playSearchLink } from './public-name-checks.mjs';
+
+export { parsePlayCards, playSearchLink };
 const origin = 'https://play.google.com';
 const maxHtmlBytes = 4_000_000;
 
 export const googlePlayLabel = 'Google Play has no public search';
 export const googlePlayLinkLabel = 'Search Google Play';
-
-export function playSearchLink(input) {
-  return origin + '/store/search?' + new URLSearchParams({ q: input, c: 'apps', hl: 'en', gl: 'US' });
-}
 
 export function readPlayCards(query) {
   // Google's featured and compact cards have different markup.
@@ -45,45 +44,6 @@ export function readPlayDetails(html, url) {
     } catch { /* Ignore malformed structured data. */ }
   }
   return { ratings: null, ...seller };
-}
-
-// Server-rendered fallback for installs without Chromium. It mirrors readPlayCards on a parse5 tree.
-export function parsePlayCards(document, query) {
-  const nodes = [];
-  const walk = node => {
-    for (const child of node.childNodes ?? []) {
-      if (child.tagName) nodes.push(child);
-      walk(child);
-    }
-  };
-  walk(document);
-  const attribute = (node, name) => node.attrs.find(attr => attr.name === name)?.value;
-  const hasClass = (node, name) => (attribute(node, 'class') ?? '').split(/\s+/).includes(name);
-  const text = node => node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(text).join('');
-  const find = (node, name) => {
-    for (const child of node.childNodes ?? []) {
-      if (child.tagName && hasClass(child, name)) return child;
-      const found = child.tagName && find(child, name);
-      if (found) return found;
-    }
-    return null;
-  };
-  const clean = value => value.replace(/\s+/g, ' ').trim();
-  const emptyMessage = clean('No results for ' + query).toLowerCase();
-  if (nodes.some(node => ['h1', 'h2', 'h3', 'span', 'p'].includes(node.tagName) &&
-    clean(text(node)).toLowerCase() === emptyMessage)) return [];
-  const rows = nodes.flatMap(link => {
-    const href = link.tagName === 'a' ? attribute(link, 'href') : null;
-    if (!href?.startsWith('/store/apps/details?id=')) return [];
-    const featured = hasClass(link, 'Qfxief');
-    const nameNode = featured ? null : find(link, 'DdYX5');
-    const name = featured ? attribute(link, 'aria-label') : nameNode && text(nameNode);
-    const sellerNode = featured ? link.parentNode?.tagName && find(link.parentNode, 'LbQbAe') : find(link, 'wMUdtb');
-    const seller = sellerNode ? text(sellerNode) : null;
-    const id = new URL(href, origin).searchParams.get('id');
-    return name && seller && id ? [{ name, seller, id }] : [];
-  });
-  return rows.length ? rows : null;
 }
 
 async function readBounded(response) {

@@ -58,6 +58,7 @@
     "clis/domain-check/google-play.mjs",
     "clis/domain-check/google-search.mjs",
     "clis/domain-check/handles.mjs",
+    "clis/domain-check/public-name-checks.mjs",
     "clis/domain-check/youtube-handle.mjs",
     "clis/domain-check/index.mjs",
     "clis/domain-check/marketplaces.mjs",
