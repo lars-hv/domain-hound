@@ -5,9 +5,9 @@ import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { searchCandidates, defaultEndings } from './clis/domain-check/name-search.mjs';
-import { backgroundCommand, resultPages, resultsLine } from './results.mjs';
+import { resultPages, resultsLine } from './results.mjs';
 import { newsQuestion, watchDomain } from './watch.mjs';
 
 const at = '2026-11-24T12:00:00.000Z';
@@ -105,27 +105,6 @@ test('a partial shop quote keeps renewal unknown and an exact offer above budget
   const exact = await pages({ ...data, names: [data.names[0]] }, { budget: 10, purchase: true });
   assert.match(exact.say, /Over budget\.\nThis check leaves checkout to you\.\nNext: try a cheaper domain\./);
   assert.doesNotMatch(exact.say, /https:\/\//);
-});
-
-test('desktop opener skips headless environments and requests platform background behavior', async () => {
-  const windowsPath = 'C:\\Temp\\receipt test (1).html';
-  assert.equal(await backgroundCommand(windowsPath, {}, 'win32'), null);
-  assert.equal(await backgroundCommand(windowsPath, { CI: 'true', SESSIONNAME: 'Console' }, 'win32'), null);
-  assert.equal(await backgroundCommand(windowsPath, { DOMAIN_HOUND_OPEN: 'off', SESSIONNAME: 'Console' }, 'win32'), null);
-  const [shell, flags] = await backgroundCommand(windowsPath, { SESSIONNAME: 'Console' }, 'win32');
-  assert.equal(shell, 'powershell.exe');
-  const script = Buffer.from(flags.at(-1), 'base64').toString('utf16le');
-  assert.match(script, /ShellExecuteW\(\[IntPtr\]::Zero, 'open', \$file, \$null, \$null, 4\)/);
-  assert.ok(script.includes(Buffer.from(windowsPath).toString('base64')));
-  const localPath = join(tmpdir(), 'receipt test.html');
-  const [gio, args, env] = await backgroundCommand(localPath, {
-    WAYLAND_DISPLAY: 'wayland-0', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/test',
-    XDG_ACTIVATION_TOKEN: 'unused', DESKTOP_STARTUP_ID: 'unused',
-  }, 'linux');
-  assert.deepEqual([gio, args], ['gio', ['open', pathToFileURL(localPath).href]]);
-  assert.equal(env.XDG_ACTIVATION_TOKEN, undefined);
-  assert.equal(env.DESKTOP_STARTUP_ID, undefined);
-  assert.equal(await backgroundCommand('/tmp/result.html', { DISPLAY: ':0' }, 'linux'), null);
 });
 
 test('a live website overrides the reported free registry status before progress or final output', async () => {
@@ -226,13 +205,17 @@ test('hosted receipts put the trademark before the pick and fold shops after the
   }));
   const check = { query: { name: 'example' }, choice: { pick: { domain, ...prices.at(-1) }, capUsd: 60 },
     domains: [{ domain, status: 'available', prices }], nameChecks: {
-      trademarks: { us: { status: 'exact_match_found', marks: [] } }, appStore: {}, googlePlay: {}, handles: [] } };
+      trademarks: { us: { status: 'exact_match_found', marks: [
+        { mark: '', owner: 'Example Labs', url: 'https://tsdr.uspto.gov/#caseNumber=12345678' },
+      ] } }, appStore: {}, googlePlay: {}, handles: [] } };
   const lines = ['Agent text stays intact.'];
   const result = await pages({ hosted: true, checks: [check], names: [{ name: 'example' }], lines, checkedAt: at }, {});
   assert.equal(result.say, resultsLine(result.resultPage) + '\n' + lines[0]);
   const html = await readFile(new URL(result.resultPage), 'utf8');
   const body = html.split('<body>')[1];
   assert.ok(body.includes('class="trademark-warning"'));
+  assert.match(body, /Example Labs filed for example\./);
+  assert.match(body, /https:\/\/tsdr\.uspto\.gov\/#caseNumber=12345678">Read the filing/);
   assert.ok(body.indexOf('class="trademark-warning"') < body.indexOf('Hound’s pick'));
   assert.match(body, /Buy at Cloudflare/);
   assert.match(body, /Renewal at Cloudflare costs more than 3 times the first year/);
@@ -277,7 +260,7 @@ test('an exact taken check keeps its agent answer and adds verified alternatives
   assert.doesNotMatch(failed, /All checked endings are taken/);
 });
 
-test('a headless session keeps scored ideas in page order and refreshes the same session copy', async t => {
+test('scored ideas keep page order and the same saved page updates in place', async t => {
   const { directory, pages } = await tempPages(t);
   const { generatedChecks, hostedResult } = await import('./hosted-results.mjs');
   const entries = ['heron', 'otter'].map((name, index) => {
@@ -292,13 +275,12 @@ test('a headless session keeps scored ideas in page order and refreshes the same
     return hostedResult(generatedChecks(generation), {}, generation, { pending });
   };
   const initial = await pages(output('initial', true), {}, { refresh: true });
-  const session = join(directory, (await readdir(directory)).find(file => file.startsWith('session-')));
-  const first = await readFile(session, 'utf8');
-  assert.equal(first, await readFile(new URL(initial.resultPage), 'utf8'));
+  const first = await readFile(new URL(initial.resultPage), 'utf8');
   assert.ok(first.indexOf('<h2>heron') < first.indexOf('<h2>otter'));
   const final = await pages(output('final', false), {}, { reuse: initial.resultPage });
-  const html = await readFile(session, 'utf8');
-  assert.equal(html, await readFile(new URL(final.resultPage), 'utf8'));
+  assert.equal(final.resultPage, initial.resultPage);
+  assert.ok(!(await readdir(directory)).some(file => file.startsWith('session-')));
+  const html = await readFile(new URL(final.resultPage), 'utf8');
   assert.ok(html.indexOf('<h2>otter') < html.indexOf('<h2>heron'));
   assert.match(html, /Name score 61\/100/);
   assert.match(html, /Why this name\?/);

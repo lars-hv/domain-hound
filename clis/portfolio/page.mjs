@@ -1,12 +1,10 @@
 // The local results page for my_domains, in the same receipt style as the name results: one row per domain,
 // most urgent first. One fixed file pair (portfolio.html and portfolio.md) is rewritten on each check.
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { backgroundCommand } from '../../results.mjs';
 import { receiptStyle } from '../../results-style.mjs';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
@@ -115,26 +113,15 @@ async function writePrivate(filename, content) {
   }
 }
 
-// A page writer for one server process. It opens the page in the background the first time only.
+// Save the portfolio files and return a link for the caller.
 export function portfolioPages({ env = process.env,
   directory = env.DOMAIN_HOUND_RESULTS_DIR || join(homedir(), '.domain-hound', 'results') } = {}) {
-  let opened = false;
   return async (rows, lines, checkedAt, note) => {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const page = renderPage(rows, lines, checkedAt, note);
     const filename = resolve(directory, 'portfolio.html');
     await writePrivate(resolve(directory, 'portfolio.md'), page.md);
     await writePrivate(filename, page.html);
-    if (!opened) {
-      opened = true;
-      await backgroundCommand(filename, env).then(command => {
-        if (!command) return;
-        const [executable, args, launchEnv] = command;
-        const browser = spawn(executable, args, { stdio: 'ignore', windowsHide: true, env: launchEnv });
-        browser.on('error', () => {});
-        browser.unref();
-      }).catch(() => {});
-    }
     return pathToFileURL(filename).href.replaceAll('(', '%28').replaceAll(')', '%29');
   };
 }

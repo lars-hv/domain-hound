@@ -281,7 +281,7 @@ test('missing Playwright returns one JSON fallback and exits successfully', () =
   const entry = fileURLToPath(new URL('./index.mjs', import.meta.url));
   const path = fileURLToPath(new URL('./fixtures/absent-playwright.mjs', import.meta.url));
   const result = spawnSync(process.execPath, [entry, '--confirm', 'spaceship', 'example.me'], {
-    env: { ...process.env, DOMAIN_HOUND_PLAYWRIGHT: path }, encoding: 'utf8',
+    env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_PLAYWRIGHT: path }, encoding: 'utf8',
   });
   assert.equal(result.status, 0);
   const { checkedAt, ms, ...reply } = JSON.parse(result.stdout);

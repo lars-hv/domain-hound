@@ -953,7 +953,7 @@ test('a relative DOMAIN_HOUND_PURCHASE_DIR is resolved when the server starts, n
     + 'const result = await callPurchaseTool("buy_domain", { domain: "lanternbay.com", quote_id: "dhq-00000000000000000000", max_usd: 10 });\n'
     + 'process.stdout.write(JSON.stringify(result.structuredContent));';
   const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script],
-    { cwd: first, env: { ...process.env, DOMAIN_HOUND_PURCHASE_DIR: 'purchases' }, timeout: 20_000 });
+    { cwd: first, env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_PURCHASE_DIR: 'purchases' }, timeout: 20_000 });
   const reply = JSON.parse(stdout);
   assert.equal(reply.alreadySent, true, reply.display);
   assert.deepEqual(await readdir(later), []);

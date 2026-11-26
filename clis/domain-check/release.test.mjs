@@ -432,7 +432,7 @@ child.once('close', code => { clearTimeout(timer); process.exitCode = expired ? 
   }
   const calls = async () => (await readFile(join(dir, 'calls.jsonl'), 'utf8').catch(() => ''))
     .split('\n').filter(Boolean).map(line => JSON.parse(line));
-  return { dir, calls, env: { ...process.env, PATH: dir + ':' + process.env.PATH, FIXTURE_DIR: dir } };
+  return { dir, calls, env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', PATH: dir + ':' + process.env.PATH, FIXTURE_DIR: dir } };
 }
 
 const fakeNpm = `const { step } = await import(process.env.FIXTURE_DIR + '/planned.mjs');

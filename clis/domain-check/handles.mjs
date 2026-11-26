@@ -13,8 +13,8 @@ export const handleStates = {
   unknown: "Couldn't check",
 };
 const hour = 3_600_000;
-// Default lifetimes for confirmed results. Public page and embed results of either kind last an hour.
-export const handleLifetime = { taken: 7 * 24 * hour, 'not-found': hour, 'not-seen': hour };
+// All definite public profile states expire after one hour.
+export const handleLifetime = { taken: hour, 'not-found': hour, 'not-seen': hour };
 // One platform's whole run (its two controls, the exact handles and any variants) shares this budget.
 export const platformBudgetMs = 2000;
 export const handleVariants = name => ['get' + name, name + 'app', name + 'hq'];

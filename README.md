@@ -74,7 +74,9 @@ Reddit use the Wayback Machine CDX index, with the latest Common Crawl index as 
 A capture includes its year. A successful empty archive search returns `not-seen`. Google Play matches a title or
 a title starting with the name followed by a non-letter, ignoring case. Set `DOMAIN_HOUND_EMBED_CHECKS=off` for search
 or profile links only on TikTok, Instagram, X, Threads, Facebook, LinkedIn, Reddit, Twitch and Google Play.
-The package also tries Apple from your device when the hosted App Store lookup is rate-limited.
+`check_domains` returns registry results and prices first. If the reply says name checks are pending, repeat the same call to collect them. The saved results page updates at the same link.
+
+When the hosted lookup cannot check a .dev or .app domain, the package can ask Google Registry from your device and pass the result back to the hosted service to calculate the pick. It also tries Apple from your device when the hosted App Store lookup is rate-limited.
 
 Pass `idea` to `triage_names` to generate names on the same service. The results page updates as the checks finish.
 Pass `names` to screen names you already have. For a second generation round, pass the same `idea` with the `wanted`
@@ -109,7 +111,7 @@ Brainstorm names all day. If they're not available, it's pointless. The naming s
 
 Set `DOMAIN_HOUND_SCORE_LOG=1` to keep a local calibration log in `~/.domain-hound/score-log.jsonl`: component points, weights version, rank, and whether the person explicitly picked a shown name. Once they choose, the agent can record it with `check_domains`, using the exact domain and `picked: true`. It is off by default, never leaves your machine, and holds no names unless you also set `DOMAIN_HOUND_SCORE_LOG_NAMES=1`.
 
-Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. On macOS, naming and batch results open in the background. Windows and Wayland request a background open where the desktop supports it. Exact checks and watch results stay in chat with a file link. Set `DOMAIN_HOUND_OPEN=off` on the MCP server to keep every page closed.
+Completed lookups save an HTML page and a Markdown copy in `~/.domain-hound/results/`. The page lists prices, availability and sources for each ending checked. Choose **Open results** in the tool response to open the page. The package saves these files without opening a browser.
 
 ### Share
 

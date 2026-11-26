@@ -112,7 +112,7 @@ const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
     + 'Pass idea to use the website’s name generator ({"idea":"A room booking app"}) or names to screen candidates ({"names":["Quiet Otter"]}). '
-    + 'Use the returned verdicts and leave unfinished checks pending. '
+    + 'Use the returned verdicts. If name checks are pending, repeat check_domains with the same input to collect them. '
     + 'For a domain-only lookup or registrar prices, use check_domains.',
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
@@ -177,11 +177,11 @@ const errorResult = message => toolResult(errorText(message), true);
 function compactCheckResult(result) {
   if (result.isError) return result;
   const { names, checks, resultPage, display, complete, pending, source, priceListDate, listPrices, quoteOffer } = result.structuredContent;
-  const rows = (names ?? []).map(({ name, free, taken, resale, likely_free, likely_taken, shop_check, checking }) => {
+  const rows = (names ?? []).map(({ name, free, taken, reserved, resale, likely_free, likely_taken, shop_check, checking }) => {
     const statuses = [
       ['available', free?.filter(row => row.s !== 'prem' && !row.prem).map(row => row.d)],
       ['premium', free?.filter(row => row.s === 'prem' || row.prem).map(row => row.d)],
-      ['taken', taken], ['listed for resale', resale], ['possibly available (DNS)', likely_free],
+      ['taken', taken], ['reserved', reserved], ['listed for resale', resale], ['possibly available (DNS)', likely_free],
       ['likely taken (DNS)', likely_taken], ['check at shop', shop_check?.filter(ending =>
         !likely_free?.includes(ending) && !likely_taken?.includes(ending))], ['still checking', checking],
     ];
@@ -217,7 +217,7 @@ function compactCheckResult(result) {
             if (!offer) return [];
             const term = offer.minimumYears ?? 1;
             return [{ d: domain.ending, shop: offer.shop, now: offer.firstPaymentUsd ?? offer.firstYearUsd * term,
-              renew: offer.renewalUsd * term, y3: offer.threeYearUsd, term }];
+              renew: offer.renewalPaymentUsd ?? offer.renewalUsd * term, y3: offer.threeYearUsd, term }];
           })
           : (row.free ?? []).filter(offer => offer.s !== 'prem' && !offer.prem).map(offer => ({
             ...listPrices?.[offer.d], ...offer,
@@ -229,7 +229,8 @@ function compactCheckResult(result) {
         return { name: md(row.name), list };
       });
       const notes = [
-        ...(complete === false ? ['Some checks are incomplete. Confirm uncertain endings at a shop.'] : []),
+        ...(pending ? ['Name checks are still running. Call the same tool with the same input to collect them.'] : []),
+        ...(complete === false && !pending ? ['Some checks are incomplete. Confirm uncertain endings at a shop.'] : []),
         ...(quoteOffer ? [quoteOfferLine(names[0].name)] : []),
         tail,
       ];
@@ -489,7 +490,7 @@ function startLookup(args, cwd, maxMs, onLookupEvent) {
   const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false, exited: false,
     collect: false, outcome: null };
   const child = spawn(process.execPath, ['index.mjs', ...args], {
-    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOMAIN_HOUND_PROGRESS: '1', DOMAIN_HOUND_MCP_OUTPUT: '1',
+    cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_PROGRESS: '1', DOMAIN_HOUND_MCP_OUTPUT: '1',
       DOMAIN_HOUND_DEFER_HANDLES: triage ? '1' : '', DOMAIN_HOUND_FOLLOW_UP: triage ? '1' : '' },
   });
   lookup.child = child;
@@ -650,7 +651,7 @@ export async function serve({
     return tracked;
   };
 
-  async function hostedLookup(args, triage, started) {
+  async function hostedLookup(args, triage, started, streamDomains = false) {
     if (!hosted || args?.confirm === true || (triage && args?.additionalHandles?.length)) return null;
     let rows;
     try {
@@ -660,37 +661,63 @@ export async function serve({
     } catch (problem) {
       return errorResult(problem.message);
     }
-    const key = JSON.stringify([triage, Object.entries(args).sort(([a], [b]) => a.localeCompare(b))]);
+    const key = JSON.stringify([triage, streamDomains, Object.entries(args).sort(([a], [b]) => a.localeCompare(b))]);
     let lookup = hostedLookups.get(key);
     if (!lookup) {
       const extra = selectedEndings(args).filter(ending => !defaultEndings.includes(ending));
       const controller = new AbortController();
       const signal = AbortSignal.any([controller.signal, hostedShutdown.signal, AbortSignal.timeout(hostedLookupMs)]);
-      const job = { result: null };
-      job.done = Promise.all(rows.map(async ({ name }) => hosted.check(name, name.includes('.') ? [] : extra, signal)))
-        .then(answers => renderHostedLookup(answers, args, triage), problem => {
+      const job = { result: null, first: null };
+      const early = new Array(rows.length);
+      let received = 0;
+      let ready;
+      job.ready = new Promise(resolve => { ready = resolve; });
+      const receive = (answer, index, qualifies = false) => {
+        if (!streamDomains || early[index]) return;
+        early[index] = answer;
+        received += 1;
+        if (qualifies) job.hasDetails = true;
+        if (received === rows.length && job.hasDetails) {
+          job.first = renderHostedLookup(early, args, triage, { pending: true }).then(result => {
+            ready(result);
+            return result;
+          });
+        }
+      };
+      job.done = Promise.all(rows.map(async ({ name }, index) => {
+        const answer = await hosted.check(name, name.includes('.') ? [] : extra, signal,
+          streamDomains ? value => receive(value, index, true) : undefined);
+        receive(answer, index);
+        return answer;
+      })).then(async answers => {
+        const first = await job.first;
+        return renderHostedLookup(answers, args, triage, { reuse: first?.structuredContent?.resultPage });
+      }, problem => {
           if (problem instanceof HostedRateLimit) return errorResult('The Hound needs a breather. Try again in a few minutes.');
           hostedDebug('Hosted domain lookup could not finish; using the local check.');
           return null;
         }).then(result => {
           job.result = result;
+          job.finished = true;
+          ready(result);
           setTimeout(() => { if (hostedLookups.get(key) === job) hostedLookups.delete(key); }, keepFinishedMs).unref();
         }).finally(() => controller.abort());
       lookup = job;
       hostedLookups.set(key, job);
     }
-    if (!await within(lookup, timeout - (performance.now() - started))) {
+    const ready = lookup.finished ? lookup.done : lookup.ready;
+    if (!await within({ done: ready }, timeout - (performance.now() - started))) {
       hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
       return toolResult(JSON.stringify({ display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
         complete: false, pending: true }));
     }
-    return lookup.result;
+    return lookup.finished ? lookup.result : ready;
   }
 
-  async function renderHostedLookup(checks, args, triage) {
+  async function renderHostedLookup(checks, args, triage, { pending = false, reuse } = {}) {
     try {
       const evidence = hostedChecks(checks, args, triage);
-      const page = await pages(hostedResult(evidence, args), args, { triage });
+      const page = await pages(hostedResult(evidence, args, null, { pending }), args, { triage, reuse, refresh: pending });
       if (triage && scoreLog?.enabled) {
         const scored = evidence.filter(check => Number.isInteger(check.score?.value))
           .sort((a, b) => compareScores(a.score, b.score));
@@ -985,7 +1012,7 @@ export async function serve({
     if (name !== checkTool.name && name !== 'broker_find') return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    const result = await hostedLookup(args, false, started) ?? await runLookup(
+    const result = await hostedLookup(args, false, started, name === checkTool.name) ?? await runLookup(
       args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args).then(page => withCheckQuoteOffer(page, args)),
       (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started,
     );

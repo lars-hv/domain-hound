@@ -28,7 +28,7 @@ function warning(check) {
 }
 
 export function nameCheckLines(details, pending, name) {
-  if (!details) return [pending ? 'Name checks are still running.' : 'Name checks could not be completed.'];
+  if (!details) return [pending ? 'Name checks are still running. Call the same tool with the same input to collect them.' : 'Name checks could not be completed.'];
   const { appStore: app, googlePlay, trademarks, handles } = details;
   const appText = app.status === 'taken' ? 'Matching app found' : app.status === 'no_match_found' ? 'No matching app found'
     : app.reason === 'rate-limited' ? 'Search rate-limited' : 'Could not complete the search';
@@ -55,7 +55,8 @@ function priceLine(offer, cheapest) {
   return link(offer.shop, offer.buyUrl) + (cheapest ? ' (cheapest over three years)' : '') + ' · '
     + money(offer.firstYearUsd) + ' first year · ' + money(offer.renewalUsd) + ' yearly renewal · '
     + money(offer.threeYearUsd) + ' over three years' + term
-    + (offer.needsCloudflareDns ? ' · requires Cloudflare DNS' : '');
+    + (offer.needsCloudflareDns ? ' · requires Cloudflare DNS' : '')
+    + (offer.checkedAt && offer.source ? ' · ' + link(offer.checkedAt.slice(0, 10), offer.source) : '');
 }
 
 export function pickLine(pick) {
@@ -66,7 +67,8 @@ export function checkLines(check, pending, { local = false } = {}) {
   const { domains, choice, nameChecks, score } = check;
   const pick = choice?.pick;
   const taken = domains.filter(row => row.status === 'taken').map(row => row.domain);
-  const unknown = domains.filter(row => row.status === 'unknown');
+  const reserved = domains.filter(row => row.reason === 'reserved');
+  const unknown = domains.filter(row => row.status === 'unknown' && row.reason !== 'reserved');
   return [
     ...(score?.filtered ? [md(check.query.name) + ' · ' + md(score.filtered)]
       : Number.isInteger(score?.value) ? [md(check.query.name) + ' · Name score ' + score.value + '/100 · ' + md(score.band),
@@ -81,6 +83,7 @@ export function checkLines(check, pending, { local = false } = {}) {
     ...(taken.length ? ['Taken · ' + taken.map(md).join(', ') + '. '
       + link('Watch', 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(taken[0]))
       + ' · Draft an offer · Try a new name'] : []),
+    ...(reserved.length ? ['Reserved by the registry · ' + reserved.map(row => md(row.domain)).join(', ') + '.'] : []),
     ...(unknown.length ? ['Could not confirm ' + (domains.length === 1 ? md(unknown[0].domain)
       : unknown.length + (unknown.length === 1 ? ' ending' : ' endings')) + '.'] : []),
   ];
@@ -150,7 +153,9 @@ export function hostedResult(checks, args, generation, { pending = false, failed
       ...(shown.length > 1 ? [md(check.query.exactDomain ?? check.query.name)] : []),
       ...checkLines(check, pending),
       ...(index < shown.length - 1 ? [''] : []),
-    ]) : [pending ? 'Still checking names and domains.' : 'No names passed the checks.']),
+    ]) : [pending && generation?.suggestions?.length
+      ? 'Checking domains for ' + generation.suggestions.map(entry => md(entry.name)).join(', ') + '.'
+      : pending ? 'Still checking names and domains.' : 'No names passed the checks.']),
     ...(pending ? ['The results page updates when the remaining checks finish.'] : []),
     ...(failed ? ['The remaining checks did not finish.'] : []),
     ...(generation?.question && !pending ? [md(generation.question)] : []),
@@ -161,12 +166,14 @@ export function hostedResult(checks, args, generation, { pending = false, failed
     const rows = status => check.domains.filter(row => row.status === status);
     return { name: check.query.exactDomain ?? check.query.name,
       available: rows('available').map(row => row.ending), free: rows('available').map(row => ({ d: row.ending })),
-      taken: rows('taken').map(row => row.ending), shop_check: rows('unknown').map(row => row.ending),
+      taken: rows('taken').map(row => row.ending),
+      reserved: rows('unknown').filter(row => row.reason === 'reserved').map(row => row.ending),
+      shop_check: rows('unknown').filter(row => row.reason !== 'reserved').map(row => row.ending),
       ...(check.score && { score: check.score }) };
   });
   const { details, ...generationResult } = generation ?? {};
   return { hosted: true, checks, names, ...(generation && { generation: generationResult }), ...(pending && { pending: true }),
-    complete: generation ? !pending && !failed && generation.complete : checks.every(check => check.complete),
+    complete: generation ? !pending && !failed && generation.complete : !pending && checks.every(check => check.complete),
     checkedAt: checkedAt ?? generation?.checkedAt ?? checks[0]?.checkedAt ?? new Date().toISOString(),
     lines: attributed(lines.join('\n'), Boolean(args.purchase || (checks.length === 1 && checks[0].query.exactDomain))).split('\n') };
 }

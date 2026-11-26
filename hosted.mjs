@@ -2,6 +2,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { checkGooglePlayNames, checkSocialHandles, embedChecksEnabled, handleLabel, handleStates, publicProfiles } from './clis/domain-check/handles.mjs';
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 import { normalizeName } from './clis/domain-check/name-search.mjs';
+import { rdapSignal } from './clis/domain-check/registry.mjs';
 import { searchApps } from './clis/domain-check/triage-sources.mjs';
 
 export const hostedBase = 'https://domainhound-mcp.domainhound.workers.dev';
@@ -26,6 +27,39 @@ const validCheck = body => body?.version === 1 && typeof body.query?.ascii === '
 const validDetails = body => body?.version === 1 && body.appStore && body.googlePlay &&
   Array.isArray(body.trademarks?.us?.marks) && Array.isArray(body.handles);
 const validGeneration = body => body?.version === 2 && ['initial', 'final'].includes(body.stage) && Array.isArray(body.names);
+
+// Only the IANA-listed Google Registry route for the returned .app or .dev domain is eligible.
+async function observeRdap(row, ascii, fetchFn, signal) {
+  if (row.status !== 'unknown' || !['dev', 'app'].includes(row.ending) ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(ascii) ||
+      row.domain !== ascii + '.' + row.ending ||
+      row.rdapUrl !== 'https://pubapi.registry.google/rdap/domain/' + row.domain) return null;
+  try {
+    const timeout = AbortSignal.timeout(1600);
+    const response = await fetchFn(row.rdapUrl, { redirect: 'error', credentials: 'omit', cache: 'no-store',
+      headers: { Accept: 'application/rdap+json, application/json' },
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+    const age = Number(response.headers.get('age') ?? 0);
+    const type = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+    if (![200, 404].includes(response.status) || !Number.isFinite(age) || age > 0 ||
+        !['application/rdap+json', 'application/json'].includes(type)) {
+      await response.body?.cancel().catch(() => {});
+      return null;
+    }
+    const json = await response.text();
+    const body = JSON.parse(json);
+    if (response.status === 200) {
+      return body?.objectClassName === 'domain' && typeof body.ldhName === 'string' &&
+        body.ldhName.toLowerCase().replace(/\.$/, '') === row.domain &&
+        !body.status?.some?.(value => /^(reserved|not available)$/i.test(value)) ? row.ending + ':taken' : null;
+    }
+    const hint = rdapSignal(json);
+    return body?.errorCode === 404 && hint !== 'reserved'
+      ? row.ending + ':' + (hint ?? 'available') : null;
+  } catch {
+    return null;
+  }
+}
 
 export function hostedClient(version, { env = process.env, fetchFn = fetch, apple = searchApps } = {}) {
   if (env.DOMAIN_HOUND_LOCAL === '1') return null;
@@ -88,7 +122,15 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     }
   }
 
-  const get = (name, signal) => read('/v1/check', { params: { name }, timeout: 5600, signal, valid: validCheck }, true);
+  async function get(name, signal) {
+    const params = new URLSearchParams({ name });
+    const options = { params, timeout: 4200, signal, valid: validCheck };
+    const initial = await read('/v1/check', options, true);
+    const seen = (await Promise.all(initial.domains.map(row => observeRdap(row, initial.query.ascii, fetchFn, signal)))).filter(Boolean);
+    if (!seen.length) return initial;
+    seen.forEach(observation => params.append('seen', observation));
+    return read('/v1/check', options).catch(() => initial);
+  }
 
   async function recoverApple(app, name, signal) {
     if (app?.status !== 'unknown' || app.reason !== 'rate-limited') return app;
@@ -151,9 +193,12 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
   }
 
   return {
-    async check(name, extraEndings, signal) {
+    async check(name, extraEndings, signal, onDomains) {
       const [main, ...extras] = await Promise.all([get(name, signal),
         ...extraEndings.map(ending => get(normalizeName(name) + '.' + ending, signal))]);
+      const { details, ...answer } = main;
+      answer.domains = [...main.domains, ...extras.flatMap(extra => extra.domains)];
+      answer.complete = main.complete && extras.every(extra => extra.complete);
       const exact = main.query.exactDomain;
       const needsAlternatives = exact && main.domains.length === 1 && main.domains[0].domain === exact && main.domains[0].status === 'taken';
       // Run alongside the name checks. An unavailable comparison must not discard the exact answer.
@@ -163,9 +208,10 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           share: comparison.share, complete: comparison.complete,
         } : null).catch(() => null) : null;
       let nameChecks = null;
-      if (typeof main.details?.id === 'string') {
+      if (typeof details?.id === 'string') {
+        onDomains?.(answer);
         nameChecks = await read('/v1/check/details', {
-          params: { id: main.details.id }, timeout: 6600, signal, valid: validDetails,
+          params: { id: details.id }, timeout: 5300, signal: AbortSignal.any([signal, AbortSignal.timeout(5700)]), valid: validDetails,
         }, true).catch(() => null);
       } else {
         hostedDebug('/v1/check did not provide a name-check token', env);
@@ -179,10 +225,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           if (result.status === 'rejected') hostedDebug('Optional ' + (index ? 'handle' : 'App Store') + ' recovery failed', env);
         }
       }
-      const { details, ...answer } = main;
-      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }),
-        domains: [...main.domains, ...extras.flatMap(extra => extra.domains)], nameChecks,
-        complete: main.complete && extras.every(extra => extra.complete) };
+      return { ...answer, ...(needsAlternatives && { [alternativeEndings]: await alternatives }), nameChecks };
     },
 
     async generate(args, signal) {
