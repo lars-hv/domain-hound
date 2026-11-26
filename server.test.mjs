@@ -1402,8 +1402,12 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
   assert.equal(answer.checks[0].details, undefined);
 });
 
-for (const late of [false, true]) {
-  test('check_domains ' + (late ? 'collects a late local App Store answer on repeat' : 'includes a quick local App Store answer in the first reply'), async t => {
+for (const [timing, title] of [
+  ['first', 'includes a quick local App Store answer in the first reply'],
+  ['details', 'includes a local App Store answer when details first report the rate limit'],
+  ['repeat', 'collects a late local App Store answer on repeat'],
+]) {
+  test('check_domains ' + title, async t => {
     const name = 'exampleheron';
     const appStore = { status: 'unknown', reason: 'rate-limited', matches: [] };
     const fallback = Response.json({ results: [{ trackName: 'Exampleheron: Notes', trackId: 12345 }] });
@@ -1426,7 +1430,7 @@ for (const late of [false, true]) {
         assert.equal(url.hostname, 'api.example.test');
         if (url.pathname === '/v1/check') return Response.json({
           version: 1, query: { name, ascii: name, exactDomain: null }, domains: [], choice: { pick: null },
-          complete: true, appStore, details: { id: 'token' },
+          complete: true, ...(timing !== 'details' && { appStore }), details: { id: 'token' },
         });
         await details;
         return Response.json({ version: 1, appStore, googlePlay: { status: 'not-found' },
@@ -1435,9 +1439,14 @@ for (const late of [false, true]) {
     const mcp = await local(t, { hosted: host });
     const args = { query: name };
     mcp.send(call(2, args));
-    // The first call must already be querying Apple while details are held open.
+    if (timing === 'details') {
+      assert.equal(await mcp.answered(2), false);
+      assert.equal(retries, 0);
+      releaseDetails();
+    }
     assert.equal(await mcp.answered(2), false);
     assert.equal(retries, 1);
+    const late = timing === 'repeat';
     if (late) mcp.clock.tick(4000);
     else releaseApple(fallback);
     const first = structured(await mcp.reply(2));
@@ -1446,8 +1455,10 @@ for (const late of [false, true]) {
     const early = await readFile(new URL(first.resultPage), 'utf8');
     assert.match(early, late ? /Still checking/ : /Exampleheron: Notes/);
     mcp.send(call(3, args));
-    assert.equal(await mcp.answered(3), false);
-    assert.equal(appleSignal.aborted, false);
+    if (late) {
+      assert.equal(await mcp.answered(3), false);
+      assert.equal(appleSignal.aborted, false);
+    }
     releaseApple(fallback);
     releaseDetails();
     const final = structured(await mcp.reply(3));

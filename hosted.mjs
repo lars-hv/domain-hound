@@ -225,7 +225,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           .then(async row => definite(row) ? row : best(row, await detailsApp))
         : detailsApp.then(row => definite(initialApp) ? initialApp
           : recoverApple(best(initialApp, row), main.query.name, signal));
-      const waitingForApple = localApple || initialApp?.status === 'pending';
+      const waitingForApple = !definite(initialApp) && Boolean(initialApp || hasDetails);
       if (hasDetails || waitingForApple) {
         onDomains?.(waitingForApple ? { ...answer, appStore: { ...initialApp, status: 'pending' } } : answer,
           waitingForApple ? appCheck : undefined);
