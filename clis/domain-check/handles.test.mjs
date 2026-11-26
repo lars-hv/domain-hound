@@ -1,6 +1,6 @@
 import '../../test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -12,6 +12,7 @@ import { autoPlatforms, checkSocialHandles, handleLifetime, handlePlatforms, han
 
 const now = new Date('2026-11-25T12:00:00Z');
 const hour = 3_600_000;
+const youtube = JSON.parse(await readFile(new URL('./fixtures/youtube-handle.json', import.meta.url), 'utf8'));
 
 async function directoryFor(t) {
   const path = await mkdtemp(join(tmpdir(), 'hound-handles-'));
@@ -31,9 +32,11 @@ test('shows every platform in Lars’s order with three states only; YouTube, X 
   const rows = result.get('quietotter');
   assert.deepEqual(rows.map(row => row.platform), ['YouTube', 'X', 'Instagram', 'TikTok', 'Facebook', 'LinkedIn',
     'GitHub', 'npm', 'PyPI', 'Bluesky']);
-  assert.deepEqual(states(rows), { YouTube: 'check', X: 'check', Instagram: 'check', TikTok: 'check', Facebook: 'check',
-    LinkedIn: 'check', GitHub: 'taken', npm: 'taken', PyPI: 'check', Bluesky: 'taken' });
+  assert.deepEqual(states(rows), { YouTube: 'unknown', X: 'unknown', Instagram: 'unknown', TikTok: 'unknown', Facebook: 'unknown',
+    LinkedIn: 'unknown', GitHub: 'taken', npm: 'taken', PyPI: 'unknown', Bluesky: 'taken' });
   assert.equal(rows[0].link, 'https://www.youtube.com/@quietotter');
+  assert.equal(rows[0].why, 'not connected');
+  assert.equal(rows.find(row => row.platform === 'LinkedIn').linkLabel, 'Search LinkedIn');
   assert.equal(rows.find(row => row.platform === 'PyPI').link, 'https://pypi.org/project/quietotter/');
   assert.equal(rows.find(row => row.platform === 'Bluesky').link, 'https://bsky.app/profile/quietotter.bsky.social');
   // Taken exact handles get their variants; none of them exist here.
@@ -42,24 +45,24 @@ test('shows every platform in Lars’s order with three states only; YouTube, X 
     [['getquietotter', 'not-found'], ['quietotterapp', 'not-found'], ['quietotterhq', 'not-found']]);
   // No request ever goes to a link-only platform.
   assert.deepEqual([...new Set(calls.map(([platform]) => platform))].sort(), ['Bluesky', 'GitHub', 'npm']);
-  assert.deepEqual(autoPlatforms, ['GitHub', 'npm', 'Bluesky']);
-  assert.deepEqual(Object.values(handleStates), ['Taken', 'No public profile found', 'Check yourself']);
+  assert.deepEqual(autoPlatforms, ['YouTube', 'GitHub', 'npm', 'Bluesky']);
+  assert.deepEqual(Object.values(handleStates), ['Taken', 'No profile found', "Couldn't check"]);
   assert.doesNotMatch(JSON.stringify(rows) + JSON.stringify(handleStates), /free|available/i);
   assert.equal(handlePlatforms.length, 10);
 });
 
-test('variants run only when the exact handle is taken, and missing handles read "no public profile found"', async t => {
+test('variants run only when the exact handle is taken, and missing handles read "no profile found"', async t => {
   const directory = await directoryFor(t);
   const calls = [];
   const result = await checkSocialHandles([{ name: 'hushroom', variants: true }], {
     directory, now, fetcher: withSocial(undefined, { taken: ['gethushroom'], calls }),
   });
   const rows = result.get('hushroom');
-  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { GitHub: 'not-found', npm: 'not-found', Bluesky: 'not-found' });
+  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { YouTube: 'unknown', GitHub: 'not-found', npm: 'not-found', Bluesky: 'not-found' });
   assert.ok(rows.every(row => !row.variants));
   assert.ok(!calls.some(([, handle]) => /gethushroom/.test(handle)));
-  assert.equal(handleSummary(rows), 'GitHub no public profile found · npm no public profile found · Bluesky no public profile found; '
-    + 'check yourself: YouTube, X, Instagram, TikTok, Facebook, LinkedIn, PyPI');
+  assert.equal(handleSummary(rows), "GitHub · No profile found, npm · No profile found, Bluesky · No profile found · "
+    + "Couldn't check (YouTube, X, Instagram, TikTok, Facebook, PyPI) · LinkedIn doesn't allow checks");
 });
 
 test('a wrong control answer turns that platform into check links for the whole run', async t => {
@@ -70,7 +73,7 @@ test('a wrong control answer turns that platform into check links for the whole 
     ? Response.json({ error: 'Not found' }, { status: 404 }) : base(input, init);
   const rows = (await checkSocialHandles([{ name: 'quietotter' }], { directory, now, fetcher })).get('quietotter');
   const npm = rows.find(row => row.platform === 'npm');
-  assert.equal(npm.state, 'check');
+  assert.equal(npm.state, 'unknown');
   assert.equal(npm.why, 'control check failed');
   assert.equal(rows.find(row => row.platform === 'GitHub').state, 'taken');
   // Nothing unverified is cached.
@@ -125,11 +128,11 @@ test('one platform shares one time budget for its controls, handles and variants
   clock.tick(1);
   assert.ok(slowSignals.every(signal => signal.aborted));
   const rows = (await checking).get('quietotter');
-  assert.equal(rows.find(row => row.platform === 'Bluesky').state, 'check');
+  assert.equal(rows.find(row => row.platform === 'Bluesky').state, 'unknown');
   assert.equal(rows.find(row => row.platform === 'GitHub').state, 'taken');
 });
 
-test('reads each API strictly: an unexpected body is "check yourself", never a guess', async t => {
+test('reads each API strictly: an unexpected body is "unknown", never a guess', async t => {
   const directory = await directoryFor(t);
   const base = withSocial();
   const fetcher = async (input, init) => {
@@ -141,7 +144,7 @@ test('reads each API strictly: an unexpected body is "check yourself", never a g
     return base(input, init);
   };
   const rows = (await checkSocialHandles([{ name: 'quietotter' }], { directory, now, fetcher })).get('quietotter');
-  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { GitHub: 'check', npm: 'check', Bluesky: 'check' });
+  assert.deepEqual(states(rows.filter(row => autoPlatforms.includes(row.platform))), { YouTube: 'unknown', GitHub: 'unknown', npm: 'unknown', Bluesky: 'unknown' });
 });
 
 test('a GitHub rate limit holds GitHub checks until the reset, without new requests', async t => {
@@ -154,11 +157,11 @@ test('a GitHub rate limit holds GitHub checks until the reset, without new reque
     : fetcher(input, init);
   const only = { name: 'quietotter', platforms: ['GitHub'], links: false };
   const first = (await checkSocialHandles([only], { directory, now, fetcher: limited })).get('quietotter');
-  assert.deepEqual(first.map(row => [row.platform, row.state]), [['GitHub', 'check']]);
+  assert.deepEqual(first.map(row => [row.platform, row.state]), [['GitHub', 'unknown']]);
   resetHandleRuns();
   calls.length = 0;
   const second = (await checkSocialHandles([only], { directory, now, fetcher })).get('quietotter');
-  assert.equal(second[0].state, 'check');
+  assert.equal(second[0].state, 'unknown');
   assert.equal(second[0].why, 'rate limited');
   assert.deepEqual(calls, []);
 });
@@ -175,4 +178,43 @@ test('an optional GitHub token goes only to api.github.com', async t => {
   await checkSocialHandles([{ name: 'quietotter' }], { directory, now, fetcher, env });
   assert.ok(seen.filter(([host]) => host === 'api.github.com').every(([, auth]) => auth === 'Bearer ' + env.DOMAIN_HOUND_GITHUB_TOKEN));
   assert.ok(seen.filter(([host]) => host !== 'api.github.com').every(([, auth]) => auth === null));
+});
+
+test('YouTube matches Worker states, retries one transient failure and caches definite answers for one hour', async t => {
+  const directory = await directoryFor(t);
+  const env = { YOUTUBE_API_KEY: 'fixture-placeholder' };
+  const fixtures = { quietotter: youtube.taken, absentbrand: youtube.missing, gonebrand: youtube.channelNotFound,
+    quotaerror: youtube.quota, unrelated: youtube.unrelated404, malformed: youtube.malformed };
+  const attempts = new Map();
+  const fetcher = async (input, init) => {
+    const url = new URL(input);
+    assert.equal(url.origin + url.pathname, 'https://www.googleapis.com/youtube/v3/channels');
+    assert.equal(url.searchParams.get('part'), 'id');
+    assert.equal(url.searchParams.has('key'), false);
+    assert.equal(new Headers(init.headers).get('x-goog-api-key'), env.YOUTUBE_API_KEY);
+    assert.equal(init.redirect, 'error');
+    const name = url.searchParams.get('forHandle').slice(1);
+    attempts.set(name, (attempts.get(name) ?? 0) + 1);
+    const fixture = name === 'quietotter' && attempts.get(name) === 1 ? youtube.transient : fixtures[name];
+    return Response.json(fixture.body, { status: fixture.status });
+  };
+  const rows = Object.keys(fixtures).map(name => ({ name, platforms: ['YouTube'], links: false }));
+  const run = (options = {}) => checkSocialHandles(rows, { directory, now, fetcher, env, ...options });
+  const disabled = await run({ env: {} });
+  assert.equal(disabled.get('quietotter')[0].why, 'not connected');
+  assert.equal(attempts.size, 0);
+  const checked = await run();
+  assert.deepEqual([...checked.values()].map(([row]) => row.state),
+    ['taken', 'not-found', 'not-found', 'unknown', 'unknown', 'unknown']);
+  assert.equal(attempts.get('quietotter'), 2);
+  assert.ok(checked.get('malformed')[0].why);
+  assert.equal(attempts.get('quotaerror'), 1);
+  const cached = await run({ now: new Date(+now + hour - 1) });
+  assert.equal(cached.get('quietotter')[0].checkedAt, now.toISOString());
+  assert.equal(attempts.get('quietotter'), 2);
+  assert.equal(attempts.get('absentbrand'), 1);
+  assert.equal(attempts.get('malformed'), 2);
+  await run({ now: new Date(+now + hour) });
+  assert.equal(attempts.get('quietotter'), 3);
+  assert.equal(attempts.get('absentbrand'), 2);
 });

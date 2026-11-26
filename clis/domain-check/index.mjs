@@ -715,7 +715,8 @@ function lookupArgs(args) {
 function triageOutput(result, options) {
   if (options.compact) {
     for (const row of result.names ?? []) {
-      row.checks = nameCheckLines(row).map(({ label, text, link }) => label + ': ' + text + ' · ' + link);
+      row.checks = nameCheckLines(row).map(({ label, text, link, linkLabel }) =>
+        (linkLabel ? text + ' · ' + linkLabel : label + ': ' + text) + ' · ' + link);
     }
   }
   return result;

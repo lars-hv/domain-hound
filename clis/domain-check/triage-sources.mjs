@@ -297,7 +297,10 @@ export async function checkHandles(name, options = {}) {
   };
   const social = options.social ? await options.social
     : (await checkSocialHandles([{ name, platforms: ['GitHub', 'npm'], links: false }], options)).get(name);
-  const state = platform => social?.find(entry => entry.platform === platform)?.state ?? 'check';
+  const state = platform => {
+    const answer = social?.find(entry => entry.platform === platform)?.state;
+    return answer === 'taken' || answer === 'not-found' ? answer : 'check';
+  };
   const getGitHub = async () => {
     const status = state('GitHub');
     if (fresh(saved.githubSearch) && saved.githubSearch.result?.count !== undefined) {

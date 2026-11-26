@@ -390,8 +390,9 @@ function rowBestValue(row, prices) {
 export function checkLines(row, short = false) {
   const original = typeof row?.name === 'string' ? row.name : '';
   const input = original.length > 100 ? label(original) : original;
-  return nameCheckLines({ ...row, name: input }).map(({ label, text, link }) => {
+  return nameCheckLines({ ...row, name: input }).map(({ label, text, link, linkLabel }) => {
     const safe = isSearchLink(link, input);
+    if (linkLabel) return md(text) + (safe ? ' · [' + linkLabel + '](' + link + ')' : '');
     if (short && safe) return '[' + label + '](' + link + '): ' + md(text);
     return label + ': ' + md(text) + (safe ? ' · [search](' + link + ')' : '');
   });

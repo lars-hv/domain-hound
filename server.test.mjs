@@ -845,7 +845,7 @@ test('renders the triage shortlist as one priced, linked row per candidate', () 
   for (const row of rows) {
     assert.match(row, /Google: not checked · .*google\.com\/search\?q=/);
     assert.match(row, /App Store \(iOS\): not checked · .*apps\.apple\.com\/us\/iphone\/search\?term=/);
-    assert.match(row, /Google Play \(Android\): not checked · .*play\.google\.com\/store\/search\?q=/);
+    assert.match(row, /Google Play has no public search · .*play\.google\.com\/store\/search\?q=/);
   }
   assert.match(rows[2], /\.ai \$160\.02\/\$160\.02 2y/);
   assert.match(lines.at(-1), /^Choose a favorite/);
@@ -882,7 +882,7 @@ test('puts display first with ranked picks and shows all sources for twenty name
   assert.equal(Object.keys(result)[0], 'display');
   assert.match(result.display, /^\*\*Top picks\*\*\n- .*Check first.*\$3\.11, then \$31\.05\/yr, 10x jump/);
   assert.equal(result.names.length, 20);
-  for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+  for (const source of ['Google', 'App Store (iOS)', 'Search Google Play']) {
     assert.ok(result.display.includes(source), source);
   }
 });
@@ -958,7 +958,7 @@ test('fits a fully priced twenty-name batch with maximum-length labels and multi
   assert.ok(parsed.display.includes('Best value: ' + labels[5] + '.com, $26.00 over 3 years'));
   assert.deepEqual(parsed.names.map(row => row.name), labels);
   assert.ok(parsed.names.every(row => row.free.length === defaultEndings.length));
-  for (const source of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+  for (const source of ['Google', 'App Store (iOS)', 'Search Google Play']) {
     assert.ok(parsed.display.includes(source), source);
   }
 });
@@ -989,10 +989,12 @@ test('preserves each price in dense five-name triage and the three source lines 
         assert.ok(row.includes(expected), row);
       }
     }
-    for (const label of ['Google', 'App Store (iOS)', 'Google Play (Android)']) {
+    const checksCount = display.includes('**Search checks for every name**') ? 1 : count;
+    for (const label of ['Google', 'App Store (iOS)']) {
       const countLines = display.split('[' + label + '](').length + display.split(label + ':').length - 2;
-      assert.equal(countLines, count, label);
+      assert.equal(countLines, checksCount, label);
     }
+    assert.equal(display.split('Google Play has no public search').length - 1, checksCount);
   }
 });
 
@@ -1372,6 +1374,43 @@ test('the package uses the local check when the hosted request cannot connect', 
   assert.equal(answer.names[0].name, 'oakenroom.me');
   assert.equal(answer.checks, undefined);
   assert.match(answer.display, /oakenroom\.me/);
+});
+
+test('the MCP checks YouTube locally only when the hosted YouTube state is unknown', async t => {
+  const calls = [];
+  const key = 'fixture-placeholder';
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', YOUTUBE_API_KEY: key },
+    fetchFn: async (input, init) => {
+      const url = new URL(input);
+      if (url.hostname === 'www.googleapis.com') {
+        assert.equal(new Headers(init.headers).get('x-goog-api-key'), key);
+        calls.push(url.searchParams.get('forHandle'));
+        return Response.json({ items: [{ id: 'UC0123456789abcdefghijkl' }] });
+      }
+      assert.equal(url.hostname, 'api.example.test');
+      assert.equal(new Headers(init.headers).has('x-goog-api-key'), false);
+      const name = url.searchParams.get('name') ?? url.searchParams.get('id');
+      if (url.pathname === '/v1/check') return Response.json({
+        version: 1, query: { name, ascii: name, exactDomain: null }, complete: true,
+        domains: [], choice: { pick: null }, details: { id: name },
+      });
+      return Response.json({ version: 1, appStore: { status: 'no_match_found', matches: [] },
+        googlePlay: { link: 'https://play.google.com/store/search?q=' + name },
+        handles: [{ platform: 'YouTube', handle: name, state: name === 'knownbrand' ? 'not-found' : 'unknown',
+          link: 'https://www.youtube.com/@' + name, why: 'not connected' }],
+        trademarks: { us: { status: 'no_exact_match_found', marks: [] } } });
+    },
+  });
+  const mcp = await local(t, { hosted: host });
+  const checked = resultOf([await mcp.ask(call(2, { query: 'localbrand' }))], 2).structuredContent;
+  assert.match(checked.display, /YouTube · \[Taken\]\(https:\/\/www\.youtube\.com\/@localbrand\)/);
+  assert.match(checked.display, /LinkedIn doesn't allow checks · \[Search LinkedIn\]/);
+  assert.match(checked.display, /Google Play has no public search · \[Search Google Play\]/);
+  assert.equal(checked.checks[0].nameChecks.handles[0].source, 'local');
+  assert.doesNotMatch(JSON.stringify(checked), /fixture-placeholder/);
+  const known = resultOf([await mcp.ask(call(3, { query: 'knownbrand' }))], 3).structuredContent;
+  assert.match(known.display, /YouTube · \[No profile found\]/);
+  assert.deepEqual(calls, ['@localbrand']);
 });
 
 test('triage_names sends the steering to hosted generation and refreshes the same receipt', async t => {

@@ -1,14 +1,16 @@
 import { randomInt } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { anySignal, cacheDir, readCache, writeCache } from './cache.mjs';
+import { classifyYouTubeHandle, validYouTubeHandle, youtubeHandleUrl } from './youtube-handle.mjs';
 
 // Social handles. Three states only, never "free": a missing public profile does not mean the handle can be had.
 export const handleStates = {
   taken: 'Taken',
-  'not-found': 'No public profile found',
-  check: 'Check yourself',
+  'not-found': 'No profile found',
+  unknown: "Couldn't check",
 };
 const hour = 3_600_000;
-// A taken handle is reused for a week, a missing one for an hour. "Check yourself" is never cached.
+// Default lifetimes for confirmed results. YouTube results of either kind last an hour.
 export const handleLifetime = { taken: 7 * 24 * hour, 'not-found': hour };
 // One platform's whole run (its two controls, the exact handles and any variants) shares this budget.
 export const platformBudgetMs = 2000;
@@ -29,9 +31,14 @@ async function readStrictJson(response) {
   try { return JSON.parse(text); } catch { return null; }
 }
 
-// Each automatic check uses a documented public API that needs no login. Anything the parser does not recognise is
-// "check yourself".
+// Anything the parser does not recognise is unknown.
 const apis = {
+  YouTube: {
+    valid: validYouTubeHandle,
+    url: youtubeHandleUrl,
+    headers: { Accept: 'application/json' },
+    read: async response => classifyYouTubeHandle(response.status, await readStrictJson(response)),
+  },
   // GitHub REST "Get a user" (users and organizations): https://docs.github.com/en/rest/users/users#get-a-user
   GitHub: {
     valid: handle => /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,38}$/.test(handle),
@@ -41,10 +48,10 @@ const apis = {
       const data = await readStrictJson(response);
       if (response.status === 200) {
         return typeof data?.login === 'string' && data.login.toLowerCase() === handle
-          && ['User', 'Organization'].includes(data.type) ? 'taken' : 'check';
+          && ['User', 'Organization'].includes(data.type) ? 'taken' : 'unknown';
       }
-      if (response.status === 404) return data?.message === 'Not Found' ? 'not-found' : 'check';
-      return 'check';
+      if (response.status === 404) return data?.message === 'Not Found' ? 'not-found' : 'unknown';
+      return 'unknown';
     },
     controls: () => ({ taken: 'github', missing: syntheticLabel(28) }),
   },
@@ -55,9 +62,9 @@ const apis = {
     headers: { Accept: 'application/vnd.npm.install-v1+json' },
     read: async (response, handle) => {
       const data = await readStrictJson(response);
-      if (response.status === 200) return data?.name === handle ? 'taken' : 'check';
-      if (response.status === 404) return typeof data?.error === 'string' && /^not found$/i.test(data.error) ? 'not-found' : 'check';
-      return 'check';
+      if (response.status === 200) return data?.name === handle ? 'taken' : 'unknown';
+      if (response.status === 404) return typeof data?.error === 'string' && /^not found$/i.test(data.error) ? 'not-found' : 'unknown';
+      return 'unknown';
     },
     controls: () => ({ taken: 'lodash', missing: syntheticLabel(24) }),
   },
@@ -70,11 +77,11 @@ const apis = {
     headers: { Accept: 'application/json' },
     read: async response => {
       const data = await readStrictJson(response);
-      if (response.status === 200) return typeof data?.did === 'string' && /^did:(?:plc|web):[a-z0-9._:%-]+$/i.test(data.did) ? 'taken' : 'check';
+      if (response.status === 200) return typeof data?.did === 'string' && /^did:(?:plc|web):[a-z0-9._:%-]+$/i.test(data.did) ? 'taken' : 'unknown';
       if (response.status === 400) {
-        return data?.error === 'InvalidRequest' && /^unable to resolve handle$/i.test(String(data.message ?? '').trim()) ? 'not-found' : 'check';
+        return data?.error === 'InvalidRequest' && /^unable to resolve handle$/i.test(String(data.message ?? '').trim()) ? 'not-found' : 'unknown';
       }
-      return 'check';
+      return 'unknown';
     },
     // bsky.app is Bluesky's own account.
     controls: () => ({ taken: 'bsky.app', missing: syntheticLabel(14) + '.bsky.social' }),
@@ -82,15 +89,17 @@ const apis = {
 };
 
 // Display order (Lars, 2026-11-25): YouTube, X, Instagram, TikTok, Facebook, LinkedIn, then GitHub, npm, PyPI, Bluesky.
-// YouTube, X, Instagram, TikTok, Facebook and LinkedIn have no public no-login lookup their terms allow: link only.
-// PyPI is link only by decision.
+export const linkedInLabel = "LinkedIn doesn't allow checks";
+export const linkedInSearch = name => 'https://www.linkedin.com/search/results/companies/?' + new URLSearchParams({ keywords: name });
+export const handleLabel = row => row?.platform === 'LinkedIn' ? linkedInLabel : handleStates[row?.state] ?? handleStates.unknown;
+
 export const handlePlatforms = [
-  { id: 'YouTube', link: handle => 'https://www.youtube.com/@' + handle },
-  { id: 'X', link: handle => 'https://x.com/' + handle },
-  { id: 'Instagram', link: handle => 'https://www.instagram.com/' + handle + '/' },
-  { id: 'TikTok', link: handle => 'https://www.tiktok.com/@' + handle },
+  { id: 'YouTube', link: handle => 'https://www.youtube.com/@' + handle, auto: true },
+  { id: 'X', link: handle => 'https://x.com/' + handle, why: 'lookup requires approved API access' },
+  { id: 'Instagram', link: handle => 'https://www.instagram.com/' + handle + '/', why: 'embed only' },
+  { id: 'TikTok', link: handle => 'https://www.tiktok.com/@' + handle, why: 'embed only' },
   { id: 'Facebook', link: handle => 'https://www.facebook.com/' + handle },
-  { id: 'LinkedIn', link: handle => 'https://www.linkedin.com/company/' + handle + '/' },
+  { id: 'LinkedIn', link: linkedInSearch, linkLabel: 'Search LinkedIn' },
   { id: 'GitHub', link: handle => 'https://github.com/' + handle, auto: true },
   { id: 'npm', link: handle => 'https://www.npmjs.com/package/' + handle, auto: true },
   { id: 'PyPI', link: handle => 'https://pypi.org/project/' + handle + '/' },
@@ -110,7 +119,7 @@ export const autoPlatforms = handlePlatforms.filter(platform => platform.auto).m
 // In-flight lookups and control batches are shared inside one run (one process).
 const inFlight = new Map();
 const controlRuns = new Map();
-// Every answer this run already has, "check yourself" included, so a later step never asks again.
+// Reused by the registry sources when lookup stages overlap.
 const runAnswers = new Map();
 export function resetHandleRuns() {
   inFlight.clear();
@@ -124,27 +133,38 @@ async function githubHeld(directory, now) {
 }
 
 // One request, and one retry inside the same budget when the platform fails (5xx or no response).
-async function request(platform, identifier, { fetcher, signal, githubToken }, retry = true) {
+async function request(platform, identifier, options, retry = true) {
+  const { fetcher, signal, githubToken, youtubeApiKey } = options;
   const api = apis[platform];
-  let failed;
   // An optional token lifts GitHub's 60 requests an hour for anonymous callers. It is sent only to api.github.com.
-  const auth = platform === 'GitHub' && githubToken ? { Authorization: 'Bearer ' + githubToken } : {};
+  const auth = platform === 'YouTube' ? { 'x-goog-api-key': youtubeApiKey }
+    : platform === 'GitHub' && githubToken ? { Authorization: 'Bearer ' + githubToken } : {};
+  const attemptSignal = platform === 'YouTube' ? anySignal([signal, AbortSignal.timeout(1400)]) : signal;
+  if (attemptSignal?.aborted) return { state: 'unknown', why: 'timeout' };
+  let why = 'upstream-error';
   try {
     const response = await fetcher(api.url(identifier), {
-      redirect: 'error', signal, headers: { 'User-Agent': userAgent, ...api.headers, ...auth },
+      redirect: 'error', signal: attemptSignal, headers: { 'User-Agent': userAgent, ...api.headers, ...auth },
     });
-    failed = response.status >= 500;
     const state = await api.read(response, identifier);
     const limited = platform === 'GitHub' && [403, 429].includes(response.status);
-    if (!failed) return { state, ...(limited && { limited: Number(response.headers.get('x-ratelimit-reset')) * 1000 || null }) };
+    if (response.status < 500) {
+      return { state, ...(state === 'unknown' && { why: response.status === 429 ? 'rate-limited' : 'no clear answer' }),
+        ...(limited && { limited: Number(response.headers.get('x-ratelimit-reset')) * 1000 || null }) };
+    }
   } catch {
-    failed = true;
+    if (attemptSignal?.aborted) why = 'timeout';
   }
-  return retry && failed && !signal?.aborted ? request(platform, identifier, { fetcher, signal, githubToken }, false) : { state: 'check' };
+  if (retry && !signal?.aborted) {
+    if (platform !== 'YouTube') return request(platform, identifier, options, false);
+    const waited = await delay(randomInt(80, 161), true, { signal }).catch(() => false);
+    if (waited) return request(platform, identifier, options, false);
+  }
+  return { state: 'unknown', why };
 }
 
 // The run's two controls for one platform: a handle known to exist and a random one that cannot. When either comes
-// back wrong, every answer from that platform in this run becomes "check yourself".
+// back wrong, the platform's live results are unknown for this run.
 function controlsFor(platform, options) {
   const key = platform + '|' + (options.directory?.href ?? '');
   const runs = options.controlRuns ?? controlRuns;
@@ -168,7 +188,8 @@ const cacheFile = (platform, identifier) => 'handle-' + platform.toLowerCase() +
 async function cached(directory, platform, identifier, now) {
   const saved = await readCache(directory, cacheFile(platform, identifier));
   const age = now.getTime() - saved?.at;
-  return age >= 0 && age < (handleLifetime[saved?.state] ?? 0) ? saved : null;
+  const lifetime = handleLifetime[saved?.state] ?? 0;
+  return age >= 0 && age < (platform === 'YouTube' ? Math.min(lifetime, hour) : lifetime) ? saved : null;
 }
 
 // Answer a list of handles on one platform inside one shared time budget. Cached answers need no request; any live
@@ -176,16 +197,19 @@ async function cached(directory, platform, identifier, now) {
 async function platformBatch(platform, handles, options, deadline) {
   const { directory, now } = options;
   const api = apis[platform];
-  const runCache = options.runAnswers ?? runAnswers;
+  if (platform === 'YouTube' && !options.youtubeApiKey) {
+    return new Map(handles.map(handle => [handle, { state: 'unknown', why: 'not connected' }]));
+  }
+  const runCache = platform === 'YouTube' ? null : options.runAnswers ?? runAnswers;
   const answers = new Map();
   const live = [];
   for (const handle of new Set(handles)) {
     if (!label(handle) || !api.valid(handle)) {
-      answers.set(handle, { state: 'check', why: 'cannot check this handle form' });
+      answers.set(handle, { state: 'unknown', why: 'cannot check this handle form' });
       continue;
     }
     const identifier = api.identifier?.(handle) ?? handle;
-    const earlier = runCache.get(platform + '|' + identifier + '|' + (directory?.href ?? ''));
+    const earlier = runCache?.get(platform + '|' + identifier + '|' + (directory?.href ?? ''));
     if (earlier) {
       answers.set(handle, earlier);
       continue;
@@ -196,13 +220,13 @@ async function platformBatch(platform, handles, options, deadline) {
   }
   if (!live.length && (!options.controlRuns || !answers.size)) return answers;
   if (platform === 'GitHub' && await githubHeld(directory, now)) {
-    for (const handle of [...answers.keys(), ...live.map(([handle]) => handle)]) answers.set(handle, { state: 'check', why: 'rate limited' });
+    for (const handle of [...answers.keys(), ...live.map(([handle]) => handle)]) answers.set(handle, { state: 'unknown', why: 'rate limited' });
     return answers;
   }
   const signal = options.signal ? anySignal([options.signal, deadline]) : deadline;
   const run = { ...options, signal };
   const [control, results] = await Promise.all([
-    controlsFor(platform, run),
+    api.controls ? controlsFor(platform, run) : { ok: true },
     Promise.all(live.map(([, identifier]) => lookup(platform, identifier, run))),
   ]);
   const limited = control.limited ?? results.find(result => result.limited !== undefined)?.limited;
@@ -212,29 +236,30 @@ async function platformBatch(platform, handles, options, deadline) {
   }
   if (!control.ok) {
     for (const handle of [...answers.keys(), ...live.map(([handle]) => handle)]) {
-      answers.set(handle, { state: 'check', why: 'control check failed' });
+      answers.set(handle, { state: 'unknown', why: 'control check failed' });
     }
     return answers;
   }
   const checkedAt = now.toISOString();
   for (const [index, [handle, identifier]] of live.entries()) {
-    const { state } = results[index];
+    const { state, why } = results[index];
     const key = platform + '|' + identifier + '|' + (directory?.href ?? '');
-    if (state === 'check') {
-      const answer = { state: 'check', why: 'no clear answer in time' };
+    if (state === 'unknown') {
+      const answer = { state: 'unknown', why: why ?? 'no clear answer in time' };
       answers.set(handle, answer);
-      runCache.set(key, answer);
+      runCache?.set(key, answer);
       continue;
     }
     answers.set(handle, { state, checkedAt, via: 'api' });
-    runCache.set(key, { state, checkedAt, via: 'api' });
+    runCache?.set(key, { state, checkedAt, via: 'api' });
     await writeCache(directory, cacheFile(platform, identifier), { at: now.getTime(), state }).catch(() => {});
   }
   return answers;
 }
 
-function linkRow(platform, handle, why = 'link only') {
-  return { platform: platform.id, handle, state: 'check', link: platform.link(handle), why };
+function linkRow(platform, handle, why = platform.why ?? 'link only') {
+  return { platform: platform.id, handle, state: 'unknown', link: platform.link(handle), why,
+    ...(platform.linkLabel && { linkLabel: platform.linkLabel }) };
 }
 
 function selectedPlatforms(extra) {
@@ -242,7 +267,8 @@ function selectedPlatforms(extra) {
 }
 
 export function pendingHandleRows(name, extra) {
-  return selectedPlatforms(extra).map(platform => linkRow(platform, name, platform.auto ? 'still checking' : 'link only'));
+  return selectedPlatforms(extra).map(platform => linkRow(platform, name, platform.id === 'YouTube' && !process.env.YOUTUBE_API_KEY?.trim()
+    ? 'not connected' : platform.auto ? 'still checking' : undefined));
 }
 
 export const handlePriorities = {
@@ -256,27 +282,29 @@ export const handlePriorities = {
 // Returns a Map from name to its handle rows in display order. Exact handle first; getNAME, NAMEapp and NAMEhq only
 // when the exact handle is taken, inside the same per-platform budget.
 export async function checkSocialHandles(rows, {
-  directory = cacheDir, now = new Date(), fetcher = globalThis.fetch, signal, budgetMs = platformBudgetMs,
+  directory = cacheDir, now = new Date(), fetcher = globalThis.fetch, signal, budgetMs,
   controls, extraPlatforms = false, env = process.env, freshRun = false,
 } = {}) {
   const githubToken = typeof env?.DOMAIN_HOUND_GITHUB_TOKEN === 'string' && /^[\w-]{20,255}$/.test(env.DOMAIN_HOUND_GITHUB_TOKEN)
     ? env.DOMAIN_HOUND_GITHUB_TOKEN : null;
-  const options = { directory, now, fetcher, signal, controls, githubToken,
+  const youtubeApiKey = typeof env?.YOUTUBE_API_KEY === 'string' ? env.YOUTUBE_API_KEY.trim() : '';
+  const options = { directory, now, fetcher, signal, controls, githubToken, youtubeApiKey,
     ...(freshRun && { controlRuns: new Map(), runAnswers: new Map() }) };
   const wanted = platform => rows.filter(row => (row.platforms ?? autoPlatforms).includes(platform));
   const perPlatform = new Map(await Promise.all(autoPlatforms.map(async platform => {
     const names = wanted(platform);
     if (!names.length) return [platform, new Map()];
+    const platformBudget = platform === 'YouTube' ? Math.min(budgetMs ?? 3000, 3000) : budgetMs ?? platformBudgetMs;
     const started = performance.now();
     const deadline = new AbortController();
     // Keep Node alive until the platform answers or the deadline aborts its requests.
     const timer = setTimeout(() => {
       deadline.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
-    }, budgetMs);
+    }, platformBudget);
     try {
       const exact = await platformBatch(platform, names.map(row => row.name), options, deadline.signal);
       const taken = names.filter(row => row.variants && exact.get(row.name)?.state === 'taken');
-      const left = budgetMs - (performance.now() - started);
+      const left = platformBudget - (performance.now() - started);
       const variants = taken.length && left >= 300
         ? await platformBatch(platform, taken.flatMap(row => handleVariants(row.name)), options, deadline.signal)
         : new Map();
@@ -293,17 +321,17 @@ export async function checkSocialHandles(rows, {
       const checked = (row.platforms ?? autoPlatforms).includes(platform.id) ? perPlatform.get(platform.id) : null;
       if (!platform.auto || !checked?.exact) {
         if (row.links === false) continue;
-        entries.push(linkRow(platform, row.name, platform.auto ? 'not checked for this name' : 'link only'));
+        entries.push(linkRow(platform, row.name, platform.auto ? 'not checked for this name' : undefined));
         continue;
       }
-      const answer = checked.exact.get(row.name) ?? { state: 'check', why: 'no clear answer in time' };
+      const answer = checked.exact.get(row.name) ?? { state: 'unknown', why: 'no clear answer in time' };
       const entry = { platform: platform.id, handle: row.name, state: answer.state, link: platform.link(row.name),
         ...(answer.checkedAt && { checkedAt: answer.checkedAt }), ...(answer.why && { why: answer.why }) };
       if (row.variants && answer.state === 'taken') {
         entry.variants = handleVariants(row.name).map(handle => {
-          const variant = checked.variants.get(handle) ?? { state: 'check', why: 'no clear answer in time' };
+          const variant = checked.variants.get(handle) ?? { state: 'unknown', why: 'no clear answer in time' };
           return { handle, state: variant.state, link: platform.link(handle),
-            ...(variant.checkedAt && { checkedAt: variant.checkedAt }) };
+            ...(variant.checkedAt && { checkedAt: variant.checkedAt }), ...(variant.why && { why: variant.why }) };
         });
       }
       entries.push(entry);
@@ -313,11 +341,11 @@ export async function checkSocialHandles(rows, {
   return result;
 }
 
-// "GitHub taken · npm no public profile found · Bluesky taken; check yourself: YouTube, X, …".
 export function handleSummary(entries, { limit = Infinity, manualLimit = Infinity, ordered = false } = {}) {
   if (!Array.isArray(entries) || !entries.length) return null;
-  const checked = entries.filter(entry => entry.state !== 'check');
-  const open = entries.filter(entry => entry.state === 'check');
+  const checked = entries.filter(entry => ['taken', 'not-found'].includes(entry.state));
+  const open = entries.filter(entry => !checked.includes(entry));
+  const describe = entry => entry.platform === 'LinkedIn' ? linkedInLabel : entry.platform + ' · ' + handleLabel(entry);
   if (ordered) {
     const shown = new Set([...entries.slice(0, 2), ...checked.slice(0, 2)]);
     for (const entry of entries) {
@@ -325,13 +353,15 @@ export function handleSummary(entries, { limit = Infinity, manualLimit = Infinit
       shown.add(entry);
     }
     const states = entries.filter(entry => shown.has(entry))
-      .map(entry => entry.platform + ' ' + handleStates[entry.state].toLowerCase()).join(', ');
+      .map(describe).join(', ');
     const more = entries.length - shown.size;
     return states + (more ? ' (' + more + ' more on the page)' : '');
   }
-  const shown = checked.slice(0, limit).map(entry => entry.platform + ' ' + handleStates[entry.state].toLowerCase());
+  const shown = checked.slice(0, limit).map(describe);
   const manual = open.slice(0, manualLimit);
   const more = checked.length - shown.length + open.length - manual.length;
-  return [shown.join(' · '), manual.length ? 'check yourself: ' + manual.map(entry => entry.platform).join(', ') : '',
-    more > 0 ? '(' + more + ' more on the page)' : ''].filter(Boolean).join('; ');
+  const unchecked = manual.filter(entry => entry.platform !== 'LinkedIn').map(entry => entry.platform);
+  return [shown.join(', '), unchecked.length ? handleStates.unknown + ' (' + unchecked.join(', ') + ')' : '',
+    manual.some(entry => entry.platform === 'LinkedIn') ? linkedInLabel : '',
+    more > 0 ? '(' + more + ' more on the page)' : ''].filter(Boolean).join(' · ');
 }

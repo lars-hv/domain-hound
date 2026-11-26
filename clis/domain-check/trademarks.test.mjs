@@ -143,7 +143,7 @@ test('EUIPO outages, cut-short pages and refused keys never read as clear and ke
   resetOffices();
   const directory = await directoryFor(t);
   const calls = [];
-  // A cut-short page with no hit is not "no mark": the office stays check yourself, and nothing is cached.
+  // A cut-short page with no hit is not "no mark": the office stays unknown, and nothing is cached.
   const partial = await checkOffice('EU', 'quietwren', 'Quiet Wren', { env: euEnv, directory, now,
     fetcher: euipo({ search: [{ trademarks: [], totalElements: 140, totalPages: 2, page: 0, size: 100 }] }, calls) });
   assert.equal(partial.state, 'ok');
@@ -335,12 +335,12 @@ test('EU and Norwegian hits set the verdict and show office, mark, status, class
   assert.ok(md.includes('[EUIPO mark: Exact QUIET WREN, registered, classes 009/042](https://euipo.europa.eu/eSearch/#details/trademarks/019000001)'));
   assert.ok(md.includes('[Patentstyret mark: Exact VELVET LARK, registered, classes 042](https://services.patentstyret.no/search-details/trademark/202500001)'));
   assert.match(md, /Trademark match found/);
-  assert.match(md, /\[WIPO marks: check yourself\]\(https:\/\/branddb\.wipo\.int\/\)/);
+  assert.match(md, /\[Search WIPO\]\(https:\/\/branddb\.wipo\.int\/\)/);
   const html = await readFile(fileURLToPath(page.resultPage), 'utf8');
   assert.ok(html.includes('<a href="https://services.patentstyret.no/search-details/trademark/202500001">Patentstyret mark: Exact VELVET LARK'));
 });
 
-test('an office that fails or answers in part blocks No conflict found and reads check yourself', async t => {
+test('an office that fails or answers in part blocks No conflict found and reads couldn\'t check', async t => {
   resetOffices();
   const directory = await directoryFor(t);
   const env = { ...euEnv, ...noEnv };
@@ -356,9 +356,9 @@ test('an office that fails or answers in part blocks No conflict found and reads
   assert.deepEqual([report.sources.EUIPO, report.sources.Patentstyret], [0, 0]);
   const pages = resultPages({ directory: fileURLToPath(new URL('results/', directory)), env: { DOMAIN_HOUND_OPEN: 'off' } });
   const page = await pages(report, { names: ['Amber Finch'] }, { triage: true });
-  assert.match(page.say, /\[EUIPO\]\([^)]+\): check yourself.*\[Patentstyret\]\([^)]+\): check yourself/);
+  assert.match(page.say, /\[EUIPO\]\([^)]+\): couldn't check.*\[Patentstyret\]\([^)]+\): couldn't check/);
   const md = await readFile(fileURLToPath(page.resultPage).replace(/\.html$/, '.md'), 'utf8');
-  assert.match(md, /EU marks: check yourself, EUIPO did not answer in full\]\(https:\/\/www\.euipo\.europa\.eu\/en\/search-ip\)/);
+  assert.match(md, /EU marks: couldn't check, EUIPO did not answer in full\]\(https:\/\/www\.euipo\.europa\.eu\/en\/search-ip\)/);
   assert.match(md, /Trademark check incomplete/);
   // Without keys nothing changes for the verdict, and the receipt still links the EU and Norway searches.
   resetOffices();
@@ -367,9 +367,9 @@ test('an office that fails or answers in part blocks No conflict found and reads
   assert.equal(keyless.names[0].reason, 'No US mark, same-name app or active company found in the sources checked');
   assert.equal('EU' in keyless.names[0].competition, false);
   const keylessPage = await pages(keyless, { names: ['Amber Finch'] }, { triage: true });
-  assert.match(keylessPage.say, /\[EUIPO\]\([^)]+\): check yourself.*\[Patentstyret\]\([^)]+\): check yourself/);
+  assert.match(keylessPage.say, /\[EUIPO\]\([^)]+\): couldn't check.*\[Patentstyret\]\([^)]+\): couldn't check/);
   const keylessMd = await readFile(fileURLToPath(keylessPage.resultPage).replace(/\.html$/, '.md'), 'utf8');
-  assert.match(keylessMd, /\[Norway marks: not checked automatically, check yourself\]\(https:\/\/search\.patentstyret\.no\/\)/);
+  assert.match(keylessMd, /\[Norway marks: couldn't check\]\(https:\/\/search\.patentstyret\.no\/\)/);
 });
 
 test('meaning screen flags known rude words in all 14 languages, sounds-alikes and glued words', () => {

@@ -6,6 +6,9 @@ import { appNameMatches, compactText, day, request } from './triage-sources.mjs'
 const origin = 'https://play.google.com';
 const maxHtmlBytes = 4_000_000;
 
+export const googlePlayLabel = 'Google Play has no public search';
+export const googlePlayLinkLabel = 'Search Google Play';
+
 export function playSearchLink(input) {
   return origin + '/store/search?' + new URLSearchParams({ q: input, c: 'apps', hl: 'en', gl: 'US' });
 }

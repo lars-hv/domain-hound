@@ -34,7 +34,8 @@ test('the short recommendation obeys scope while both receipts retain every endi
   assert.ok(lines.length <= 8);
   assert.match(lines[1], /^\.com first.*\$20\.00 today.*cedarheron\.com \$12\.00, then \$14\.00/);
   assert.match(result.say, /Keep Paper Heron\? Avoid\./);
-  assert.match(result.say, /iOS: no app with this name \| Android: check incomplete/);
+  assert.match(result.say, /iOS: no app with this name/);
+  assert.match(result.say, /Google Play has no public search · \[Search Google Play\]/);
   assert.match(result.say, /Best available alternative: Cedar Heron/);
   assert.match(result.say, /Want it anyway\? \[Watch paperheron\.com\]/);
   assert.doesNotMatch(result.say, /[—–]|paperheron\.io|cedarheron\.no/);
@@ -174,14 +175,14 @@ test('say names the handles of the person’s own name in three states and the p
     receiptDetails: [{ handles }, { handles: null }] };
   const result = await pages(data, {}, { triage: true });
   const line = result.say.split('\n').find(text => text.startsWith('Handles for Paper Heron:'));
-  assert.equal(line, 'Handles for Paper Heron: YouTube check yourself, X check yourself, GitHub taken, npm no public profile found (2 more on the page).');
+  assert.equal(line, "Handles for Paper Heron: YouTube · Couldn't check, X · Couldn't check, GitHub · Taken, npm · No profile found (2 more on the page).");
   assert.doesNotMatch(line, /free|available/i);
   const path = fileURLToPath(result.resultPage);
   const [html, md] = await Promise.all([readFile(path, 'utf8'), readFile(path.replace(/\.html$/, '.md'), 'utf8')]);
   assert.match(html, /<summary>Handles<\/summary>/);
-  assert.match(html, /<a href="https:\/\/github\.com\/paperheron">GitHub @paperheron: Taken<\/a>/);
-  assert.match(html, /GitHub alternative @getpaperheron: No public profile found/);
-  assert.match(html, /YouTube @paperheron: Check yourself/);
+  assert.match(html, /<a href="https:\/\/github\.com\/paperheron">GitHub @paperheron · Taken<\/a>/);
+  assert.match(html, /GitHub alternative @getpaperheron · No profile found/);
+  assert.match(html, /YouTube @paperheron · Couldn&#39;t check/);
   assert.match(md, /### Handles/);
   assert.match(html, /Handles: checked for the top three names\./);
   // An ending on request (.de) that the lookup returned is on the page beside the default endings.

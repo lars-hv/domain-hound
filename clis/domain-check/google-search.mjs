@@ -1,7 +1,7 @@
 import { mkdir, open } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { cacheDir, readCache, writeCache } from './cache.mjs';
-import { playSearchLink } from './google-play.mjs';
+import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './google-play.mjs';
 import { compactText, day, letters, request } from './triage-sources.mjs';
 
 const sharedCache = new URL('google/', cacheDir);
@@ -233,7 +233,8 @@ export function nameCheckLines(row) {
   return [
     { label: 'Google', text: googleText(row?.google), link: googleSearchLink(input) },
     { label: 'App Store (iOS)', text: appText(competition.AppStore), link: appStoreSearchLink(input) },
-    { label: 'Google Play (Android)', text: appText(competition.GooglePlay), link: playSearchLink(input) },
+    { label: 'Google Play (Android)', text: competition.GooglePlay == null ? googlePlayLabel : appText(competition.GooglePlay),
+      link: playSearchLink(input), ...(competition.GooglePlay == null && { linkLabel: googlePlayLinkLabel }) },
   ];
 }
 

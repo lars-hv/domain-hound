@@ -1,4 +1,5 @@
 import { setTimeout as wait } from 'node:timers/promises';
+import { checkSocialHandles, handleLabel } from './clis/domain-check/handles.mjs';
 import { normalizeName } from './clis/domain-check/name-search.mjs';
 import { searchApps } from './clis/domain-check/triage-sources.mjs';
 
@@ -57,6 +58,30 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       matches: checked.map(({ name, url }) => ({ name, url })), checkedAt: new Date().toISOString(), source: 'local' };
   }
 
+  async function recoverYouTube(entries, signal) {
+    const wanted = entries.flatMap(({ name, nameChecks }) => {
+      if (!nameChecks || !Array.isArray(nameChecks.handles)) return [];
+      const row = nameChecks.handles.find(row => row.platform === 'YouTube');
+      if (['taken', 'not-found'].includes(row?.state)) return [];
+      const handle = row?.handle ?? normalizeName(name);
+      return handle ? [{ handle, row, nameChecks }] : [];
+    });
+    if (!wanted.length) return;
+    const names = [...new Set(wanted.map(({ handle }) => handle))];
+    const local = await checkSocialHandles(names.map(name => ({ name, platforms: ['YouTube'], links: false })),
+      { fetcher: fetchFn, env, signal, freshRun: true }).catch(() => null);
+    for (const { handle, row, nameChecks } of wanted) {
+      const result = local?.get(handle)?.[0];
+      // Keep a hosted failure reason when the local machine has no key to try again.
+      if (row && result?.state === 'unknown' && result.why === 'not connected' && row.state === 'unknown') continue;
+      if (!result) continue;
+      const profile = { ...row, ...result, label: handleLabel(result), checkedAt: result.checkedAt ?? null,
+        why: result.why ?? null, ...(result.state !== 'unknown' && { source: 'local' }) };
+      nameChecks.handles = row ? nameChecks.handles.map(entry => entry === row ? profile : entry)
+        : [...nameChecks.handles, profile];
+    }
+  }
+
   return {
     async check(name, extraEndings, signal) {
       const [main, ...extras] = await Promise.all([get(name, signal),
@@ -67,7 +92,12 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           params: { id: main.details.id }, timeout: 6600, signal,
         }).then(body => validDetails(body) ? body : null, () => null);
       }
-      if (nameChecks) nameChecks.appStore = await recoverApple(nameChecks.appStore, main.query.name, signal);
+      if (nameChecks) {
+        await Promise.all([
+          recoverApple(nameChecks.appStore, main.query.name, signal).then(app => { nameChecks.appStore = app; }),
+          recoverYouTube([{ name: main.query.name, nameChecks }], signal),
+        ]);
+      }
       const { details, ...answer } = main;
       return { ...answer, domains: [...main.domains, ...extras.flatMap(extra => extra.domains)], nameChecks,
         complete: main.complete && extras.every(extra => extra.complete) };
@@ -91,11 +121,14 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
           continue;
         }
         if (!validGeneration(body) || body.stage !== 'final') throw new Error('Invalid hosted generation details');
-        await Promise.all(body.names.map(async entry => {
-          const app = await recoverApple(entry.nameChecks?.appStore ?? entry.appStore, entry.name, signal);
-          if (entry.nameChecks) entry.nameChecks.appStore = app;
-          if (app) entry.appStore = app;
-        }));
+        await Promise.all([
+          recoverYouTube(body.names, signal),
+          ...body.names.map(async entry => {
+            const app = await recoverApple(entry.nameChecks?.appStore ?? entry.appStore, entry.name, signal);
+            if (entry.nameChecks) entry.nameChecks.appStore = app;
+            if (app) entry.appStore = app;
+          }),
+        ]);
         return body;
       }
       throw new Error('Hosted generation expired');

@@ -2,6 +2,8 @@ import { attributed, md } from './display.mjs';
 import { canRecommend, choosePick, normalizeName } from './clis/domain-check/name-search.mjs';
 import { compareScores, scoreEligible, scoreHandles, scoreName } from './clis/domain-check/name-score.mjs';
 import { relevantClasses } from './clis/domain-check/triage-sources.mjs';
+import { handleLabel, linkedInLabel, linkedInSearch } from './clis/domain-check/handles.mjs';
+import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 
 const money = value => Number.isFinite(value) ? '$' + value.toFixed(2) : 'price at shop';
 const platforms = ['LinkedIn', 'X', 'Instagram', 'TikTok', 'YouTube', 'GitHub'];
@@ -25,7 +27,7 @@ function warning(check) {
     + '. The match applies to the name across all endings.');
 }
 
-function nameCheckLines(details, pending) {
+function nameCheckLines(details, pending, name) {
   if (!details) return [pending ? 'Name checks are still running.' : 'Name checks could not be completed.'];
   const { appStore: app, googlePlay, trademarks, handles } = details;
   const appText = app.status === 'taken' ? 'Matching app found' : app.status === 'no_match_found' ? 'No matching app found'
@@ -33,14 +35,15 @@ function nameCheckLines(details, pending) {
   const apps = app.matches?.map(match => link(match.name, match.url)).join(', ');
   const us = trademarks?.us;
   const markText = us?.status === 'no_exact_match_found' ? 'No exact live match found' : us?.status === 'unknown'
-    ? link('Check yourself', us.searchUrl) : null;
+    ? "Couldn't check · " + link('Search US trademarks', us.searchUrl) : null;
   return [
     ...(markText ? ['US trademarks · ' + markText] : []),
     'App Store · ' + appText + (apps ? ' · ' + apps : ''),
-    'Google Play · ' + link('Check yourself', googlePlay.link),
+    googlePlayLabel + ' · ' + link(googlePlayLinkLabel, googlePlay.link ?? playSearchLink(name)),
     ...platforms.map(platform => {
       const handle = handles.find(row => row.platform === platform);
-      return platform + ' · ' + link(handle?.label ?? 'Check yourself', handle?.link);
+      if (platform === 'LinkedIn') return linkedInLabel + ' · ' + link('Search LinkedIn', linkedInSearch(name));
+      return platform + ' · ' + link(handleLabel(handle), handle?.link);
     }),
   ];
 }
@@ -67,7 +70,7 @@ function checkLines(check, pending) {
       'Available · ' + md(row.domain),
       ...(row.prices?.length ? row.prices.map((offer, index) => priceLine(offer, index === 0)) : ['Check the price at the shop.']),
     ]),
-    ...nameCheckLines(nameChecks, pending),
+    ...nameCheckLines(nameChecks, pending, check.query.name),
     ...(taken.length ? ['Taken · ' + taken.map(md).join(', ') + '. '
       + link('Watch', 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(taken[0]))
       + ' · Draft an offer · Try a new name'] : []),

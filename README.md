@@ -179,7 +179,8 @@ with public evidence sources. Catalog downloads carry no candidate name. Clickin
 | `api.euipo.europa.eu` and `euipo.europa.eu` (sandbox: `api-sandbox.euipo.europa.eu` and `auth-sandbox.euipo.europa.eu`) | With EUIPO credentials, the token host gets the client ID and secret. The search host gets the client ID, access token and candidate spellings. |
 | `api.patentstyret.no` | With a subscription key, the Norwegian office gets the key and candidate spellings. |
 | `mcp.atom.com` | The taken domain for an exact listing lookup. The buyer's ceiling stays local. |
-| `itunes.apple.com`, `play.google.com` | Candidate name for US store search; Google Play may also get the ID of a matched app. |
+| `itunes.apple.com` | Candidate name for US App Store search. |
+| `www.googleapis.com` | With the optional local `YOUTUBE_API_KEY`, the candidate's YouTube handle and key. The local lookup runs when a hosted YouTube answer is unavailable or in local mode. |
 | `www.wikidata.org`, `www.google.com`, `trends.google.com`, `data.brreg.no` | Candidate name; Wikidata also gets entity or class IDs for matches. |
 | `api.github.com`, `registry.npmjs.org`, `public.api.bsky.app` | Candidate name or handle, handle variants and public controls. With a GitHub token configured, it goes only to GitHub. |
 | `www.sec.gov`, `tranco-list.eu` | Public company and site lists with no candidate name. |
