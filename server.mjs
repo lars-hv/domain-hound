@@ -1,17 +1,17 @@
 import { geoInstruction, namingRecipe } from './clis/domain-check/naming-method.mjs';
-import { asciiDomain, defaultEndings, domainEnding, normalizeName, requestEndings, restrictedEndings, supportedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
+import { asciiDomain, defaultEndings, domainEnding, normalizeName, restrictedEndings, supportedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkSocialHandles, handlePriorities, pendingHandleRows, requestPlatforms } from './clis/domain-check/handles.mjs';
 import { progressPrefix } from './clis/domain-check/progress.mjs';
-import { attributed, errorText, localCheckNotice, progressText } from './display.mjs';
+import { attributed, errorText, localCheckNotice, md, progressText, purchaseLine } from './display.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
 import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
-import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
+import { callPurchaseTool, purchaseToolNames, registeredTools, quoteOfferLine, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
 import { HostedRateLimit, hostedClient, hostedDebug } from './hosted.mjs';
@@ -40,8 +40,7 @@ const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entr
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: supportedEndings.length, uniqueItems: true,
   items: { type: 'string', enum: supportedEndings },
-  description: 'Endings to consider for the recommendation, in preference order; listed endings rank first. For .com only use ["com"]. The page still shows all ten default endings for bare names. '
-    + 'On request only (add them here when the person asks or names a country): ' + requestEndings.map(ending => '.' + ending).join(', ') + '.',
+  description: 'Preferred endings and any extra endings to check, e.g. ["com","de"]. The ten defaults are still checked for bare names.',
 };
 const countryEnding = {
   SH: 'sh', GG: 'gg', SE: 'se', DK: 'dk', DE: 'de', GB: 'co.uk', UK: 'co.uk', EU: 'eu',
@@ -54,19 +53,29 @@ function regionalEnding(country) {
 const selectedEndings = args => [...new Set([...(args.endings ?? []), ...(args.eligible ?? []), regionalEnding(args.country), ...defaultEndings].filter(Boolean))];
 const lookupProperties = {
   country: { type: 'string', pattern: '^[A-Za-z]{2}$', description: 'Buyer country code if supplied, such as SE, DK, DE or GB for .co.uk. Do not infer it from language alone.' },
-  ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
+  ai: { type: 'boolean', description: 'Legacy flag, e.g. true. .ai is already checked by default.' },
   endings: endingsSchema,
   budget: { type: 'number', minimum: 0, maximum: 1000000,
-    description: 'The person\'s budget in USD, only when they gave one. Endings that cost more upfront are left out. A budget replaces the default $60 three-year cap. The pick is the highest-quality ending within the cap or, with a budget, the cheapest over three years if none fit it. Include .ai in the pick only when asked for or within the budget. Carry the budget from the registry screen into triage.' },
+    description: 'User-supplied upfront USD budget, e.g. 30. Overrides the default $60 three-year cap.' },
   eligible: { type: 'array', uniqueItems: true, items: { type: 'string', enum: restrictedEndings },
-    description: 'Restricted endings the buyer qualifies to register. Pass no or eu only when the buyer qualifies for that ending.' },
+    description: 'Restricted endings the buyer qualifies for, e.g. ["no"].' },
 };
-const relay = 'Include the clickable Results page link from say. Keep the notice at the top when a check ran on this machine, then give the relevant facts.';
+const searchAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
+const batchResultMeta = { 'anthropic/maxResultSizeChars': 40_000 };
+const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
+  + 'Start with check_domains for availability or prices, triage_names for naming or trademark screening, and watch_domain for a release watch. '
+  + 'Include the clickable Results page link whenever one is returned, and keep the local-check notice at the top when shown. '
+  + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
+  + 'Use my_domains to review renewals of domains the person already owns.';
+
 const checkTool = {
   name: 'check_domains',
-  description: 'Check availability and dated prices for up to 20 names or domains. Use triage_names for product names. '
-    + 'For purchase requests, set purchase: true and relay the checkout guidance. Use confirm: true only for an explicit live shop check. '
-    + 'Keep list, shop-confirmed and premium prices distinct. ' + relay,
+  description: 'Use this when checking whether a name or exact domain is available, what an ending such as .ai costs, or where to register. '
+    + 'Use query for one exact domain or bare name ({"query":"lanternbay.dev"}), or names for a batch ({"names":["lanternbay.dev","lanternbay"]}). '
+    + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
+    + 'This checks availability and compares prices. Use triage_names for name ideas or trademark screening and quote_domain for a live Spaceship purchase quote.',
+  annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
+  _meta: batchResultMeta,
   inputSchema: {
     type: 'object',
     properties: {
@@ -75,53 +84,67 @@ const checkTool = {
         description: 'One name or exact domain, e.g. "lanternbay.me" or "lanternbay". Supply either query or names.' },
       names: { type: 'array', minItems: 1, maxItems: 20,
         items: nameSchema,
-        description: '1 to 20 bare names, exact domains or both, e.g. ["lanternbay","quietbook","lanternbay.me"]. Use one DNS label for a bare name, with no spaces or dots. A dot means an exact domain. Supply either names or query.' },
-      shortlist: { type: 'boolean', description: 'Legacy: true for a preliminary bare-name batch. The naming recipe now goes straight to triage_names.' },
-      purchase: { type: 'boolean', description: 'Pass true when asked to buy or register, even for an exact domain that may be taken. State the checkout limitation from the display in the answer.' },
-      picked: { type: 'boolean', description: 'Pass true with an exact query only after the person explicitly chooses a name already shown. Used by the opt-in local score log.' },
-      confirm: { type: 'boolean', description: 'True only when the person explicitly asks for a live shop check. Uses an optional headless browser and is slower.' },
+        description: '1 to 20 bare names or exact domains, e.g. ["lanternbay","lanternbay.me"]. Use names or query.' },
+      shortlist: { type: 'boolean', description: 'Legacy preliminary bare-name check, e.g. true.' },
+      purchase: { type: 'boolean', description: 'Set true when asked to buy or register. Relays checkout guidance.' },
+      picked: { type: 'boolean', description: 'Set true on an exact query after the user explicitly picks a result. Used by the opt-in score log.' },
+      confirm: { type: 'boolean', description: 'Set true only when the person explicitly asks for a live shop check.' },
     },
     additionalProperties: false,
     oneOf: [{ required: ['query'] }, { required: ['names'] }],
   },
 };
 
-const legacyTool = { ...checkTool, name: 'broker_find',
-  description: 'Legacy alias for check_domains. This check leaves checkout to you. ' + relay };
+const candidateDescriptions = {
+  recipe: 'Naming recipe, e.g. "odd-pair".',
+  relation: 'Link to the subject, e.g. "direct".',
+  spellings: 'Plausible spellings when heard, e.g. 1.',
+  realWord: 'Contains a real word, e.g. true.',
+  descriptive: 'Uses two subject words or adds a generic word, e.g. false.',
+  misspelled: 'Uses a deliberate misspelling, e.g. false.',
+  narrow: 'Names only one feature, e.g. false.',
+  soundsLike: 'Recognizable sound-alike, e.g. "competitor".',
+  badMeaning: 'Severity of a bad meaning, e.g. "none".',
+  language: 'Name language, e.g. "english".',
+};
 
 const triageTool = {
   name: 'triage_names',
-  description: 'Find or vet a product name. Pass idea to use the website’s name generator, or pass names to check supplied candidates. '
-    + 'For a second round, pass the same idea with wanted, avoid and round. Use the returned verdicts and label unfinished checks as pending. ' + relay,
+  description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
+    + 'Pass idea to use the website’s name generator ({"idea":"A room booking app"}) or names to screen candidates ({"names":["Quiet Otter"]}). '
+    + 'Use the returned verdicts and leave unfinished checks pending. '
+    + 'For a domain-only lookup or registrar prices, use check_domains.',
+  annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
+  _meta: batchResultMeta,
   inputSchema: {
     type: 'object',
     properties: {
-      idea: { type: 'string', minLength: 3, maxLength: 400, description: 'A short product idea. Use idea or names.' },
+      idea: { type: 'string', minLength: 3, maxLength: 400, description: 'Product idea, e.g. "A trip planner for families". Use idea or names.' },
       wanted: { type: 'array', maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 40 },
-        description: 'Names the person liked in the previous round.' },
+        description: 'Names liked last round, e.g. ["Quiet Otter"].' },
       avoid: { type: 'array', maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 40 },
-        description: 'Names the person rejected in the previous round.' },
-      round: { type: 'integer', minimum: 1, maximum: 20, description: 'Which naming round this is.' },
+        description: 'Names rejected last round, e.g. ["Hush Room"].' },
+      round: { type: 'integer', minimum: 1, maximum: 20, description: 'Naming round, e.g. 2.' },
       ...lookupProperties,
       names: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 },
         description: '1 to 20 bare names without endings, e.g. ["Quiet Otter","Hush Room"].' },
-      shortlist: { type: 'boolean', description: 'True when generating names. Returns a short chat answer and a full receipt.' },
-      purchase: { type: 'boolean', description: 'True when the person asks to buy or register a domain.' },
+      shortlist: { type: 'boolean', description: 'Set true for a short naming shortlist.' },
+      purchase: { type: 'boolean', description: 'Set true when asked to buy or register.' },
       companyType: { type: 'string', enum: Object.keys(handlePriorities),
-        description: 'Use developer, consumer, b2b or media when it fits, to highlight the handles that matter.' },
+        description: 'Business type for handle priorities, e.g. "developer".' },
       additionalHandles: { type: 'array', uniqueItems: true, items: { type: 'string', enum: requestPlatforms.map(platform => platform.id) },
-        description: 'Extra check links only when requested. Snapchat, Reddit, Twitch, Pinterest or Discord. Threads is checked by default.' },
-      category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for relevant trademark classes and competitors. Use travel, software, finance, retail, health, education, food or media.' },
-      about: { type: 'string', minLength: 1, maxLength: 160, description: 'A short description of what your product does, to identify overlapping sites and apps.' },
+        description: 'Extra handle links only on request, e.g. ["reddit"].' },
+      category: { type: 'string', minLength: 1, maxLength: 100, description: 'Category for trademark and rival checks, e.g. "travel".' },
+      about: { type: 'string', minLength: 1, maxLength: 160, description: 'What the product does, e.g. "Book group travel", for rival and app checks.' },
       candidates: { type: 'object', maxProperties: 20,
         additionalProperties: { type: 'object', additionalProperties: false, properties: Object.fromEntries(Object.entries(candidateFields)
-          .map(([key, rule]) => [key, rule === 'boolean' ? { type: 'boolean' } : rule === 'integer' ? { type: 'integer', minimum: 1, maximum: 5 }
-            : { type: 'string', enum: rule }])) },
-        description: 'Naming evidence per name for the Name score, from your own judgment: recipe; relation to the subject (direct, loose, none); '
-          + 'spellings when heard (1 = one obvious spelling); realWord (contains a real word); descriptive (two subject words or subject + generic word); '
-          + 'misspelled; narrow (names one feature); soundsLike (none, competitor, drug, pokemon); badMeaning in 14 languages (none, mild, severe); '
-          + 'language (english, asked, other). Missing evidence counts as not checked and keeps the name out of Strong. '
-          + 'Example: {"Loomfox":{"recipe":"odd-pair","relation":"direct","spellings":1,"realWord":true,"descriptive":false,"misspelled":false,"narrow":false,"soundsLike":"none"}}.' },
+          .map(([key, rule]) => {
+            const schema = rule === 'boolean' ? { type: 'boolean' }
+              : rule === 'integer' ? { type: 'integer', minimum: 1, maximum: 5 } : { type: 'string', enum: rule };
+            return [key, { ...schema, description: candidateDescriptions[key] }];
+          })) },
+        description: 'Your naming evidence by name, e.g. {"Loomfox":{"recipe":"odd-pair","relation":"direct","spellings":1,"realWord":true}}. '
+          + 'Missing evidence counts as not checked. One spelling means one obvious spelling when heard.' },
       geo: { type: 'object', maxProperties: 20,
         additionalProperties: { type: 'string', minLength: 1, maxLength: 160, pattern: '^\\s*(?:[Kk]nown\\b.*\\S.*|[Uu]nknown)\\s*$' },
         description: geoInstruction + ' Example: {"ExampleBoard":"known: a team notes workspace","QuietOtter":"unknown"}.' },
@@ -132,11 +155,12 @@ const triageTool = {
 };
 
 const namingTool = {
-  name: 'naming_method',
-  description: 'Read the naming method (process, recipes, bans, steering question and real names by type) before generating names, '
-    + 'or when the person asks for the method. To screen names, use triage_names.',
+  name: 'naming_guide',
+  description: 'Use this when the user asks how to name a product or wants a naming method before brainstorming. '
+    + 'It explains the recipes, quality rules and feedback question. Use triage_names to generate or screen actual names.',
+  annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
-    about: { type: 'string', minLength: 1, maxLength: 512, description: 'An optional one-sentence product description.' },
+    about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },
   }, additionalProperties: false },
 };
 
@@ -147,6 +171,83 @@ function toolResult(json, isError = false) {
   return { content: [{ type: 'text', text: structured.display }], structuredContent: structured, isError };
 }
 const errorResult = message => toolResult(errorText(message), true);
+
+// The receipt keeps all evidence and shop offers. Chat carries every registry status and the prices
+// needed to decide, without repeating the display or attaching the raw evidence to the MCP response.
+function compactCheckResult(result) {
+  if (result.isError) return result;
+  const { names, checks, resultPage, display, complete, pending, source, priceListDate, listPrices, quoteOffer } = result.structuredContent;
+  const rows = (names ?? []).map(({ name, free, taken, resale, likely_free, likely_taken, shop_check, checking }) => {
+    const statuses = [
+      ['available', free?.filter(row => row.s !== 'prem' && !row.prem).map(row => row.d)],
+      ['premium', free?.filter(row => row.s === 'prem' || row.prem).map(row => row.d)],
+      ['taken', taken], ['listed for resale', resale], ['possibly available (DNS)', likely_free],
+      ['likely taken (DNS)', likely_taken], ['check at shop', shop_check?.filter(ending =>
+        !likely_free?.includes(ending) && !likely_taken?.includes(ending))], ['still checking', checking],
+    ];
+    return { name, statuses: Object.fromEntries(statuses.filter(([, endings]) => endings?.length)) };
+  });
+  const structuredContent = {
+    ...(resultPage && { resultPage }), ...(pending && { pending }),
+    ...(rows.length && { rows }),
+  };
+  let text = display;
+  if (resultPage) {
+    const lead = [...(source === 'local' ? [localCheckNotice] : []), resultsLine(resultPage)];
+    const statusLines = rows.map(({ name, statuses }) => '- ' + md(name) + ' · ' +
+      (Object.entries(statuses).map(([label, endings]) => label + ' ' +
+        endings.map(ending => md(ending === name ? ending : '.' + ending)).join(' ')).join(' · ') || 'no registry answer'));
+    const tail = 'Full shop comparisons and sources are on the Results page.';
+    const purchase = display.includes(purchaseLine);
+    const date = checks?.[0]?.priceSnapshot?.checkedAt?.slice(0, 10) ?? priceListDate;
+    // Keep the rich single-name answer when it fits. In a batch, the short price line shows the
+    // best listed offer for every available ending, with the payment term made explicit.
+    const withStatuses = display.replace(resultsLine(resultPage), resultsLine(resultPage) + '\n' + statusLines.join('\n'));
+    const fits = value => {
+      const wire = JSON.stringify({ content: [{ type: 'text', text: value }], structuredContent, isError: false });
+      return rows.length <= 1 ? Buffer.byteLength(wire) < 8_000 : wire.length < 40_000;
+    };
+    if (rows.length <= 1 && fits(withStatuses)) {
+      text = withStatuses;
+    } else {
+      const prices = names.map((row, index) => {
+        const offers = checks
+          ? checks[index].domains.filter(domain => domain.status === 'available').flatMap(domain => {
+            const [offer] = domain.prices;
+            if (!offer) return [];
+            const term = offer.minimumYears ?? 1;
+            return [{ d: domain.ending, shop: offer.shop, now: offer.firstPaymentUsd ?? offer.firstYearUsd * term,
+              renew: offer.renewalUsd * term, y3: offer.threeYearUsd, term }];
+          })
+          : (row.free ?? []).filter(offer => offer.s !== 'prem' && !offer.prem).map(offer => ({
+            ...listPrices?.[offer.d], ...offer,
+          }));
+        const list = offers.filter(({ now }) => Number.isFinite(now)).map(({ d, shop, now, renew, y3, term, s }) =>
+          '.' + md(d) + (shop ? ' ' + md(shop) : '') + ' $' + now.toFixed(2) + '/'
+          + (Number.isFinite(renew) ? '$' + renew.toFixed(2) : 'unknown') + (term > 1 ? ' (' + term + 'y term)' : '')
+          + (Number.isFinite(y3) ? ', $' + y3.toFixed(2) + ' over 3y' : '') + (s === 'ok' ? ' confirmed' : ''));
+        return { name: md(row.name), list };
+      });
+      const notes = [
+        ...(complete === false ? ['Some checks are incomplete. Confirm uncertain endings at a shop.'] : []),
+        ...(quoteOffer ? [quoteOfferLine(names[0].name)] : []),
+        tail,
+      ];
+      const highlights = display.split('\n')
+        .filter(line => /^(?:US trademark warning for |The Hound’s pick is |Cheapest: |Best value: )/.test(line)).slice(0, 8);
+      const priceHeader = 'USD before tax, upfront/renewal per term, list prices' + (date ? ' from ' + date : '') + ' unless marked confirmed.';
+      const render = (offerLimit, highlights) => {
+        const priceLines = prices.filter(({ list }) => list.length).map(({ name, list }) => name + ' · ' + list.slice(0, offerLimit).join(', '));
+        return attributed([...lead, ...statusLines, '', ...(priceLines.length ? [priceHeader, ...priceLines, ''] : []),
+          ...highlights, ...notes].join('\n'), purchase);
+      };
+      text = render(Infinity, highlights);
+      if (!fits(text)) text = render(Infinity, []);
+      if (!fits(text)) text = render(1, []);
+    }
+  }
+  return { ...result, content: [{ type: 'text', text }], structuredContent };
+}
 
 function localProgress(json) {
   const progress = JSON.parse(json);
@@ -813,19 +914,19 @@ export async function serve({
         protocolVersion: versions.includes(version) ? version : versions[0],
         capabilities: { tools: {} },
         serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: serverVersion },
-        instructions: 'When you use Domain Hound, include its clickable Results page link from say, including for a single exact domain. Keep the notice at the top when a check ran on this machine. For a new product name, call triage_names with idea. To check names you already have, pass names.',
+        instructions: serverInstructions,
       });
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, legacyTool, watchTool, dossierTool, portfolioTool]) });
+    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, watchTool, dossierTool, portfolioTool]) });
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
-    if (name === namingTool.name) {
+    if (name === namingTool.name || name === 'naming_method') {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
         (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() ||
           args.about.length > namingTool.inputSchema.properties.about.maxLength)))) {
-        return reply(errorResult('naming_method accepts an optional about description of up to 512 characters.'));
+        return reply(errorResult('naming_guide accepts an optional about description of up to 512 characters.'));
       }
       return reply(toolResult(JSON.stringify({ display: attributed(namingRecipe(args?.about?.slice(0, 160))) })));
     }
@@ -880,7 +981,8 @@ export async function serve({
       if (!result.isError && current?.finished && current.outcome?.data) followUp(current);
       return;
     }
-    if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
+    // The old advertised name remains callable for pinned tool references and scripts.
+    if (name !== checkTool.name && name !== 'broker_find') return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
     const result = await hostedLookup(args, false, started) ?? await runLookup(
@@ -890,7 +992,7 @@ export async function serve({
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
     }
-    return reply(result);
+    return reply(name === checkTool.name ? compactCheckResult(result) : result);
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });

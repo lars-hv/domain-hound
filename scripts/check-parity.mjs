@@ -50,7 +50,10 @@ try {
     const webAnswer = await site.json();
     const reply = await rpc('tools/call', { name: 'check_domains', arguments: { query: name } });
     assert.equal(reply.isError, false, reply.content[0].text);
-    const check = reply.structuredContent.checks?.[0];
+    assert.ok(reply.structuredContent.rows?.[0]?.name === name, 'The compact reply did not identify the checked name');
+    // The compatibility endpoint keeps the raw evidence this parity check compares.
+    const full = await rpc('tools/call', { name: 'broker_find', arguments: { query: name } });
+    const check = full.structuredContent.checks?.[0];
     assert.ok(check, 'The package fell back to the local engine for ' + name);
     assert.deepEqual(compare(check), compare(webAnswer), 'Site and package differ for ' + name);
     console.log(name + ' · ' + check.domains.length + ' matching rows · pick ' + (check.choice.pick?.domain ?? 'none'));

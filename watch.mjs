@@ -8,17 +8,17 @@ const consentTextVersion = 'news-v1';
 
 export const watchTool = {
   name: 'watch_domain',
-  description: 'Check registry, expiry and website. Start a free release watch only at the person’s request. '
+  description: 'Use this when the person asks to watch a taken domain for release. Use check_domains for ordinary availability checks. '
     + 'Use only the email and optional name they gave for this submission. If the email is missing, ask once and never guess. '
     + 'Before submitting, ask exactly: “' + newsQuestion + '” Pass news: true only on an explicit yes, or false if they decline or skip it. '
     + 'Only the email confirmation can start news. Relay say as written.',
-  annotations: { title: 'Watch a domain', readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  annotations: { title: 'Watch a domain', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   inputSchema: {
     type: 'object',
     properties: {
       domain: { type: 'string', maxLength: 127, description: 'The exact domain, like example.com.' },
-      email: { type: 'string', maxLength: 254, description: 'The email address the person provided. Omit to preview.' },
-      name: { type: 'string', maxLength: 80, description: 'Optional name provided by the person.' },
+      email: { type: 'string', maxLength: 254, description: 'Email the person provided, e.g. "watch@example.com". Omit to preview.' },
+      name: { type: 'string', maxLength: 80, description: 'Optional name the person gave, e.g. "Alex".' },
       news: { type: 'boolean', description: 'True only after an explicit yes to the optional news question.' },
     },
     required: ['domain'],

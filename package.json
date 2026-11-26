@@ -98,6 +98,7 @@
     "clis/portfolio/transfer-prices.mjs",
     "assets/",
     "skills/naming/SKILL.md",
+    "skills/domains/SKILL.md",
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
     ".agents/plugins/marketplace.json",

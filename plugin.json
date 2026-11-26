@@ -24,6 +24,7 @@
         ],
         "websiteURL": "https://domainhound.dev",
         "privacyPolicyURL": "https://domainhound.dev/privacy/",
+        "termsOfServiceURL": "https://domainhound.dev/privacy/#terms",
         "supportURL": "https://github.com/lars-hv/domain-hound/issues",
         "logo": "./assets/icon-1024.png",
         "composerIcon": "./assets/icon-512.png"

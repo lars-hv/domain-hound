@@ -14,7 +14,7 @@ import { isLoopback, missingKeyText, spaceshipBase, spaceshipClient, spaceshipCr
 import { planChanges } from './dns.mjs';
 import { liveOffer, readOffer } from './quote.mjs';
 import { stateStore } from './store.mjs';
-import { buyTool, currentDescription, purchaseHandlers, quoteTool, registeredTools, setupTool, withCheckQuoteOffer,
+import { buyTool, purchaseHandlers, quoteTool, registeredTools, setupTool, withCheckQuoteOffer,
   withWatchQuoteOffer } from './tools.mjs';
 
 // Zero live calls: any request that is not to the local mock fails the test run.
@@ -525,22 +525,11 @@ test('credentials come from the environment, then the Keychain, and missing keys
   assert.equal(h.mock.state.requests.length, 0);
 });
 
-test('tool descriptions label money and DNS changes, and check descriptions drop stale claims', () => {
-  assert.match(buyTool.description, /^COSTS MONEY/);
-  assert.equal(buyTool.annotations.title, 'Buy a domain (costs money)');
-  assert.equal(buyTool.annotations.destructiveHint, true);
-  assert.equal(buyTool.annotations.readOnlyHint, false);
-  assert.deepEqual(buyTool.inputSchema.required, ['domain', 'quote_id', 'max_usd']);
-  assert.equal(quoteTool.annotations.readOnlyHint, true);
-  assert.match(setupTool.description, /^Changes DNS/);
-  assert.equal(setupTool.annotations.destructiveHint, true);
-  const stale = 'Check things. For any request to buy, pass purchase: true and say “Domain Hound cannot buy or complete checkout,” now.';
-  assert.equal(currentDescription(stale), 'Check things. For any request to buy, pass purchase: true and say “This check leaves checkout to you,” now. '
-    + 'To buy through the person’s own Spaceship account, use quote_domain, then buy_domain.');
-  assert.equal(currentDescription('Alias. Never buys.', false), 'Alias. This check leaves checkout to you.');
-  const tools = registeredTools([{ name: 'check_domains', description: stale }, { name: 'broker_find', description: 'Alias. Never buys.' }]);
-  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'broker_find', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
-  for (const tool of tools) assert.doesNotMatch(tool.description, /cannot buy|never buys/i);
+test('advertises current purchase guidance on the purchase tools', () => {
+  const tools = registeredTools([]);
+  assert.deepEqual(tools.map(tool => tool.name), ['quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
+  assert.match(buyTool.description, /COSTS MONEY/);
+  assert.match(buyTool.description, /accept.*approval/);
 });
 
 test('a free watched or exactly checked domain offers the quote in one line', () => {

@@ -14,18 +14,19 @@ const domainField = { type: 'string', minLength: 3, maxLength: 253, description:
 
 export const quoteTool = {
   name: 'quote_domain',
-  description: 'Get a live Spaceship quote with the term, upfront and renewal prices, premium status and registry availability. '
-    + 'Show the exact quote, which expires in 10 minutes. Relay the display as written.',
-  annotations: { title: 'Quote a domain at Spaceship', readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  description: 'Use this when the person wants a live Spaceship purchase quote for an exact available domain. '
+    + 'Shows the term, upfront payment, renewal and premium status, and saves a short-lived quote locally. Use check_domains for list prices and buy_domain for checkout.',
+  annotations: { title: 'Quote a domain at Spaceship', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,
-    years: { type: 'integer', minimum: 1, maximum: 10, description: 'Optional term in years. Omit for the shortest term Spaceship offers.' },
+    years: { type: 'integer', minimum: 1, maximum: 10, description: 'Term in years, e.g. 2. Omit for the shortest available term.' },
   }, required: ['domain'], additionalProperties: false },
 };
 
 export const buyTool = {
   name: 'buy_domain',
-  description: 'COSTS MONEY: needs an unexpired quote_id and agreed max_usd. Stop on price changes or above either limit. '
+  description: 'Use this when the person wants to buy a domain after getting a live Spaceship quote. COSTS MONEY. '
+    + 'Use quote_domain for pricing alone. Requires an unexpired quote_id and agreed max_usd. Stop on any price change or above either limit. '
     + 'Preview with Spaceship’s ' + spaceshipMcp.tool + ' by default. Check the quote and limits, stop if price or payment method is missing, '
     + 'and accept the full confirmation only after showing it and getting approval. Direct orders need opt-in, a standard-price minimum term '
     + 'and approved confirm: true. Spaceship sets the charge. Checkout requires a valid quote and no submitted order. '
@@ -33,40 +34,46 @@ export const buyTool = {
   annotations: { title: 'Buy a domain (costs money)', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,
-    quote_id: { type: 'string', maxLength: 40, description: 'The quote ID from quote_domain.' },
-    max_usd: { type: 'number', exclusiveMinimum: 0, maximum: 100000, description: 'The most the person agreed to pay upfront, in USD.' },
-    confirm: { type: 'boolean', description: 'True only after the person saw the exact quote and said yes. Otherwise omit for a dry run.' },
+    quote_id: { type: 'string', maxLength: 40, description: 'Quote ID returned by quote_domain, e.g. "example-quote-id".' },
+    max_usd: { type: 'number', exclusiveMinimum: 0, maximum: 100000, description: 'Approved upfront limit in USD, e.g. 25.' },
+    confirm: { type: 'boolean', description: 'Set true only after the person approves the exact quote. Omit for a dry run.' },
   }, required: ['domain', 'quote_id', 'max_usd'], additionalProperties: false },
 };
 
 const hostField = description => ({ type: 'string', maxLength: 253, description });
 export const setupTool = {
   name: 'setup_domain',
-  description: 'Changes DNS at Spaceship. Preview website and mail changes without plan_id. Apply with plan_id and apply: true after approval. '
+  description: 'Use this when pointing an owned Spaceship domain to a website or mail provider, or verifying a purchase. CHANGES DNS when applied. '
+    + 'Use buy_domain for buying. Preview without plan_id, then apply with plan_id and apply: true after approval. '
     + 'Record removal also needs replace: true. Use provider-supplied values. '
     + 'With only verify: true it writes nothing: it looks the domain up at the registry and in the Spaceship account. '
     + 'Verify after a purchase and before DNS setup. Relay the display as written.',
   annotations: { title: 'Set up domain DNS (changes DNS)', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,
-    website: { type: 'object', additionalProperties: false, required: ['provider'], properties: {
-      provider: { type: 'string', enum: websiteProviders },
+    website: { type: 'object', additionalProperties: false, required: ['provider'],
+      description: 'Website settings, e.g. {"provider":"cname","target":"www.example.net"}.', properties: {
+      provider: { type: 'string', enum: websiteProviders, description: 'Website provider, e.g. "vercel".' },
       target: hostField('GitHub Pages user.github.io, Netlify site.netlify.app, Cloudflare Pages project.pages.dev, or a CNAME target.'),
-      ipv4: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 15 }, description: 'For ip, or the exact apex IP from Vercel.' },
-      ipv6: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 45 }, description: 'For ip only.' },
-      www_target: hostField('Vercel only: the unique www CNAME from the project’s Domains page.'),
+      ipv4: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 15 }, description: 'IPv4 targets for ip or Vercel, e.g. ["192.0.2.10"].' },
+      ipv6: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 45 }, description: 'IPv6 targets for ip only, e.g. ["2001:db8::10"].' },
+      www_target: hostField('Vercel www CNAME from the project’s Domains page, e.g. "www.example.net".'),
     } },
-    mail: { type: 'object', additionalProperties: false, required: ['provider'], properties: {
-      provider: { type: 'string', enum: mailProviders },
+    mail: { type: 'object', additionalProperties: false, required: ['provider'],
+      description: 'Mail settings, e.g. {"provider":"google-workspace"}.', properties: {
+      provider: { type: 'string', enum: mailProviders, description: 'Mail provider, e.g. "google-workspace".' },
       mx: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'object', additionalProperties: false, required: ['exchange', 'preference'],
-        properties: { exchange: { type: 'string', maxLength: 253 }, preference: { type: 'integer', minimum: 0, maximum: 65535 } } },
-      description: 'Provider-supplied MX: required for microsoft-365 (tenant MX) and forward-only; optional custom values for icloud.' },
+        properties: { exchange: { type: 'string', maxLength: 253, description: 'Mail server, e.g. "mx.example.net".' },
+          preference: { type: 'integer', minimum: 0, maximum: 65535, description: 'MX priority, e.g. 10.' } } },
+      description: 'Provider MX, e.g. [{"exchange":"mx.example.net","preference":10}]. Required for microsoft-365 and forward-only. Optional for icloud.' },
       records: { type: 'array', maxItems: 10, items: { type: 'object', additionalProperties: false, required: ['type', 'name', 'value'],
-        properties: { type: { type: 'string', enum: ['TXT', 'CNAME'] }, name: { type: 'string', maxLength: 190 }, value: { type: 'string', maxLength: 2048 } } },
-      description: 'Verification and DKIM records exactly as the mail provider lists them. Never make them up.' },
-      dmarc: { type: 'string', enum: ['none', 'quarantine', 'reject'], description: 'Only when the person picks a DMARC policy. Otherwise a valid existing policy stays.' },
+        properties: { type: { type: 'string', enum: ['TXT', 'CNAME'], description: 'Record type, e.g. "TXT".' },
+          name: { type: 'string', maxLength: 190, description: 'Record name, e.g. "@".' },
+          value: { type: 'string', maxLength: 2048, description: 'Record value, e.g. "verify-example".' } } },
+      description: 'Provider-supplied verification and DKIM records, e.g. [{"type":"TXT","name":"@","value":"verify-example"}]. Never guess.' },
+      dmarc: { type: 'string', enum: ['none', 'quarantine', 'reject'], description: 'User-selected DMARC policy, e.g. "quarantine". Omit to keep an existing valid policy.' },
     } },
-    plan_id: { type: 'string', maxLength: 40, description: 'The plan ID from the preview.' },
+    plan_id: { type: 'string', maxLength: 40, description: 'Plan ID from the preview, e.g. "example-plan-id".' },
     apply: { type: 'boolean', description: 'True only with plan_id, after the person approved the previewed changes.' },
     replace: { type: 'boolean', description: 'True only when the person agreed to remove the existing records the plan lists.' },
     verify: { type: 'boolean', description: 'True, alone with domain, to check a purchase at the registry and in the person’s account. Writes nothing.' },
@@ -75,7 +82,8 @@ export const setupTool = {
 
 export const moveTool = {
   name: 'move_domain',
-  description: 'Plan a transfer for an owned domain. Compare three-year costs, check locks and expiry, and get registrar steps. '
+  description: 'Use this when transferring an owned domain to another registrar or checking a transfer’s progress. '
+    + 'For a new registration use check_domains. Compare three-year costs, check locks and expiry, and get registrar steps. '
     + 'A Spaceship key adds a 10-minute quote. COSTS MONEY with quote_id and max_usd: rechecks the quote and opens a path to checkout. '
     + 'Direct transfer requires server opt-in, approval, confirm: true and the private auth_code. Keep the code private and never retry an unclear transfer. '
     + 'Use status: true to follow a transfer. Relay the display as written.',
@@ -83,11 +91,11 @@ export const moveTool = {
     openWorldHint: true },
   inputSchema: { type: 'object', properties: {
     domain: domainField,
-    quote_id: { type: 'string', maxLength: 40, description: 'The transfer quote ID from the plan.' },
-    max_usd: { type: 'number', exclusiveMinimum: 0, maximum: 100000, description: 'The most the person agreed to pay for the transfer, in USD.' },
-    confirm: { type: 'boolean', description: 'Direct transfers only: true after the person saw the dry run and said yes.' },
+    quote_id: { type: 'string', maxLength: 40, description: 'Transfer quote ID from the plan, e.g. "example-transfer-id".' },
+    max_usd: { type: 'number', exclusiveMinimum: 0, maximum: 100000, description: 'Approved transfer limit in USD, e.g. 25.' },
+    confirm: { type: 'boolean', description: 'Set true for a direct transfer only after approval of the dry run.' },
     auth_code: { type: 'string', minLength: 1, maxLength: 50, description: 'Direct transfers only, with confirm: true. Pass the code from '
-      + 'the person’s private input. Keep it out of chat, logs and results.' },
+      + 'the person’s private input (for example, a registrar-issued transfer code). Keep it out of chat, logs and results.' },
     status: { type: 'boolean', description: 'True, alone with domain, to follow a transfer into the person’s Spaceship account.' },
   }, required: ['domain'], additionalProperties: false },
 };
@@ -95,22 +103,8 @@ export const moveTool = {
 export const purchaseTools = [quoteTool, buyTool, setupTool, moveTool];
 export const purchaseToolNames = new Set(purchaseTools.map(tool => tool.name));
 
-// Replace stale global claims in the check tools with the handoff, whatever the rest of their wording says.
-const handoffSentence = 'To buy through the person’s own Spaceship account, use quote_domain, then buy_domain.';
-export function currentDescription(text, handoff = true) {
-  const updated = String(text)
-    .replace(/Domain Hound cannot buy or complete checkout/g, 'This check leaves checkout to you')
-    .replace(/\bNever buys\./g, 'This check leaves checkout to you.')
-    .replace(/Domain Hound never buys/gi, 'This check leaves checkout to you')
-    .replace(/\b(?:cannot|can't|never) buys?\b/gi, 'leaves checkout to you');
-  return !handoff || updated.includes(handoffSentence) ? updated : updated.trimEnd() + ' ' + handoffSentence;
-}
-
-// The legacy alias stays short, so only check_domains carries the handoff sentence.
 export function registeredTools(tools) {
-  const updated = tools.map(tool => tool.name === 'check_domains' || tool.name === 'broker_find'
-    ? { ...tool, description: currentDescription(tool.description, tool.name === 'check_domains') } : tool);
-  return [...updated, ...purchaseTools.filter(tool => !updated.some(other => other.name === tool.name))];
+  return [...tools, ...purchaseTools.filter(tool => !tools.some(other => other.name === tool.name))];
 }
 
 // One line that offers the exact quote when a checked or watched domain is free.

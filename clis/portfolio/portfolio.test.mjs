@@ -496,10 +496,10 @@ test('rejects mixed or invalid input and never overwrites an unreadable list', a
   assert.deepEqual(checked, []);
 });
 
-test('the tool advertises read-only, local-only behaviour', () => {
+test('the tool advertises that it can change the locally saved list', () => {
   assert.equal(portfolioTool.name, 'my_domains');
-  assert.equal(portfolioTool.annotations.readOnlyHint, true);
-  assert.equal(portfolioTool.annotations.destructiveHint, false);
+  assert.equal(portfolioTool.annotations.readOnlyHint, false);
+  assert.equal(portfolioTool.annotations.destructiveHint, true);
   assert.deepEqual(Object.keys(portfolioTool.inputSchema.properties), ['domains', 'find', 'paths', 'remove']);
 });
 

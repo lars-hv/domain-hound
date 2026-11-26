@@ -15,18 +15,18 @@ const domainList = description => ({ type: 'array', minItems: 1, maxItems: maxSa
 
 export const portfolioTool = {
   name: 'my_domains',
-  description: 'Track expiry, DNS, site, TLS, email and renewal prices for owned domains, most urgent first. '
+  description: 'Use this when checking expiry, renewal prices, DNS, site, TLS or email for domains the person owns. '
     + 'Use domains to save confirmed domains locally, remove to drop them, or no arguments to recheck. '
-    + 'Use find: true to preview candidates from project files and Spaceship. Show the candidates and add only the domains the person confirms. Relay say as written.',
-  annotations: { title: 'My domains', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    + 'Use find: true to preview candidates from project files and Spaceship. Show the candidates and add only the domains the person confirms. Use check_domains to look at a new domain.',
+  annotations: { title: 'My domains', readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   inputSchema: {
     type: 'object',
     properties: {
       domains: domainList('Exact domains the person confirmed they own, like ["example.com"]. They join the saved list, then the whole list is checked.'),
       find: { type: 'boolean', description: 'True to list candidate domains for the person to confirm. Saves and checks nothing.' },
       paths: { type: 'array', minItems: 1, maxItems: maxPaths, items: { type: 'string', minLength: 1, maxLength: 1024 },
-        description: 'With find only: project folders to look in. Defaults to the current folder.' },
-      remove: domainList('Domains to drop from the saved list.'),
+        description: 'With find only: project folders to look in. For example ["./web"]. Defaults to the current folder.' },
+      remove: domainList('Domains to drop from the saved list, e.g. ["example.com"].'),
     },
     additionalProperties: false,
   },

@@ -18,7 +18,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_method', 'broker_find', 'watch_domain', 'taken_domain_dossier', 'my_domains',
+const tools = ['check_domains', 'triage_names', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains',
   'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');
@@ -50,7 +50,7 @@ try {
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
       'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
-      'share.mjs', 'site/r/share-format.mjs', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
+      'share.mjs', 'site/r/share-format.mjs', 'skills/domains/SKILL.md', 'skills/naming/SKILL.md', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
       'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
@@ -104,27 +104,36 @@ try {
     let failure = null;
     let description;
     let toolsListed;
+    let initializedMs;
+    let checkBytes;
     let exitCode;
     try {
       const init = await request(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {},
         clientInfo: { name: 'domain-hound-package-smoke', version: '1' } });
+      initializedMs = Math.round(performance.now() - started);
       assert.equal(init.serverInfo.version, version);
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
       const listed = await request(2, 'tools/list');
-      toolsListed = listed.tools.map(tool => tool.name);
-      assert.deepEqual(toolsListed, tools);
+      toolsListed = listed.tools;
+      assert.deepEqual(toolsListed.map(tool => tool.name), tools);
+      for (const tool of toolsListed) {
+        assert.ok(tool.annotations.title, tool.name);
+        for (const hint of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
+          assert.equal(typeof tool.annotations[hint], 'boolean', tool.name + '.' + hint);
+        }
+      }
       if (published) {
         description = `Published npx smoke on ${process.platform}: ${filename}, ${tools.length} tools`;
       } else {
         const checked = await request(3, 'tools/call', { name: 'check_domains', arguments: { query: 'example.com' } });
         assert.equal(checked.isError, false, JSON.stringify(checked.content));
-        const { display, names } = checked.structuredContent;
-        assert.equal(names[0].name, 'example.com');
-        assert.deepEqual(names[0].taken, ['com'], JSON.stringify(names[0]));
-        assert.ok(display.includes('example.com'));
-        const lines = display.split('\n');
-        assert.ok(lines.some(line => /^Results page: \[Open results\]\(.+\.html>?\)$/.test(line))
-          || /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/.test(lines.at(-1)), display);
+        const display = checked.content[0].text;
+        assert.equal(checked.structuredContent.rows[0].name, 'example.com');
+        assert.deepEqual(checked.structuredContent.rows[0].statuses.taken, ['com']);
+        assert.match(display, /Taken · example\.com/i);
+        assert.match(display, /^Results page: \[Open results\]\(.+\.html>?\)$/m);
+        checkBytes = Buffer.byteLength(JSON.stringify(checked));
+        assert.ok(checkBytes < 8_000, checkBytes + ' bytes');
         description = `Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken`;
       }
     } catch (error) {
@@ -141,7 +150,9 @@ try {
     if (spawnError) return { failure: spawnError };
     if (exitCode !== 0) failure ??= new Error(`npx exited with status ${exitCode}`);
     if (!failure) {
-      console.log('MCP tools: ' + toolsListed.join(', '));
+      console.log('MCP tools: ' + toolsListed.map(tool => tool.name).join(', '));
+      console.log('tools/list annotations: ' + JSON.stringify(Object.fromEntries(toolsListed.map(tool => [tool.name, tool.annotations]))));
+      console.log('Cold npx initialize: ' + initializedMs + ' ms' + (checkBytes ? ', one exact check: ' + checkBytes + ' bytes' : ''));
       const duration = `${Math.round(performance.now() - started)} ms`;
       console.log(`${description}, ${duration}${published ? `, attempt ${number}` : ''}`);
     }
