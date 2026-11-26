@@ -234,7 +234,7 @@ function receiptSelection(groups, args, triage, eligible = [], local = false) {
 function checkedOption(record) {
   const term = record.term ?? 1;
   return { domain: record.domain, shop: record.shop, firstYearUsd: record.now == null ? null : record.now / term,
-    renewalUsd: record.renew == null ? null : record.renew / term, firstPaymentUsd: record.now, threeYearUsd: record.total,
+    renewalUsd: record.renew == null ? null : record.renew / term, renewalPaymentUsd: record.renew, firstPaymentUsd: record.now, threeYearUsd: record.total,
     minimumYears: term, buyUrl: record.checkout, needsCloudflareDns: Boolean(record.dns) };
 }
 
@@ -242,6 +242,33 @@ function localExactPick(records, args, exactDomain) {
   return pickDomain(records.filter(record => record.state === 'free').map(record => ({
     ...checkedOption(record), now: record.now, total: record.total,
   })), { ...args, endings: [exactDomain] });
+}
+
+// Presentation-only rows use the same prices and picks as the saved receipt.
+export const shortPresentation = Symbol('short presentation');
+
+function localPresentation(groups, selection, args) {
+  return groups.map(({ row, records }, index) => {
+    const exactDomain = row.name.includes('.') ? row.name : null;
+    const pick = exactDomain ? localExactPick(records, args, exactDomain)
+      : selection.names[index]?.pick && checkedOption(selection.names[index].pick);
+    const domains = records.map(record => ({
+      domain: record.domain, ending: record.ending,
+      status: record.state === 'free' || record.state === 'taken' ? (record.state === 'free' ? 'available' : 'taken') : 'unknown',
+      reason: record.status === 'Not offered for registration' ? 'reserved' : null,
+      prices: record.now == null ? [] : [checkedOption(record)],
+    }));
+    const source = (key, name) => {
+      const answer = row.competition?.[key];
+      return { status: waitingOn(row, name) ? 'pending' : answer == null ? 'unknown'
+        : Array.isArray(answer) && !answer.length ? 'no_match_found' : 'taken' };
+    };
+    const marks = officeMarks(row).filter(mark => mark.office === 'US' && mark.live && mark.tier === 'Exact')
+      .map(mark => ({ ...mark, status: /register/i.test(mark.status) ? 'registered' : /appl|pending/i.test(mark.status) ? 'applied' : null }));
+    return { query: { name: row.name, exactDomain }, domains, choice: { pick },
+      appStore: source('AppStore', 'App Store'), googlePlay: source('GooglePlay', 'Google Play'),
+      trademarks: { us: { marks, status: marks.length ? 'exact_match_found' : waitingOn(row, 'USPTO') ? 'pending' : 'unknown' } } };
+  });
 }
 
 function localCheckSummary(group, args, selection, priceListDate) {
@@ -733,7 +760,8 @@ export function resultPages({ env = process.env,
         const { hosted, lines, ...structured } = data;
         return { display: say, say, ...structured, resultPage: url };
       }
-      if (triage && args.shortlist) return { display: say, say, ...(local && { source: 'local' }), checkedAt: at, resultPage: url };
+      const short = watch ? undefined : localPresentation(groups, selection, args);
+      if (triage && args.shortlist) return { [shortPresentation]: short, display: say, say, ...(local && { source: 'local' }), checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({
         ...row, ...(receiptDetails[index]?.score && { score: receiptDetails[index].score }),
@@ -742,7 +770,7 @@ export function resultPages({ env = process.env,
       if (!watch && !triage) structured.names = structured.names.map((row, index) => ({
         ...row, ...(groups[index].row.score && { score: groups[index].row.score }),
       }));
-      return { display: say, say, ...structured, checkedAt: at, resultPage: url };
+      return { [shortPresentation]: short, display: say, say, ...structured, checkedAt: at, resultPage: url };
     });
     writes = work.catch(() => {});
     return work;

@@ -15,7 +15,7 @@ The same method as Domain Hound's `naming_guide` tool. English names unless aske
 4. **Generate.** 150 names per round, 25 per territory, mixing every recipe below. No judging yet. Every name contains or puns on a subject word.
 5. **Filter before checking.** Drop hard bans, names over 12 letters or 3 syllables, names with more than one plausible spelling when heard, names that are hard to say aloud, and near-twins. Keep about 40.
 6. **Check and score.** Call the Domain Hound `triage_names` tool once with your best eight, strongest first, a short `about`, and `candidates` evidence for each name (recipe, relation, spellings, realWord, descriptive, misspelled, narrow, soundsLike, badMeaning, language). It checks domains, trademarks, rivals, apps, handles and bad meanings, runs the bans in code, and returns a Name score v1 per name. Missing evidence and failed checks read "not checked", never clear. Repeat in batches for more names.
-7. **Show.** Only names with an available domain, ranked by score, top 8, at least three recipes represented. If fewer than 5 pass, say so and run another round; never pad.
+7. **Show.** Show the tool’s answer as given, including the results link. Offer details only if the user asks. If fewer than five names pass, never pad the list.
 8. **Steer.** Ask the steering question. Work out what the two loved names share (recipe, territory, sound, length) and what the hated one signals. Run a new round of 150 in that direction. Never re-show a rejected name.
 
 ## Recipes
