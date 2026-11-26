@@ -95,12 +95,12 @@ function resultGroups(data, eligibleEndings, preferred = []) {
       const risk = Boolean(option?.risk || raw?.risk);
       const premium = Boolean(match(row.premium) || option?.s === 'prem' || option?.prem || risk);
       const includePrice = !reserved && (!premium || confirmed) && (!taken || exact);
-      const likely = match(row.likely_free) ? 'likely free by DNS' : match(row.likely_taken) ? 'likely taken by DNS' : null;
+      const likely = match(row.likely_free) ? 'possibly available by DNS' : match(row.likely_taken) ? 'likely taken by DNS' : null;
       const state = taken ? 'taken' : premium ? 'premium' : option ? 'free' : 'check';
       const status = taken ? (match(row.resale) ? 'Taken, possible resale' : 'Taken')
         : reserved ? 'Not offered for registration' : confirmed ? 'Confirmed at shop'
           : premium ? (risk ? 'May be premium, price at shop' : 'Premium, price at shop')
-          : option ? 'Free at the registry' : likely ? 'Check at shop, ' + likely
+          : option ? 'Available at the registry' : likely ? 'Check at shop, ' + likely
             : data.pending && !data.failed && !match(row.shop_check) ? 'Still checking' : 'Check at shop';
       const usd = includePrice ? { now: quote.now, renew: quote.renew, y3: quote.y3, term: quote.term,
         jump: quote.jump, shop: quote.shop } : {};
@@ -131,7 +131,7 @@ function availabilityScore(group, args) {
   const { row, records } = group;
   if (row.name.includes('.')) return group;
   const label = normalizeName(row.name);
-  const domains = records.filter(record => record.status === 'Free at the registry' && record.eligible
+  const domains = records.filter(record => record.status === 'Available at the registry' && record.eligible
     && record.domain === label + '.' + record.ending && (!args.endings?.length || args.endings.includes(record.ending))
     && (args.budget == null || (record.now ?? Infinity) <= args.budget))
     .map(record => ({ ending: record.ending, total: record.total, registry: true }));
@@ -249,7 +249,7 @@ function summary(groups, args, triage, selection) {
   const keep = triage ? 'Keep ' + evidenceText(wanted.row.name) + '? ' + plain(wanted.row.verdict) + '. '
     + reason.replaceAll(' · ', '. ') + '.'
     + markScreen(wanted.row, reason) + shortScore(wanted.row)
-    + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best free rename: ' : ' Next name to check: ')
+    + (wanted.row.verdict === 'Avoid' && best ? (best.group.row.verdict === 'No conflict found' ? ' Best available alternative: ' : ' Next name to check: ')
       + plain(best.group.row.name) + '.' : '')
     + (picks.some(item => item.group === wanted) ? '' : ' | ' + signals(wanted, triage)) : null;
   const next = watch ?? (!triage && args.shortlist ? 'Next: screen the best names.' : best ? 'Next: check your pick at the shop.' : 'Next: try another name.');
@@ -455,9 +455,9 @@ export function disclosure(data, triage) {
     + 'Up to three go to public handle APIs. Domain Hound uses your brief locally. ' + shop;
 }
 
-function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [] } = {}) {
+function render(groups, lines, checkedAt, coverage, watch, companyType, { savings = [], note = '', refresh = false, shareFacts = [], hostedShare } = {}) {
   const title = watch ? 'Domain watch' : 'Domain results';
-  const shared = shareUrl(groups, checkedAt, shareFacts);
+  const shared = hostedShare ?? shareUrl(groups, checkedAt, shareFacts);
   const shareLabel = groups.length > 5 ? 'Share first five names' : 'Share';
   const [intro, ...body] = lines;
   const comparison = body.filter(line => /^(?:Cheapest|Best value):/.test(line));
@@ -603,14 +603,14 @@ export function resultPages({ env = process.env,
   return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
-      let groups = watch ? [] : resultGroups(data, args.eligible, args.endings);
-      if (!watch && !triage && !data.pending) groups = groups.map(group => availabilityScore(group, args));
+      let groups = watch || data.hosted ? [] : resultGroups(data, args.eligible, args.endings);
+      if (!watch && !triage && !data.hosted && !data.pending) groups = groups.map(group => availabilityScore(group, args));
       if (triage && args.shortlist && !data.pending && groups.some(({ row }) => row.score != null)) {
         groups = groups.filter(({ row }) => Number.isInteger(row.score?.value) && scoreEligible(row))
           .sort((a, b) => compareScores(a.row.score, b.row.score)).slice(0, 8);
       }
       const selection = receiptSelection(groups, args, triage, args.eligible ?? data.eligible ?? []);
-      const { lines, savings, shortLines } = watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
+      const { lines, savings, shortLines } = data.hosted ? { lines: data.lines, savings: [] } : watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
         ...(args.purchase ? ['This check leaves checkout to you.'] : []),
@@ -618,7 +618,7 @@ export function resultPages({ env = process.env,
         : { lines: ['No names passed the checks.'], savings: [] };
       // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
       const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);
-      const title = watch ? data.domain : groups[0]?.row.name;
+      const title = watch ? data.domain : groups[0]?.row.name ?? data.names?.[0]?.name;
       await mkdir(directory, { recursive: true, mode: 0o700 });
       // If a caller points us at a shared directory, don't expose the searched name in its listing.
       const privateListing = process.platform === 'win32' || ((await stat(directory)).mode & 0o077) === 0;
@@ -627,7 +627,9 @@ export function resultPages({ env = process.env,
       const base = kept ?? new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
       const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType,
-        { savings, note: watch ? '' : disclosure(data, triage), refresh: Boolean(refresh), shareFacts });
+        { savings, note: watch ? '' : data.hosted ? 'Domain Hound’s hosted service checks registries, prices and public name sources.' : disclosure(data, triage),
+          refresh: Boolean(refresh), shareFacts,
+          hostedShare: data.checks?.length === 1 ? httpsLink(data.checks[0].share?.url) : null });
       const markdownPath = resolve(directory, base + '.md');
       await writePrivate(markdownPath, page.md);
       try {
@@ -636,7 +638,7 @@ export function resultPages({ env = process.env,
         await unlink(markdownPath).catch(() => {});
         throw error;
       }
-      const exact = !triage && groups.length === 1 && groups[0].row.name.includes('.');
+      const exact = !triage && data.names?.length === 1 && data.names[0].name.includes('.');
       const latest = resolve(directory, 'session-' + session + '.html');
       if (kept && sessionBase === kept) {
         // The open tab shows the session copy; update it in place, without opening another tab.
@@ -656,6 +658,10 @@ export function resultPages({ env = process.env,
       const url = pathToFileURL(filename).href.replaceAll('(', '%28').replaceAll(')', '%29');
       // The link uses the client's local-file Markdown form. Keep the file URI for structured consumers.
       const say = [resultsLine(url), ...(shortLines ?? lines)].join('\n');
+      if (data.hosted) {
+        const { hosted, lines, ...structured } = data;
+        return { display: say, say, ...structured, resultPage: url };
+      }
       if (triage && args.shortlist) return { display: say, say, checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({

@@ -1,6 +1,6 @@
 ---
 name: naming
-description: Name a product, company, tool or domain. Use for any "what should we call it" request. Gives distinctive, protectable names with a free domain, ranked by Name score.
+description: Name a product, company, tool or domain. Use for any "what should we call it" request. Gives distinctive, protectable names with an available domain, ranked by Name score.
 ---
 
 # Naming
@@ -15,7 +15,7 @@ The same method as Domain Hound's `naming_method` tool. English names unless ask
 4. **Generate.** 150 names per round, 25 per territory, mixing every recipe below. No judging yet. Every name contains or puns on a subject word.
 5. **Filter before checking.** Drop hard bans, names over 12 letters or 3 syllables, names with more than one plausible spelling when heard, names that are hard to say aloud, and near-twins. Keep about 40.
 6. **Check and score.** Call the Domain Hound `triage_names` tool once with your best eight, strongest first, a short `about`, and `candidates` evidence for each name (recipe, relation, spellings, realWord, descriptive, misspelled, narrow, soundsLike, badMeaning, language). It checks domains, trademarks, rivals, apps, handles and bad meanings, runs the bans in code, and returns a Name score v1 per name. Missing evidence and failed checks read "not checked", never clear. Repeat in batches for more names.
-7. **Show.** Only names with a free domain, ranked by score, top 8, at least three recipes represented. If fewer than 5 pass, say so and run another round; never pad.
+7. **Show.** Only names with an available domain, ranked by score, top 8, at least three recipes represented. If fewer than 5 pass, say so and run another round; never pad.
 8. **Steer.** Ask the steering question. Work out what the two loved names share (recipe, territory, sound, length) and what the hated one signals. Run a new round of 150 in that direction. Never re-show a rejected name.
 
 ## Recipes
@@ -51,7 +51,7 @@ Easy to mock; mild bad meaning; a dormant site with the same name; needs spellin
 For each name, use this format. The price and score below are from a fixture.
 
 **Loomfox** · Name score 91/100, Strong · loomfox.com, $29 for 3 years
-- Best point first (for example ".com is free")
+- Best point first (for example ".com is available")
 - Biggest loss
 - Second loss, or "not checked: <what>"
 
@@ -73,4 +73,4 @@ Fallback when the model fails: pair each subject word with a fixed list of concr
 
 ## Name score v1
 
-0 to 100, labelled "how clear the road is". Points: best free ending 22, 3-year price 3, trademark 25, rivals 20, apps 8, handles 7 (GitHub 3, npm 2, Bluesky 2), name quality 15. A failed check earns 40% of its points and says "not checked". Trademark stays at 20 or less until the EU office answers; a failed US trademark or rival check, or missing ban evidence, keeps the total at 79 or less. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Bans and hard filters (no free ending within $60 over 3 years, identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning, not English unless asked) remove a name before scoring.
+0 to 100, labelled "how clear the road is". Points: best available ending 22, 3-year price 3, trademark 25, rivals 20, apps 8, handles 7 (GitHub 3, npm 2, Bluesky 2), name quality 15. A failed check earns 40% of its points and says "not checked". Trademark stays at 20 or less until the EU office answers; a failed US trademark or rival check, or missing ban evidence, keeps the total at 79 or less. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Bans and hard filters (no available ending within $60 over 3 years, identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning, not English unless asked) remove a name before scoring.

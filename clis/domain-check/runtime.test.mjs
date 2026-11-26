@@ -41,7 +41,7 @@ async function pricedRegistry(t) {
   } } } });
   return {
     directory, now, cachedOnly: true, queryWhois: async () => '',
-    // example.com is registered; every other candidate is free at the registry.
+    // example.com is registered; every other candidate is available at the registry.
     resolveNs: async domain => domain === 'example.com' ? ['ns.example.net'] : [],
     fetcher: async url => url === 'https://data.iana.org/rdap/dns.json'
       ? Response.json({ services: [[['com', 'io', 'me'], ['https://rdap.example.test/']]] })
@@ -69,7 +69,7 @@ test('by default an exact free domain needs no browser and labels its list price
   assert.deepEqual(result.names, [{ name: 'example.me',
     free: [{ d: 'me', s: 'nc', now: 3.5, renew: 6, y3: 15.5, shop: 'Dynadot' }] }]);
   const lines = JSON.parse(checkText(result)).display.split('\n');
-  assert.equal(lines[0], '**example.me is free.** The registry shows it free; the price is a list price from 2026-11-24, not a shop quote.'
+  assert.equal(lines[0], '**example.me is available.** The registry shows it available; the price is a list price from 2026-11-24, not a shop quote.'
     + ' Checked 2026-11-24 12:00 UTC.');
   assert.ok(!lines.some(line => /Live shop check|Playwright/.test(line)));
   assert.deepEqual(lines.slice(-3), [attribution, '', purchaseLine]);
@@ -88,7 +88,7 @@ test('with the explicit confirm flag and no Playwright, an exact free domain kee
     checkUrl: 'https://www.dynadot.com/domain/search?domain=example.me' });
   const { display } = JSON.parse(checkText(result));
   const lines = display.split('\n');
-  assert.match(lines[0], /^\*\*example\.me is free\.\*\* The registry shows it free; the price is a list price from 2026-11-24, not a shop quote\./);
+  assert.match(lines[0], /^\*\*example\.me is available\.\*\* The registry shows it available; the price is a list price from 2026-11-24, not a shop quote\./);
   assert.ok(lines.includes('| example.me | $3.50 | $6.00/yr | $15.50 | '
     + '[example.me](https://www.dynadot.com/domain/search?domain=example.me) at Dynadot |'), display);
   assert.ok(lines.includes('Check at shop: [example.me](https://www.dynadot.com/domain/search?domain=example.me). '

@@ -102,9 +102,9 @@ test('bans run in code before scoring; hard filters remove a name instead of sco
   }
   // Hard filters on the checked evidence.
   const filtered = input => scoreName({ ...clear, ...input }).filtered;
-  assert.equal(filtered({ domains: [{ ending: 'com', total: 60.01, registry: true }] }), 'No free ending with a known price within $60.00 over 3 years');
-  assert.equal(filtered({ domains: [{ ending: 'com', total: null, registry: true }] }), 'No free ending with a known price within $60.00 over 3 years');
-  assert.equal(filtered({ domains: [{ ending: 'com', total: 20, registry: false }] }), 'No free ending with a known price within $60.00 over 3 years');
+  assert.equal(filtered({ domains: [{ ending: 'com', total: 60.01, registry: true }] }), 'No available ending with a known price within $60.00 over 3 years');
+  assert.equal(filtered({ domains: [{ ending: 'com', total: null, registry: true }] }), 'No available ending with a known price within $60.00 over 3 years');
+  assert.equal(filtered({ domains: [{ ending: 'com', total: 20, registry: false }] }), 'No available ending with a known price within $60.00 over 3 years');
   assert.equal(scoreName({ ...clear, domains: [{ ending: 'com', total: 60, registry: true }] }).components.price, 1);
   assert.equal(filtered({ marks: { us: 'ok', eu: 'off', list: [{ tier: 'Exact', sameClass: true, live: true }] } }), 'Identical live trademark in your classes');
   assert.equal(filtered({ rivals: { state: 'unknown', list: [{ level: 'strong', sameSubject: true }] } }), 'Same-name rival with strong traction in your subject');
@@ -166,7 +166,7 @@ test('the calibration log is off by default, stays local and private, and never 
   assert.deepEqual(lines[0].components, score.components);
   assert.equal(lines[0].weights, 'v1');
   assert.equal(lines[0].rank, 1);
-  assert.doesNotMatch(text, /loomfox|\.com is free|\$29/i);
+  assert.doesNotMatch(text, /loomfox|\.com is available|\$29/i);
   if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);
 
   const named = scoreLogger({ env: { DOMAIN_HOUND_SCORE_LOG: '1', DOMAIN_HOUND_SCORE_LOG_NAMES: '1' }, file });

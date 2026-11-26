@@ -242,7 +242,7 @@ test('a premium answer shows the confirmed premium price or "premium, price at s
     : new Response(null, { status: 404 }) });
   assert.deepEqual(priced.names[0].free, [{ d: 'com', s: 'ok', now: 999.99, renew: 999.99, y3: 2999.97, shop: 'Spaceship', prem: true, at: '12:04' }]);
   const shown = JSON.parse(checkText(priced)).display;
-  assert.match(shown, /^\*\*quietfern\.com is free, at a premium price\.\*\* Price premium, confirmed at Spaceship 12:04 UTC\./);
+  assert.match(shown, /^\*\*quietfern\.com is available, at a premium price\.\*\* Price premium, confirmed at Spaceship 12:04 UTC\./);
   assert.doesNotMatch(shown, /\$9\.48|list price/);
   assert.ok(shown.endsWith('\n\n' + attribution + '\n\n' + purchaseLine));
 
@@ -254,7 +254,7 @@ test('a premium answer shows the confirmed premium price or "premium, price at s
     : new Response(null, { status: 404 }) });
   assert.equal(marked.names[0].free[0].s, 'prem');
   const display = JSON.parse(checkText(marked)).display;
-  assert.match(display, /^\*\*quietfern\.com is free at the registry, but premium\.\*\* Premium, price at shop: \[quietfern\.com\]\(https:\/\/www\.spaceship\.com\/domain-search\/\?query=quietfern\.com\)\. No list price applies\./);
+  assert.match(display, /^\*\*quietfern\.com is available at the registry, but premium\.\*\* Premium, price at shop: \[quietfern\.com\]\(https:\/\/www\.spaceship\.com\/domain-search\/\?query=quietfern\.com\)\. No list price applies\./);
   assert.doesNotMatch(display, /\$/);
   // Later checks without a key, including the name screen, keep the premium answer and drop the list price.
   const later = await searchCandidates([{ name: 'quietfern', candidates: [{ domain: 'quietfern.com', tld: 'com', exact: true }] }],

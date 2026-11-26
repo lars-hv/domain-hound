@@ -207,6 +207,7 @@ test('triages live rivals, live trademarks and clear names with a low-price regi
   const options = {
     // This catalog lists only some endings; the bundled snapshot stays out so the others have no price.
     directory, now, env: {}, cachedOnly: true, bundledCatalog: null, about: 'find and buy domains for AI builders',
+    endings: ['com', 'ai', 'io', 'dev', 'co', 'me', 'no', 'app'],
     launch: playBrowser([]),
     resolveNs: async domain => (/\.(com|io|app)$/.test(domain) || domain === 'domainsparrow.dev') ? ['ns.example.test'] : [],
     comSite: async domain => domain === 'domainsparrow.dev'

@@ -40,6 +40,8 @@
   "files": [
     "bin/domain-hound.mjs",
     "server.mjs",
+    "hosted.mjs",
+    "hosted-results.mjs",
     "display.mjs",
     "results.mjs",
     "results-style.mjs",

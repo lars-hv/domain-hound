@@ -35,7 +35,7 @@ test('the short recommendation obeys scope while both receipts retain every endi
   assert.match(lines[1], /^\.com first.*\$20\.00 today.*cedarheron\.com \$12\.00, then \$14\.00/);
   assert.match(result.say, /Keep Paper Heron\? Avoid\./);
   assert.match(result.say, /iOS: no app with this name \| Android: check incomplete/);
-  assert.match(result.say, /Best free rename: Cedar Heron/);
+  assert.match(result.say, /Best available alternative: Cedar Heron/);
   assert.match(result.say, /Want it anyway\? \[Watch paperheron\.com\]/);
   assert.doesNotMatch(result.say, /[—–]|paperheron\.io|cedarheron\.no/);
   assert.equal(lines[0], resultsLine(result.resultPage));
@@ -50,7 +50,7 @@ test('the short recommendation obeys scope while both receipts retain every endi
   }
   assert.match(html, /<td>\$170\.00<\/td><td>\$180\.00<\/td>/);
   assert.match(html, /2 years per payment/);
-  assert.match(html, /likely free by DNS/);
+  assert.match(html, /possibly available by DNS/);
   assert.match(html, /needs|eligibility required/);
   assert.match(html, /https:\/\/www\.spaceship\.com\/domain-search\/\?query=cedarheron\.com/);
   assert.doesNotMatch(html, /<script\b|query=cedarheron\.no|query=paperheron\.com/);

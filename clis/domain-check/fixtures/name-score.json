@@ -3,7 +3,7 @@
   "loomfox": {
     "about": "agent orchestration",
     "expected": { "value": 91, "band": "Strong",
-      "reasons": [".com is free, $29.00 for 3 years", "Not checked: EU trademarks", "Handle taken: GitHub"],
+      "reasons": [".com is available, $29.00 for 3 years", "Not checked: EU trademarks", "Handle taken: GitHub"],
       "components": { "domain": 22, "price": 3, "trademark": 20, "rivals": 20, "apps": 8, "handles": 4, "quality": 14 } },
     "input": {
       "name": "Loomfox",
@@ -20,7 +20,7 @@
   "mesa": {
     "about": "AI monitoring",
     "expected": { "value": 33, "band": "Advise against",
-      "reasons": ["Short and easy to say", "Best free ending is .tech", "Same-name rival with strong traction"],
+      "reasons": ["Short and easy to say", "Best available ending is .tech", "Same-name rival with strong traction"],
       "components": { "domain": 2, "price": 1, "trademark": 12, "rivals": 4, "apps": 1, "handles": 2, "quality": 11 } },
     "input": {
       "name": "Mesa",

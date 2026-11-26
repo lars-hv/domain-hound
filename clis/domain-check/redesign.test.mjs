@@ -15,7 +15,7 @@ import { spaceshipFeedQuote, watchSpaceshipFeed } from './spaceship-feed.mjs';
 const checkedAt = '2026-11-24T12:00:00.000Z';
 const now = new Date(checkedAt);
 const amount = { firstYear: 8.7, renewal: 15.53, transfer: 15.53 };
-const spaceship = Object.fromEntries(targetEndings.filter(tld => !['so', 'no'].includes(tld))
+const spaceship = Object.fromEntries(['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'sh', 'tech']
   .map(tld => [tld, { ...amount, shop: 'Spaceship' }]));
 const gandi = { ...amount, shop: 'Gandi' };
 const accepted = {
@@ -29,7 +29,7 @@ async function testCache(t) {
   return pathToFileURL(dir + '/');
 }
 
-test('validates all target endings and refuses prices outside the USD bounds', () => {
+test('reads legacy cached catalogs and refuses prices outside the USD bounds', () => {
   const prices = { ...spaceship, no: gandi, so: gandi };
   const valid = { checkedAt, prices };
   assert.equal(validCatalog(valid), true);
@@ -128,7 +128,7 @@ test('without a bundled snapshot uses only cached list prices at most eight days
   assert.equal(listQuote(recentlyRefreshed, row, new Date(+now + 9 * day), null).shop, 'Dynadot');
 
   const options = {
-    directory, resolveNs: async domain => domain === row.domain ? [] : ['ns.example.net'],
+    directory, endings: ['me'], resolveNs: async domain => domain === row.domain ? [] : ['ns.example.net'],
     fetcher: async () => new Response(null, { status: 404 }),
     confirm: async () => ({ status: 'could-not-confirm' }),
     cachedOnly: true, bundledCatalog: null,
@@ -144,17 +144,17 @@ test('without a bundled snapshot uses only cached list prices at most eight days
   assert.equal(stale.priceListDate, undefined);
 });
 
-test('the shipped snapshot is a valid dated first-party list price for every ending', () => {
+test('the shipped snapshot has dated fallback prices for the nine standard-price defaults', () => {
   assert.equal(validCatalog(bundledCatalog), true);
   assert.ok(Number.isFinite(Date.parse(bundledCatalog.checkedAt)));
-  for (const tld of targetEndings) {
+  for (const tld of targetEndings.filter(ending => ending !== 'inc')) {
     const rows = listedPrices(bundledCatalog, tld);
     assert.ok(rows.length, 'no bundled price for .' + tld);
     for (const row of rows) assert.ok(Number.isFinite(Date.parse(row.checkedAt)) && row.firstYear > 0 && row.renewal > 0);
   }
 });
 
-test('a fresh install with an empty cache shows a dated list price for all fourteen endings and still refreshes', async t => {
+test('a fresh install shows fallback prices when bundled and still refreshes', async t => {
   const directory = await testCache(t);
   // The shown date is the oldest shop list in the snapshot.
   const date = Object.values(bundledCatalog.catalogs).map(source => source.checkedAt).sort()[0].slice(0, 10);
@@ -172,7 +172,8 @@ test('a fresh install with an empty cache shows a dated list price for all fourt
   const batch = await agentResult(['example'], options);
   assert.equal(batch.priceListDate, date);
   assert.deepEqual(Object.keys(batch.listPrices).sort(), [...targetEndings].sort());
-  for (const tld of targetEndings) {
+  assert.equal(batch.listPrices.inc.now, undefined);
+  for (const tld of targetEndings.filter(ending => ending !== 'inc')) {
     assert.ok(batch.listPrices[tld].now > 0 && batch.listPrices[tld].renew > 0, '.' + tld + ' has no list price');
   }
   assert.match(checkDisplay(batch), new RegExp('list prices from ' + date));
@@ -225,7 +226,7 @@ test('fresh cached prices win over the bundled snapshot, which fills in only as 
   assert.equal(listQuote(porkbunOnly, row, now, null).buyUrl, 'https://www.dynadot.com/domain/search?domain=example.me');
   // An explicit browser check's shop quote still replaces the list estimate.
   const options = {
-    directory, now: late, cachedOnly: true, bundledCatalog: newer, skipComSite: true, browser: true,
+    directory, endings: ['me'], now: late, cachedOnly: true, bundledCatalog: newer, skipComSite: true, browser: true,
     resolveNs: async domain => domain === row.domain ? [] : ['ns.example.net'],
     fetcher: async () => new Response(null, { status: 404 }),
     confirm: async () => ({ status: 'confirmed', shopName: 'Spaceship', price: 8.7, renewal: 15.53,

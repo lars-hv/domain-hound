@@ -61,8 +61,8 @@ test('a name with æøå is checked as its punycode label and shown in its own s
   const result = await agentResult('Grønnstue', options);
   assert.equal(result.names[0].name, ascii);
   assert.equal(result.names[0].unicode, 'grønnstue');
-  // Twelve endings, each on the punycode label; no stripped spelling and no prefixed variants.
-  assert.equal(asked.length, 12);
+  // Ten endings, each on the punycode label; no stripped spelling and no prefixed variants.
+  assert.equal(asked.length, 10);
   assert.ok(asked.every(domain => domain.startsWith(ascii + '.')), asked.join());
   const display = displayOf(result);
   assert.ok(display.includes('- grønnstue.com (' + ascii + '.com) $9.48/$10.68 list price'), display);
@@ -73,7 +73,7 @@ test('a name with æøå is checked as its punycode label and shown in its own s
   assert.equal(normalize('Grønnstue.com'), ascii + '.com');
   assert.deepEqual(asked, [ascii + '.com']);
   assert.equal(exact.names[0].name, ascii + '.com');
-  assert.match(displayOf(exact), new RegExp('^\\*\\*grønnstue\\.com \\(' + ascii + '\\.com\\) is free\\.\\*\\*'));
+  assert.match(displayOf(exact), new RegExp('^\\*\\*grønnstue\\.com \\(' + ascii + '\\.com\\) is available\\.\\*\\*'));
 });
 
 test('the name screen checks æøå names as punycode, matches rivals by Latin letters and links the real domain', async t => {
@@ -111,9 +111,9 @@ test('a short name may be premium: no list price, never the cheapest pick, never
   const directory = await pricedDirectory(t);
   const result = await agentResult(['qxvo'], registryOptions(directory));
   const [row] = result.names;
-  assert.ok(row.free.length === 12 && row.free.every(option => option.s === 'prem' && option.risk === true), JSON.stringify(row));
+  assert.ok(row.free.length + (row.shop_check?.length ?? 0) === 10 && row.free.every(option => option.s === 'prem' && option.risk === true), JSON.stringify(row));
   assert.equal(result.best, undefined);
-  assert.equal(result.listPrices, undefined);
+  assert.ok(Object.values(result.listPrices ?? {}).every(row => row.now === undefined));
   const display = displayOf(result);
   assert.match(display, /^- qxvo\.com may be premium, price at shop$/m);
   assert.doesNotMatch(display, /\$\d|Pick:|Cheapest now|Best value|Standard prices/);
@@ -126,7 +126,7 @@ test('a short name may be premium: no list price, never the cheapest pick, never
   assert.equal(exact.otherEndings, undefined);
   assert.equal(exact.listPrices, undefined);
   const shown = displayOf(exact);
-  assert.match(shown, /^\*\*qxvo\.com is free at the registry\.\*\* May be premium, price at shop: \[qxvo\.com\]\(https:/);
+  assert.match(shown, /^\*\*qxvo\.com is available at the registry\.\*\* May be premium, price at shop: \[qxvo\.com\]\(https:/);
   assert.doesNotMatch(shown, /\$\d/);
 
   // Five characters is a normal name; length counts Unicode letters, not punycode bytes.
@@ -228,7 +228,7 @@ test('an exact .com adds one list-price line for the other endings and a benchma
   const result = await agentResult('lanternbay.com', options);
   assert.deepEqual(asked, ['lanternbay.com']);
   assert.deepEqual(result.names[0], { name: 'lanternbay.com', taken: ['com'] });
-  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'xyz', 'tech']);
+  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'dev', 'co', 'so', 'sh', 'tech', 'app']);
   assert.deepEqual(result.otherEndings.ai, { now: 159.96, renew: 159.96, y3: 319.92, term: 2, shop: 'Dynadot' });
   const display = displayOf(result);
   assert.match(display, /^\*\*lanternbay\.com is taken\. This check leaves checkout to you\.\*\*/);
@@ -289,7 +289,7 @@ test('a throttled registry host gets no queued requests, stays cooled down for t
   assert.deepEqual(agent.names[0].shop_check, ['dev', 'app']);
   assert.deepEqual(agent.names[0].likely_free, ['dev', 'app']);
   assert.equal(agent.names[0].free, undefined);
-  assert.match(displayOf(agent), /^Likely free \(DNS\), confirm at shop: openfive \.dev \.app$/m);
+  assert.match(displayOf(agent), /^Possibly available \(DNS\), confirm at shop: openfive \.dev \.app$/m);
   const [failedDns] = await lookupRegistrations([{ domain: 'uncertain.app', tld: 'app' }], {
     ...options, authoritativeNs: async () => null,
     resolveNs: async () => { throw Object.assign(Error('DNS failure'), { code: 'ESERVFAIL' }); },

@@ -7,16 +7,16 @@ import { cacheDir, readCache, writeCache } from './cache.mjs';
 import { withShopPages } from './confirm.mjs';
 import { catalogPrice, dynadotOffer, offer, shops } from './prices.mjs';
 
-// The endings every bare name is checked on. The first ten are the 0.1.4 set; .xyz and .tech joined in 0.1.5.
-// .net and .org left the defaults in 0.1.8 (few AI-native companies want them); they stay checkable on request.
-export const targetEndings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no', 'xyz', 'tech'];
-// Checked only when the person asks for them (or names them in endings).
-export const requestEndings = ['net', 'org', 'sh', 'gg', 'inc', 'studio', 'se', 'dk', 'de', 'uk', 'co.uk', 'eu'];
+// Default order follows the hosted checker. Other catalog endings are available on request.
+export const targetEndings = ['com', 'ai', 'io', 'dev', 'co', 'so', 'sh', 'inc', 'tech', 'app'];
+export const requestEndings = ['me', 'si', 'no', 'xyz', 'net', 'org', 'gg', 'studio', 'se', 'dk', 'de', 'uk', 'co.uk', 'eu'];
 export const supportedEndings = [...targetEndings, ...requestEndings];
-// A saved or bundled catalog must cover these; newer endings are priced once a refresh has them.
-const coreEndings = targetEndings.slice(0, 10);
+// Older on-disk snapshots used these required entries. Keep reading them on the local fallback path.
+const legacyCatalogEndings = ['com', 'ai', 'io', 'me', 'co', 'dev', 'app', 'si', 'so', 'no'];
+// The local catalog validates standard prices up to $500. Only the hosted catalog covers .inc renewals.
+const refreshEndings = targetEndings.filter(ending => ending !== 'inc');
 const otherEndings = ['so', 'no'];
-const spaceshipEndings = coreEndings.filter(tld => !otherEndings.includes(tld));
+const spaceshipEndings = legacyCatalogEndings.filter(tld => !otherEndings.includes(tld));
 const filename = 'prices.json';
 const day = 86_400_000;
 const primaryShops = ['spaceship', 'porkbun', 'dynadot'];
@@ -35,7 +35,7 @@ function validPrice(row, shop) {
 
 function validSource(id, prices) {
   const entries = Object.entries(prices ?? {});
-  const required = id === 'spaceship' ? spaceshipEndings : ['gandi', ...snapshotShops].includes(id) ? [] : ['com', 'io', 'me'];
+  const required = id === 'spaceship' ? spaceshipEndings : ['gandi', ...snapshotShops].includes(id) ? [] : ['com', 'io'];
   return entries.length > 0 && required.every(tld => Object.hasOwn(prices, tld)) &&
     entries.every(([tld, row]) => supportedEndings.includes(tld) && validPrice(row, shops[id].name));
 }
@@ -47,7 +47,7 @@ function validDate(value) {
 export function validCatalog(value) {
   if (!validDate(value?.checkedAt)) return false;
   if (!value.catalogs) {
-    return coreEndings.every(tld => validPrice(value.prices?.[tld], otherEndings.includes(tld) ? 'Gandi' : 'Spaceship'));
+    return legacyCatalogEndings.every(tld => validPrice(value.prices?.[tld], otherEndings.includes(tld) ? 'Gandi' : 'Spaceship'));
   }
   return Object.keys(value.catalogs).length > 0 && Object.entries(value.catalogs).every(([id, source]) =>
     [...primaryShops, 'gandi', ...snapshotShops].includes(id) && validDate(source.checkedAt) && validSource(id, source.prices));
@@ -145,7 +145,7 @@ export async function getNameCatalog({ directory = cacheDir, now = new Date(), s
   const saved = await loadCachedCatalog(directory);
   const sources = sourcesOf(saved);
   const refresh = !saved || automaticShops.some(id => isCatalogStale(sources[id]?.checkedAt, now)) ||
-    targetEndings.some(tld => !primaryShops.some(id => sources[id]?.prices[tld]) &&
+    refreshEndings.some(tld => !primaryShops.some(id => sources[id]?.prices[tld]) &&
       (!sources.gandi?.prices[tld] || isCatalogStale(sources.gandi.checkedAt, now)));
   if (directory && refresh) {
     void Promise.resolve().then(() => scheduleRefresh(directory)).catch(() => {});
@@ -333,7 +333,7 @@ export async function refreshPrices({
     refreshedShops.push(id);
   }
 
-  const gaps = targetEndings.filter(tld => !primaryShops.some(id => catalogs[id]?.prices[tld]));
+  const gaps = refreshEndings.filter(tld => !primaryShops.some(id => catalogs[id]?.prices[tld]));
   if (gaps.length) {
     const rows = await Promise.allSettled(gaps.map(tld => Promise.resolve().then(() => gandi(tld))));
     const prices = {};

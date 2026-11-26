@@ -96,7 +96,7 @@ export function memorability(name, input) {
 }
 
 function siteEvidence(row, site) {
-  if (row?.status === 'probably-free') return 'Registry free';
+  if (row?.status === 'probably-free') return 'Available at the registry';
   if (row?.status !== 'taken') return 'Registry unresolved';
   if (site?.state === 'live') return site.title ? 'Live: ' + compactText(site.title, 75) : 'Live site';
   if (site?.state === 'for-sale' || row.forSale) return 'Taken, possible resale';
@@ -277,8 +277,8 @@ function baseVerdict({ rival, overlap, sameName, activeApp, brand, app, entity, 
     return ['Check first', 'A competition source did not answer'];
   }
   if (!best) {
-    return ['Check first', available.length ? 'The free endings require buyer eligibility'
-      : premium.length ? 'The free endings may be premium, price at shop' : 'No domain was found free at the registry'];
+    return ['Check first', available.length ? 'The available endings require buyer eligibility'
+      : premium.length ? 'The available endings may be premium, price at shop' : 'The registry did not confirm an available domain'];
   }
   const regions = ['US', ...answeredOffices.map(result => ({ EU: 'EU', NO: 'Norwegian' })[result.office])];
   return ['No conflict found', 'No ' + regions.slice(0, -1).join(', ') + (regions.length > 1 ? ' or ' : '') + regions.at(-1)
