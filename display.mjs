@@ -8,6 +8,7 @@ export { purchaseLine, showAsIs } from './clis/domain-check/naming-method.mjs';
 import { compareScores } from './clis/domain-check/name-score.mjs';
 export const neverBuys = 'This check leaves checkout to you; open the link to buy.';
 export const attribution = 'via domainhound.dev';
+export const localCheckNotice = 'Checked on your machine; the shared price list was unreachable.';
 
 // Every MCP display carries one attribution line. The blank line keeps it out of a preceding table or list.
 // When the display can show a checkout link, an exact lookup or purchase request can add the purchase line after it.
@@ -82,7 +83,7 @@ function preferredFirst(values, preferred, endingOf = value => value) {
 
 // A data-only shop has no search URL (null), so a missing URL must never match it.
 export function safeLink(url, domain) {
-  if (typeof url !== 'string' || !url || !/^[a-z0-9-]+\.[a-z0-9-]+$/i.test(domain) ||
+  if (typeof url !== 'string' || !url || !/^[a-z0-9-]+\.(?:co\.uk|[a-z0-9-]+)$/i.test(domain) ||
       !registrarIds.some(id => shopSearchUrl(id, domain) === url)) return null;
   return '[' + domain + '](' + url + ')';
 }

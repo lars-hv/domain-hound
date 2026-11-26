@@ -275,9 +275,9 @@ test('Cloudflare: one checked official snapshot, merged by registrar with fresh 
   const names = [{ name: 'exampleheron', taken: ['com'], free: free(['uk', 'xyz']) }];
   const { say, md, html, shared } = await receipt(t, lookup(names, prices({ uk: { now: 5.3, renew: 5.3, y3: 15.9, shop: 'Cloudflare' } })),
     { endings: ['uk', 'xyz'] });
-  assert.match(say, /\.uk, \.xyz first\. 1\. exampleheron\.uk \$5\.30, then \$5\.30 list price checked 2026-11-25 \(needs cloudflare dns\)/);
-  assert.match(md, /\| exampleheron\.uk \| \$5\.30 \| \$5\.30 \| .*Needs Cloudflare DNS.*\[Cloudflare\]\(https:\/\/www\.cloudflare\.com\/domains\/search\/\?q=exampleheron\.uk\) \|/);
-  assert.match(html, /<code>exampleheron\.uk<\/code><small>[^<]*Needs Cloudflare DNS/);
+  assert.match(say, /\.uk, \.xyz first\. 1\. exampleheron\.uk \$5\.30, then \$5\.30 list price checked 2026-11-25 \(Requires Cloudflare DNS\)/);
+  assert.match(md, /\| exampleheron\.uk \| \$5\.30 \| \$5\.30 \| .*Requires Cloudflare DNS.*\[Cloudflare\]\(https:\/\/www\.cloudflare\.com\/domains\/search\/\?q=exampleheron\.uk\) \|/);
+  assert.match(html, /<code>exampleheron\.uk<\/code><small>[^<]*Requires Cloudflare DNS/);
   assert.deepEqual(cards(shared)[0].rows.filter(item => item.endsWith(' cf')), ['exampleheron.uk cf']);
   // The legacy display says it too; dossier.test.mjs covers the broker dossier line.
   const { display } = JSON.parse(checkText({ names: [{ name: 'exampleheron', free: free(['uk']) }],

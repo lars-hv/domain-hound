@@ -123,7 +123,7 @@ try {
         assert.deepEqual(names[0].taken, ['com'], JSON.stringify(names[0]));
         assert.ok(display.includes('example.com'));
         const lines = display.split('\n');
-        assert.ok(/^Results page: \[Open results\]\(.+\.html>?\)$/.test(lines[0])
+        assert.ok(lines.some(line => /^Results page: \[Open results\]\(.+\.html>?\)$/.test(line))
           || /^All endings: \[Results page\]\(file:\/\/.*\.html\)$/.test(lines.at(-1)), display);
         description = `Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken`;
       }

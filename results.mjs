@@ -10,12 +10,14 @@ import { handleLabel, handlePriorities, handleSummary, linkedInSearchHint } from
 import { googlePlayLabel, googlePlayLinkLabel, playSearchLink } from './clis/domain-check/google-play.mjs';
 import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
-import { safeLink } from './display.mjs';
+import { attributed, localCheckNotice, safeLink } from './display.mjs';
+import { checkLines, pickDomain, pickLine } from './hosted-results.mjs';
 import { receiptStyle } from './results-style.mjs';
 import { shareUrl } from './share.mjs';
 import { compareScores, scoreEligible, scoreHeadline, scoreName } from './clis/domain-check/name-score.mjs';
 
 const cash = value => Number.isFinite(value) ? '$' + value.toFixed(2) : null;
+const cloudflareDns = 'Requires Cloudflare DNS';
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 const plain = value => String(value ?? '').replace(/[\r\n\p{Cc}\p{Cf}]+/gu, ' ').replace(/\s*[—–]\s*/g, '. ').trim();
@@ -115,7 +117,7 @@ function resultGroups(data, eligibleEndings, preferred = []) {
       const checkout = taken || reserved || !eligible ? null : [raw?.checkout, shopUrl].find(url => safeLink(url, domain)) ?? null;
       return { domain, ending, rank: qualityRank(domain, requested, eligibleList), state, status, ...usd, total,
         shop, checkout, eligible, source, ...(raw?.savings && { savings: raw.savings }),
-        ...(includePrice && dnsNeed(usd.shop) && { dns: dnsNeed(usd.shop) }),
+        ...(includePrice && dnsNeed(usd.shop) && { dns: cloudflareDns }),
         priceLabel: usd.now != null || usd.renew != null ? (confirmed ? 'Shop quote' : taken ? 'Standard list price benchmark' : 'List price') : '',
         checkedAt: raw?.checkedAt ?? data.checkedAt, priceAt: confirmed ? raw?.checkedAt ?? data.checkedAt : raw?.priceAt ?? data.priceListDate,
         site: raw?.site ?? detail.details?.sites?.[ending] ?? row.details?.sites?.[ending] };
@@ -149,7 +151,7 @@ function offerText(offer, linked = false) {
     : renew != null ? cash(renew) + ' renewal' : 'price at shop';
   return (linked && checkout ? '[' + domain + '](' + checkout + ')' : domain) + ' ' + price
     + (term > 1 ? ' every ' + term + ' years' : '') + (jump ? ' (renewal jumps)' : '')
-    + (priceLabel ? ' ' + priceLabel.toLowerCase() + priceDate(offer) : '') + (offer.dns ? ' (' + offer.dns.toLowerCase() + ')' : '');
+    + (priceLabel ? ' ' + priceLabel.toLowerCase() + priceDate(offer) : '') + (offer.dns ? ' (' + offer.dns + ')' : '');
 }
 
 function appFinding(value, row, source) {
@@ -177,12 +179,11 @@ function signals(group, triage = true) {
 
 // One selection feeds the receipt lines and the share link: preferred endings, budget, eligibility, verdict and
 // confirmed quotes decide the candidates. Each name's pick follows the shared rule (choosePick): the highest-quality
-// ending within $60 over 3 years (or the person's budget), else the least paid over 3 years; .ai only when asked for
-// or within the budget. Cheapest is the lowest upfront payment and best value the least paid over 3 years, across
-// every candidate in scope.
+// ending within $60 over 3 years or the person's budget. Local MCP checks use the hosted rule for offers outside
+// the default cap. Cheapest is the lowest upfront payment and best value the least paid over 3 years.
 // names[i] is the same choice made inside groups[i] alone: its pick, its best value and its taken rows,
 // preferred endings first in the user's order (.com first by default).
-function receiptSelection(groups, args, triage, eligible = []) {
+function receiptSelection(groups, args, triage, eligible = [], local = false) {
   const preferred = args.endings ?? [];
   const budget = args.budget;
   const exact = !triage && groups.length === 1 && groups[0].row.name.includes('.');
@@ -192,14 +193,18 @@ function receiptSelection(groups, args, triage, eligible = []) {
   // Triage recommendations require a name that passed its filters. Availability-only checks still show domain offers.
   const candidates = exact ? [] : groups.flatMap(group => triage && !scoreEligible(group.row) ? [] : group.records
     .filter(record => inScope(record) && (record.state === 'free' || record.priceLabel === 'Shop quote'))
-    .map(record => ({ group, record, domain: record.domain, now: record.now ?? null, total: record.total ?? null })));
+    .map(record => ({ group, record, domain: record.domain, now: record.now ?? null, total: record.total ?? null, buyUrl: record.checkout })));
   const context = group => ({ requested: group.row.name.includes('.') ? [...preferred, group.row.name] : preferred,
     eligible, budget });
   // Across names, every exact domain the person typed counts as asked for.
   const across = { requested: [...preferred, ...groups.map(group => group.row.name).filter(name => name.includes('.'))], eligible, budget };
   // Ties on price go to the better verdict, then the quality order.
   const rank = item => (verdictOrder[item.group.row.verdict] ?? 0) * 1000 + item.record.rank;
-  const pickOf = group => choosePick(candidates.filter(item => item.group === group), context(group));
+  const pickOf = group => {
+    const options = candidates.filter(item => item.group === group);
+    const rules = context(group);
+    return local ? pickDomain(options, { endings: rules.requested, eligible, budget }) : choosePick(options, rules);
+  };
   const valueOf = items => lowestTotal(items, rank);
   const picks = groups.flatMap(group => {
     const pick = pickOf(group);
@@ -227,7 +232,33 @@ function receiptSelection(groups, args, triage, eligible = []) {
   };
 }
 
-function summary(groups, args, triage, selection) {
+function checkedOption(record) {
+  const term = record.term ?? 1;
+  return { domain: record.domain, shop: record.shop, firstYearUsd: record.now == null ? null : record.now / term,
+    renewalUsd: record.renew == null ? null : record.renew / term, firstPaymentUsd: record.now, threeYearUsd: record.total,
+    minimumYears: term, buyUrl: record.checkout, needsCloudflareDns: Boolean(record.dns) };
+}
+
+function localCheckSummary(group, args, selection, priceListDate) {
+  const { row, records } = group;
+  const exactDomain = row.name.includes('.') ? row.name : null;
+  const domains = records.map(record => ({
+    domain: record.domain, status: record.state === 'free' ? 'available' : record.state === 'taken' ? 'taken' : 'unknown',
+    prices: record.state === 'free' && record.now != null ? [checkedOption(record)] : [],
+    confirmed: record.priceLabel === 'Shop quote',
+  }));
+  const pick = exactDomain
+    ? pickDomain(records.filter(record => record.state === 'free').map(record => ({
+      ...checkedOption(record), now: record.now, total: record.total,
+    })), { ...args, endings: [exactDomain] })
+    : selection.best?.record && checkedOption(selection.best.record);
+  const lines = checkLines({ domains, choice: { pick }, query: { name: row.name, exactDomain }, score: row.score }, false, { local: true });
+  if (priceListDate) lines.push('Dated list prices in USD before tax · ' + priceListDate);
+  const savings = selection.best ? [savingsLine(selection.best.record)].filter(Boolean) : [];
+  return { lines: attributed(lines.join('\n'), Boolean(args.purchase || exactDomain)).split('\n'), savings };
+}
+
+function summary(groups, args, triage, selection, local = false) {
   const [wanted] = groups;
   const { exact: isExact, preferred, budget, best, picks, cheapest, value } = selection;
   const constraints = [...(!isExact && preferred.length ? [preferred.map(ending => '.' + ending).join(', ') + ' first'] : []),
@@ -259,7 +290,8 @@ function summary(groups, args, triage, selection) {
   const caution = item => item.group.row.verdict === 'Check first' ? ' (Check first)' : '';
   const label = item => offerText(item.record, true) + caution(item);
   const offerLines = picks.map(({ group, record }, index) =>
-    (budget != null && index === 0 ? 'Pick: ' : (index + 1) + '. ') + offerText(record) + ' (' + plain(record.status.toLowerCase()) + ') | '
+    (local ? pickLine(checkedOption(record)) + ' ' : (budget != null && index === 0 ? 'Pick: ' : (index + 1) + '. '))
+    + offerText(record) + ' (' + plain(record.status.toLowerCase()) + ') | '
     + (triage ? plain(group.row.verdict) + ' |' + (shortScore(group.row) ? shortScore(group.row).slice(0, -1) + ' |' : '')
       + (scoreReasons(group.row).length ? ' ' + scoreReasons(group.row).join('; ') + ' |' : '') + ' ' + marksText(group.row) + ' | ' : '')
     + signals(group, triage));
@@ -293,7 +325,7 @@ function summary(groups, args, triage, selection) {
   const savings = picks.map(({ record }) => savingsLine(record)).filter(Boolean);
   const shortLines = args.shortlist && triage ? [
     constraints.length ? constraints.join(' | ') + '.' : null,
-    ...picks.map(({ group, record }) => offerText(record) + '. ' + plain(group.row.verdict) + '.' + shortScore(group.row)
+    ...picks.map(({ group, record }) => (local ? pickLine(checkedOption(record)) : offerText(record) + '.') + ' ' + plain(group.row.verdict) + '.' + shortScore(group.row)
       + (scoreReasons(group.row).length ? ' ' + scoreReasons(group.row).join('. ') + '.' : '')),
     picks.length ? null : 'No available pick in scope.',
     running.length ? 'Still checking ' + running.join(', ') + '. The results page updates.' : null,
@@ -625,12 +657,15 @@ export function resultPages({ env = process.env,
         groups = groups.filter(({ row }) => Number.isInteger(row.score?.value) && scoreEligible(row))
           .sort((a, b) => compareScores(a.row.score, b.row.score)).slice(0, 8);
       }
-      const selection = receiptSelection(groups, args, triage, args.eligible ?? data.eligible ?? []);
+      const local = !watch && data.source === 'local';
+      const selection = receiptSelection(groups, args, triage, args.eligible ?? data.eligible ?? [], local);
       const { lines, savings, shortLines } = data.hosted ? { lines: data.lines, savings: [] } : watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
         ...(args.purchase ? ['This check leaves checkout to you.'] : []),
-      ], savings: [] } : groups.length ? summary(groups, args, triage, selection)
+      ], savings: [] } : local && !triage && groups.length === 1 && !args.confirm && !args.endings && args.budget == null
+        ? localCheckSummary(groups[0], args, selection, data.priceListDate)
+        : groups.length ? summary(groups, args, triage, selection, local)
         : { lines: ['No names passed the checks.'], savings: [] };
       // Before the verdicts arrive the receipt recommends nothing, so the link carries only taken rows and jumps.
       const shareFacts = selection.names.map(name => data.pending ? { taken: name.taken } : name);
@@ -642,7 +677,7 @@ export function resultPages({ env = process.env,
       const kept = reusedBase(reuse, directory);
       const base = kept ?? new Date().toISOString().replaceAll(/[:.]/g, '-') + '-' + slug + '-' + randomUUID().slice(0, 8);
       const filename = resolve(directory, base + '.html');
-      const page = render(groups, lines, at, data.sources, watch ? data : null, args.companyType,
+      const page = render(groups, local ? [localCheckNotice, ...lines] : lines, at, data.sources, watch ? data : null, args.companyType,
         { savings, note: watch ? '' : data.hosted ? 'Domain Hound’s hosted service checks registries, prices and public name sources.' : disclosure(data, triage),
           refresh: Boolean(refresh), shareFacts,
           hostedShare: data.checks?.length === 1 ? httpsLink(data.checks[0].share?.url) : null });
@@ -676,12 +711,12 @@ export function resultPages({ env = process.env,
       const handles = data.hosted ? data.checks.flatMap(check => check.nameChecks?.handles ?? [])
         : groups.flatMap(group => group.row.handles ?? []);
       const hints = [...new Set(handles.map(linkedInSearchHint).filter(Boolean))];
-      const say = [resultsLine(url), ...(shortLines ?? lines), ...hints].join('\n');
+      const say = [...(local ? [localCheckNotice] : []), resultsLine(url), ...(shortLines ?? lines), ...hints].join('\n');
       if (data.hosted) {
         const { hosted, lines, ...structured } = data;
         return { display: say, say, ...structured, resultPage: url };
       }
-      if (triage && args.shortlist) return { display: say, say, checkedAt: at, resultPage: url };
+      if (triage && args.shortlist) return { display: say, say, ...(local && { source: 'local' }), checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({
         ...row, ...(receiptDetails[index]?.score && { score: receiptDetails[index].score }),

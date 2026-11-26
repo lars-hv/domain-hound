@@ -58,7 +58,11 @@ function priceLine(offer, cheapest) {
     + (offer.needsCloudflareDns ? ' · requires Cloudflare DNS' : '');
 }
 
-function checkLines(check, pending) {
+export function pickLine(pick) {
+  return 'The Hound’s pick is ' + md(pick.domain) + ' at ' + md(pick.shop) + ' for ' + money(pick.threeYearUsd) + ' over three years.';
+}
+
+export function checkLines(check, pending, { local = false } = {}) {
   const { domains, choice, nameChecks, score } = check;
   const pick = choice?.pick;
   const taken = domains.filter(row => row.status === 'taken').map(row => row.domain);
@@ -67,18 +71,25 @@ function checkLines(check, pending) {
     ...(score?.filtered ? [md(check.query.name) + ' · ' + md(score.filtered)]
       : Number.isInteger(score?.value) ? [md(check.query.name) + ' · Name score ' + score.value + '/100 · ' + md(score.band),
         ...(score.reasons ?? []).map(md)] : []),
-    ...(pick ? ['The Hound’s pick is ' + md(pick.domain) + ' at ' + md(pick.shop) + ' for ' + money(pick.threeYearUsd) + ' over three years.'] : []),
+    ...(pick ? [pickLine(pick)] : []),
     ...domains.filter(row => row.status === 'available').flatMap(row => [
       'Available · ' + md(row.domain),
-      ...(row.prices?.length ? row.prices.map((offer, index) => priceLine(offer, index === 0)) : ['Check the price at the shop.']),
+      ...(row.prices?.length ? row.prices.map((offer, index) => priceLine(offer, !local && index === 0)) : ['Check the price at the shop.']),
+      ...(local && row.confirmed ? ['Confirmed at the shop.'] : []),
     ]),
-    ...nameCheckLines(nameChecks, pending, check.query.name),
+    ...(local ? [] : nameCheckLines(nameChecks, pending, check.query.name)),
     ...(taken.length ? ['Taken · ' + taken.map(md).join(', ') + '. '
       + link('Watch', 'https://domainhound.dev/watch/?domain=' + encodeURIComponent(taken[0]))
       + ' · Draft an offer · Try a new name'] : []),
     ...(unknown.length ? ['Could not confirm ' + (domains.length === 1 ? md(unknown[0].domain)
       : unknown.length + (unknown.length === 1 ? ' ending' : ' endings')) + '.'] : []),
   ];
+}
+
+export function pickDomain(options, { endings, eligible, budget } = {}) {
+  return choosePick(options.filter(option => option.buyUrl), {
+    requested: endings, eligible, budget, allowOverCap: budget != null,
+  }) ?? null;
 }
 
 function preferredPick(check, args) {
@@ -89,7 +100,7 @@ function preferredPick(check, args) {
     row.prices.filter(offer => args.budget == null || offer.firstPaymentUsd <= args.budget).map(offer => ({
       ...offer, domain: row.domain, now: offer.firstPaymentUsd, total: offer.threeYearUsd,
     })));
-  return choosePick(options, { requested: args.endings, eligible: args.eligible, budget: args.budget }) ?? null;
+  return pickDomain(options, args);
 }
 
 export function hostedChecks(checks, args, triage = false) {

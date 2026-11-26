@@ -122,6 +122,11 @@ test('a short name may be premium: no list price, never the cheapest pick, never
   assert.ok(single.names[0].free.filter(option => !option.d.includes('.')).every(option => option.s === 'prem' && option.risk));
   assert.match(displayOf(single), /^Pick: getqxvo\.com$/m);
 
+  const receipt = await agentResult('qxvo', { ...registryOptions(directory), receipt: true });
+  assert.equal(receipt.receiptDetails[0].endings.length, 10);
+  assert.ok(receipt.receiptDetails[0].endings.every(row => row.domain.startsWith('qxvo.')));
+  assert.doesNotMatch(displayOf(receipt), /^Pick:/m);
+
   const exact = await agentResult('qxvo.com', registryOptions(directory));
   assert.equal(exact.otherEndings, undefined);
   assert.equal(exact.listPrices, undefined);

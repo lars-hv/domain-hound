@@ -66,7 +66,9 @@ Pass `names` to screen names you already have. For a second generation round, pa
 and `avoid` names and the next `round` number.
 
 Set `DOMAIN_HOUND_API_URL` to use a different HTTPS API origin or a loopback HTTP origin for development. The package
-uses local registry and price checks if the API is unavailable. Set `DOMAIN_HOUND_LOCAL=1` to choose local checks.
+retries a transient check failure once. If the hosted check is still running when the tool returns, repeat the same call
+to collect it. The answer starts with a notice when it uses local checks. Set `DOMAIN_HOUND_LOCAL=1` to choose local
+checks or `DOMAIN_HOUND_DEBUG=1` to log hosted failures to stderr.
 Local naming uses the naming method to come up with candidates, then checks the supplied names. The local name screen
 can also use EUIPO and Patentstyret credentials and check rival websites.
 

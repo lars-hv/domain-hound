@@ -76,7 +76,7 @@ function fitsCap(option, { budget } = {}) {
 // The one pick rule. options are free, eligible, in-scope rows shaped { domain, now, total } (total = payments due in
 // 3 years). The pick is the highest-quality option within the cap; when none fits, the least paid over 3 years.
 // .ai is never the default: only when the person asked for it or its 3-year total fits the budget they gave.
-export function choosePick(options, { requested = [], eligible = [], budget } = {}) {
+export function choosePick(options, { requested = [], eligible = [], budget, allowOverCap = true } = {}) {
   const allowed = options.filter(option => domainEnding(option.domain) !== 'ai' || asked(option.domain, requested) >= 0
     || (budget != null && known(option.total) && cents(option.total) <= cents(budget)));
   const rank = option => qualityRank(option.domain, requested, eligible);
@@ -85,7 +85,7 @@ export function choosePick(options, { requested = [], eligible = [], budget } = 
     || (a.total ?? Infinity) - (b.total ?? Infinity)
     || (a.now ?? Infinity) - (b.now ?? Infinity) || a.domain.localeCompare(b.domain);
   return allowed.filter(option => fitsCap(option, { budget })).sort(byQuality)[0]
-    ?? lowestTotal(allowed, rank);
+    ?? (allowOverCap ? lowestTotal(allowed, rank) : undefined);
 }
 
 // The least paid over 3 years; the cheaper first payment, then quality, breaks a tie.

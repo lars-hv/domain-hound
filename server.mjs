@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkSocialHandles, handlePriorities, pendingHandleRows, requestPlatforms } from './clis/domain-check/handles.mjs';
 import { progressPrefix } from './clis/domain-check/progress.mjs';
-import { attributed, errorText, progressText } from './display.mjs';
+import { attributed, errorText, localCheckNotice, progressText } from './display.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
 import { domainDossier, dossierTool } from './dossier.mjs';
@@ -14,7 +14,7 @@ import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
-import { HostedRateLimit, hostedClient } from './hosted.mjs';
+import { HostedRateLimit, hostedClient, hostedDebug } from './hosted.mjs';
 import { generatedChecks, hostedChecks, hostedResult } from './hosted-results.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
@@ -26,6 +26,7 @@ const serverVersion = JSON.parse(readFileSync(new URL('./package.json', import.m
 const timeoutMs = 14_000;
 // A lookup still running after this long is stopped.
 const maxLookupMs = 120_000;
+const hostedLookupMs = 34_000;
 // Keep completed evidence stable for repeated calls during a short naming session.
 const keepFinishedMs = 120_000;
 const versions = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
@@ -56,11 +57,11 @@ const lookupProperties = {
   ai: { type: 'boolean', description: 'Legacy option. .ai is now included by default.' },
   endings: endingsSchema,
   budget: { type: 'number', minimum: 0, maximum: 1000000,
-    description: 'The person\'s budget in USD, only when they gave one. Endings that cost more upfront are left out, and it replaces the $60 three-year cap of the default pick (highest-quality ending within the cap, else the least paid over 3 years; .ai only when asked for or within this budget). Carry it from the registry screen into triage.' },
+    description: 'The person\'s budget in USD, only when they gave one. Endings that cost more upfront are left out. A budget replaces the default $60 three-year cap. The pick is the highest-quality ending within the cap or, with a budget, the cheapest over three years if none fit it. Include .ai in the pick only when asked for or within the budget. Carry the budget from the registry screen into triage.' },
   eligible: { type: 'array', uniqueItems: true, items: { type: 'string', enum: restrictedEndings },
     description: 'Restricted endings the buyer qualifies to register. Pass no or eu only when the buyer qualifies for that ending.' },
 };
-const relay = 'The answer starts with the clickable Markdown link on the first line of say. Then give the relevant facts from say.';
+const relay = 'Include the clickable Results page link from say. Keep the notice at the top when a check ran on this machine, then give the relevant facts.';
 const checkTool = {
   name: 'check_domains',
   description: 'Check availability and dated prices for up to 20 names or domains. Use triage_names for product names. '
@@ -146,6 +147,11 @@ function toolResult(json, isError = false) {
   return { content: [{ type: 'text', text: structured.display }], structuredContent: structured, isError };
 }
 const errorResult = message => toolResult(errorText(message), true);
+
+function localProgress(json) {
+  const progress = JSON.parse(json);
+  return JSON.stringify({ ...progress, source: 'local', display: localCheckNotice + '\n' + progress.display });
+}
 
 const showValue = value => JSON.stringify(String(value).slice(0, 40));
 
@@ -485,6 +491,8 @@ export async function serve({
   const error = (id, code, message) => send({ id, error: { code, message } });
   const pending = new Set();
   const lookups = new Map();
+  const hostedLookups = new Map();
+  const hostedShutdown = new AbortController();
   const generations = new Map();
   const background = new Set();
 
@@ -541,20 +549,44 @@ export async function serve({
     return tracked;
   };
 
-  async function hostedLookup(args, triage) {
+  async function hostedLookup(args, triage, started) {
     if (!hosted || args?.confirm === true || (triage && args?.additionalHandles?.length)) return null;
-    let checks;
+    let rows;
     try {
       (triage ? triageArguments : cliArguments)(args);
-      const rows = (triage ? triageRows : checkRows)(args);
+      rows = (triage ? triageRows : checkRows)(args);
       if (!rows.length || (triage && args.names.some(name => !normalizeName(name)))) return null;
-      const extra = selectedEndings(args).filter(ending => !defaultEndings.includes(ending));
-      const signal = AbortSignal.timeout(Math.max(1, Math.min(13_000, Math.floor(timeout - 750))));
-      checks = await Promise.all(rows.map(({ name }) => hosted.check(name, name.includes('.') ? [] : extra, signal)));
     } catch (problem) {
-      if (problem instanceof HostedRateLimit) return errorResult('The Hound needs a breather. Try again in a few minutes.');
-      return null;
+      return errorResult(problem.message);
     }
+    const key = JSON.stringify([triage, Object.entries(args).sort(([a], [b]) => a.localeCompare(b))]);
+    let lookup = hostedLookups.get(key);
+    if (!lookup) {
+      const extra = selectedEndings(args).filter(ending => !defaultEndings.includes(ending));
+      const controller = new AbortController();
+      const signal = AbortSignal.any([controller.signal, hostedShutdown.signal, AbortSignal.timeout(hostedLookupMs)]);
+      const job = { result: null };
+      job.done = Promise.all(rows.map(async ({ name }) => hosted.check(name, name.includes('.') ? [] : extra, signal)))
+        .then(answers => renderHostedLookup(answers, args, triage), problem => {
+          if (problem instanceof HostedRateLimit) return errorResult('The Hound needs a breather. Try again in a few minutes.');
+          hostedDebug('Hosted domain lookup could not finish; using the local check.');
+          return null;
+        }).then(result => {
+          job.result = result;
+          setTimeout(() => { if (hostedLookups.get(key) === job) hostedLookups.delete(key); }, keepFinishedMs).unref();
+        }).finally(() => controller.abort());
+      lookup = job;
+      hostedLookups.set(key, job);
+    }
+    if (!await within(lookup, timeout - (performance.now() - started))) {
+      hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
+      return toolResult(JSON.stringify({ display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
+        complete: false, pending: true }));
+    }
+    return lookup.result;
+  }
+
+  async function renderHostedLookup(checks, args, triage) {
     try {
       const evidence = hostedChecks(checks, args, triage);
       const page = await pages(hostedResult(evidence, args), args, { triage });
@@ -621,7 +653,7 @@ export async function serve({
 
   function writeTriagePage(lookup, data, args, refresh) {
     const work = (lookup.pageWork ?? Promise.resolve()).then(async () => {
-      const page = await pages(data, args, { triage: true, reuse: lookup.page, refresh });
+      const page = await pages({ ...data, source: 'local' }, args, { triage: true, reuse: lookup.page, refresh });
       lookup.page = page.resultPage;
       return page;
     });
@@ -781,7 +813,7 @@ export async function serve({
         protocolVersion: versions.includes(version) ? version : versions[0],
         capabilities: { tools: {} },
         serverInfo: { name: 'domain-hound', title: 'Domain Hound', version: serverVersion },
-        instructions: 'When you use Domain Hound, include its clickable Results page link in your final answer, including for a single exact domain. Copy the first line of say for the link, then give your short answer. For a new product name, call triage_names with idea. To check names you already have, pass names.',
+        instructions: 'When you use Domain Hound, include its clickable Results page link from say, including for a single exact domain. Keep the notice at the top when a check ran on this machine. For a new product name, call triage_names with idea. To check names you already have, pass names.',
       });
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
@@ -826,7 +858,7 @@ export async function serve({
     const started = performance.now();
     if (name === triageTool.name) {
       if (isObject(args) && Object.hasOwn(args, 'idea')) return reply(await generateNames(args));
-      const fromHost = await hostedLookup(args, true);
+      const fromHost = await hostedLookup(args, true, started);
       if (fromHost) return reply(fromHost);
       let current;
       const result = await runLookup(args, triageArguments, triageRows, (data, lookup) => triageReceipt(lookup, args, data),
@@ -835,14 +867,14 @@ export async function serve({
           // Without a repeat call, the finished result still reaches the same page when the lookup ends.
           if (!progress.answers.size) {
             finishInBackground(lookup, args);
-            return summary;
+            return localProgress(summary);
           }
           const progressPage = pendingTriage(progress, timing.rows);
           const { resultPage } = await writeTriagePage(lookup, progressPage, args, true);
           finishInBackground(lookup, args, progressPage);
           const shown = JSON.parse(summary);
           shown.display = resultsLine(resultPage) + '\n' + shown.display;
-          return JSON.stringify({ ...shown, resultPage });
+          return localProgress(JSON.stringify({ ...shown, resultPage }));
         }, lookup => { current = lookup; }, started);
       reply(result);
       if (!result.isError && current?.finished && current.outcome?.data) followUp(current);
@@ -851,9 +883,9 @@ export async function serve({
     if (name !== checkTool.name && name !== legacyTool.name) return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    const result = await hostedLookup(args, false) ?? await runLookup(
-      args, cliArguments, checkRows, data => pages(data, args).then(page => withCheckQuoteOffer(page, args)),
-      (progress, timing) => progressText(progress, { ...timing, purchase: purchase || exact }), undefined, started,
+    const result = await hostedLookup(args, false, started) ?? await runLookup(
+      args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args).then(page => withCheckQuoteOffer(page, args)),
+      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started,
     );
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
@@ -867,6 +899,7 @@ export async function serve({
     pending.add(response);
   }
   await Promise.all(pending);
+  hostedShutdown.abort();
   while (background.size) await Promise.all(background);
   // The client has gone, so nobody can collect a lookup that is still running.
   for (const lookup of lookups.values()) if (!lookup.exited) lookup.child.kill('SIGKILL');

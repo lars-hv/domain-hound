@@ -485,7 +485,7 @@ export async function agentResult(input, options = {}) {
   if (names.includes(null)) return { error: 'Enter a valid name or exact domain.' };
   const exact = new Set(domain ? [domain] : names.filter((name, index) => batch && exactDomain(input[index])));
   const groups = [...new Set(names)].map(name => ({ name, candidates: exact.has(name)
-    ? [{ domain: name, tld: domainEnding(name), exact: true }] : nameCandidates(name, { ...options, variants: !batch }) }));
+    ? [{ domain: name, tld: domainEnding(name), exact: true }] : nameCandidates(name, { ...options, variants: !batch && !options.receipt }) }));
   const keyed = apiShops(options.env ?? process.env).length > 0;
   const reserve = keyed ? 1800 : 0;
   const searchOptions = { ...options, budgetMs: Math.max(0, Math.min(remaining() - reserve, batch ? 10_700 : 2700)),
