@@ -1462,7 +1462,8 @@ test('check_domains fills unknown public name checks locally and keeps confirmed
     const kind = { 'www.tiktok.com': 'tiktok', 'graph.facebook.com': url.pathname.endsWith('/picture') ? 'facebook' : 'instagram',
       'www.youtube.com': 'youtube', 'www.threads.net': 'threads', 'www.twitch.tv': 'twitch', 'play.google.com': 'googlePlay' }[url.hostname];
     const fixture = fixtures[kind][kind === 'threads' ? 'login' : kind === 'twitch' ? 'not-found' : 'taken'];
-    const body = kind === 'googlePlay' ? fixture.body.replace('Paper Heron -', 'PaperHeron -') : fixture.body;
+    const body = kind === 'googlePlay' ? fixture.body.replace('Paper Heron -', 'PaperHeron -')
+      : kind === 'twitch' ? fixture.body.replace('absentbrand', name) : fixture.body;
     return new Response(typeof body === 'string' ? body : JSON.stringify(body),
       { status: fixture.status, headers: { 'content-type': fixture.type } });
   } });

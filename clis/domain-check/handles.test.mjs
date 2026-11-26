@@ -230,7 +230,8 @@ for (const [kind, platform] of [
     const play = kind === 'googlePlay';
     const { publicUrls } = await import('./public-name-checks.mjs');
     for (const [key, name] of [['taken', play ? 'Paper Heron' : 'paperheron'], ['not-found', play ? 'Absent Brand' : 'absentbrand'],
-      ['unknown', play ? 'Changed Brand' : 'changedbrand'], ['login', 'loginwall'], ['limited', 'limitedbrand']]) {
+      ['unknown', play ? 'Changed Brand' : 'changedbrand'], ['login', 'loginwall'],
+      ...(kind === 'twitch' ? [['generic', 'genericbrand']] : []), ['limited', 'limitedbrand']]) {
       const { status, type, body } = fixtures[kind][key];
       const options = { directory: null, env: {}, fetcher: async (url, init) => {
         if (kind === 'threads' && url === publicUrls.instagram(name)) {
@@ -244,12 +245,12 @@ for (const [kind, platform] of [
       } };
       const row = play ? (await checkGooglePlayNames([name], options)).get(name)
         : (await checkSocialHandles([{ name, platforms: [platform], links: false }], { ...options, extraPlatforms: ['Twitch'] })).get(name)[0];
-      assert.equal(row.state, ['login', 'limited'].includes(key) || (kind === 'threads' && key === 'not-found') ? 'unknown' : key);
+      assert.equal(row.state, ['login', 'limited', 'generic'].includes(key) || (kind === 'threads' && key === 'not-found') ? 'unknown' : key);
       assert.equal(Boolean(row.why), row.state === 'unknown');
       if (key === 'limited') assert.equal(row.why, 'rate-limited');
       counts[row.state]++;
     }
-    assert.deepEqual(counts, kind === 'threads' ? { taken: 1, 'not-found': 0, unknown: 4 } : { taken: 1, 'not-found': 1, unknown: 3 });
+    assert.deepEqual(counts, { taken: 1, 'not-found': kind === 'threads' ? 0 : 1, unknown: ['threads', 'twitch'].includes(kind) ? 4 : 3 });
   });
 }
 

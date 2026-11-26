@@ -121,8 +121,10 @@ function twitchProfile(html, name) {
   const username = meta.get('og:profile:username');
   if (title && /^.+ - Twitch$/.test(title) && (!username || username.toLowerCase() === name)) return 'taken';
   const pageTitle = head?.childNodes.find(node => node.tagName === 'title');
+  // Twitch also serves a generic homepage shell for existing channels. Require metadata for the requested URL.
   if (!username && (!title || title === 'Twitch') && meta.get('og:site_name') === 'Twitch' &&
-    pageTitle && text(pageTitle).trim() === 'Twitch') return 'not-found';
+    pageTitle && text(pageTitle).trim() === 'Twitch' &&
+    profileUrlMatches(meta.get('og:url'), ['www.twitch.tv'], '/' + name)) return 'not-found';
   return 'unknown';
 }
 

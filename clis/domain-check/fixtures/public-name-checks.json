@@ -263,7 +263,7 @@
     "not-found": {
       "status": 200,
       "type": "text/html; charset=utf-8",
-      "body": "<!doctype html><head><title>Twitch</title><meta property='og:site_name' content='Twitch'><meta property='og:title' content='Twitch'></head>"
+      "body": "<!doctype html><head><title>Twitch</title><meta property='og:site_name' content='Twitch'><meta property='og:title' content='Twitch'><meta property=\"og:url\" content=\"https://www.twitch.tv/absentbrand\"></head>"
     },
     "unknown": {
       "status": 200,
@@ -279,6 +279,11 @@
       "status": 429,
       "type": "text/html; charset=utf-8",
       "body": "<!doctype html><title>Too many requests</title>"
+    },
+    "generic": {
+      "status": 200,
+      "type": "text/html; charset=utf-8",
+      "body": "<!doctype html><head><title>Twitch</title><meta property='og:site_name' content='Twitch'><meta property='og:title' content='Twitch'></head>"
     }
   }
 }
