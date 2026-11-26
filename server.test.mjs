@@ -1347,7 +1347,7 @@ test('keeps a fully priced hosted check and a twenty-name batch within the MCP r
     assert.deepEqual(rows, expected.map(name => ({ name, statuses: { available: defaultEndings } })));
     assert.ok(text.startsWith(resultsLine(resultPage)));
     assert.ok(expected.every(name => text.includes(name)));
-    assert.match(text, /\$5\.00/);
+    assert.match(text, /Dynadot \$5\.00\/\$10\.00, \$25\.00 over 3y/);
     const wire = JSON.stringify(reply);
     assert.ok(id === 2 ? Buffer.byteLength(wire) < 8_000 : wire.length < 40_000, 'Wire size ' + wire.length);
     const receipt = await readFile(new URL(resultPage), 'utf8');

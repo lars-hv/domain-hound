@@ -214,15 +214,18 @@ function compactCheckResult(result) {
         const offers = checks
           ? checks[index].domains.filter(domain => domain.status === 'available').flatMap(domain => {
             const [offer] = domain.prices;
-            return offer ? [{ d: domain.ending, now: offer.firstPaymentUsd,
-              renew: offer.renewalUsd * offer.minimumYears, term: offer.minimumYears }] : [];
+            if (!offer) return [];
+            const term = offer.minimumYears ?? 1;
+            return [{ d: domain.ending, shop: offer.shop, now: offer.firstPaymentUsd ?? offer.firstYearUsd * term,
+              renew: offer.renewalUsd * term, y3: offer.threeYearUsd, term }];
           })
           : (row.free ?? []).filter(offer => offer.s !== 'prem' && !offer.prem).map(offer => ({
             ...listPrices?.[offer.d], ...offer,
           }));
-        const list = offers.filter(({ now }) => Number.isFinite(now)).map(({ d, now, renew, term, s }) =>
-          '.' + md(d) + ' $' + now.toFixed(2) + '/' + (Number.isFinite(renew) ? '$' + renew.toFixed(2) : 'unknown')
-          + (term > 1 ? ' (' + term + 'y)' : '') + (s === 'ok' ? ' confirmed' : ''));
+        const list = offers.filter(({ now }) => Number.isFinite(now)).map(({ d, shop, now, renew, y3, term, s }) =>
+          '.' + md(d) + (shop ? ' ' + md(shop) : '') + ' $' + now.toFixed(2) + '/'
+          + (Number.isFinite(renew) ? '$' + renew.toFixed(2) : 'unknown') + (term > 1 ? ' (' + term + 'y term)' : '')
+          + (Number.isFinite(y3) ? ', $' + y3.toFixed(2) + ' over 3y' : '') + (s === 'ok' ? ' confirmed' : ''));
         return { name: md(row.name), list };
       });
       const notes = [
