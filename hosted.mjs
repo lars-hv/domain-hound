@@ -99,6 +99,12 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     return null;
   }
 
+  const clientHeaders = {
+    'X-Domain-Hound-Client': 'mcp/' + version,
+    ...(env.DOMAIN_HOUND_INTERNAL === '1' && { 'X-Domain-Hound-Internal': '1' }),
+    ...(env.DOMAIN_HOUND_TEST === '1' && { 'X-Domain-Hound-Test': '1' }),
+  };
+
   async function request(path, { body, params, timeout, signal, valid } = {}) {
     const url = new URL(path, base);
     if (params) url.search = new URLSearchParams(params).toString();
@@ -107,7 +113,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     try {
       res = await fetchFn(url, {
         redirect: 'error',
-        headers: { 'X-Domain-Hound-Client': 'mcp/' + version, ...(body && { 'Content-Type': 'application/json' }) },
+        headers: { ...clientHeaders, ...(body && { 'Content-Type': 'application/json' }) },
         ...(body && { method: 'POST', body: JSON.stringify(body) }),
         signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
       });

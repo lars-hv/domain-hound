@@ -98,7 +98,7 @@ try {
   // Every run starts with its own empty npm and lookup caches, like a fresh install.
   const freshEnv = name => ({ ...process.env, npm_config_cache: join(temp, name, 'npm-cache'),
     XDG_CACHE_HOME: join(temp, name, 'lookup-cache'), DOMAIN_HOUND_CACHE_DIR: join(temp, name, 'lookup-cache'),
-    DOMAIN_HOUND_RESULTS_DIR: join(temp, name, 'results'), DOMAIN_HOUND_OPEN: 'off' });
+    DOMAIN_HOUND_RESULTS_DIR: join(temp, name, 'results'), DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_TEST: '1' });
   const direct = await exec(process.execPath, [join(root, 'clis/domain-check/index.mjs'), '--agent', '--names', query],
     { cwd: temp, env: freshEnv('cli'), timeout: 20_000 });
   const capability = JSON.parse(direct.stdout);

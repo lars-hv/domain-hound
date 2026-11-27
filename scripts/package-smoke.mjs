@@ -52,7 +52,7 @@ const notListedYet = text => /^npm (?:error|ERR!) code (?:ETARGET|E404)\b/m.test
 const temp = await mkdtemp(join(tmpdir(), 'domain-hound-smoke-'));
 try {
   const baseEnv = { ...process.env, DOMAIN_HOUND_CACHE_DIR: join(temp, 'lookup-cache'),
-    DOMAIN_HOUND_RESULTS_DIR: join(temp, 'results'), DOMAIN_HOUND_OPEN: 'off' };
+    DOMAIN_HOUND_RESULTS_DIR: join(temp, 'results'), DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_TEST: '1' };
   let tarball = 'domain-hound@' + version;
   let filename = tarball;
   if (!published) {

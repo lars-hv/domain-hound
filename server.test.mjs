@@ -40,7 +40,7 @@ function exchange(messages, { legacy = false, fastTimeout = false } = {}) {
 function runServer(args, messages, env = {}, cwd = undefined) {
   return new Promise((resolve, reject) => {
     const child = execFile(process.execPath, args, {
-      env: { ...process.env, DOMAIN_HOUND_LOCAL: '1', ...env, DOMAIN_HOUND_OPEN: 'off' }, cwd,
+      env: { ...process.env, DOMAIN_HOUND_LOCAL: '1', DOMAIN_HOUND_TEST: '1', ...env, DOMAIN_HOUND_OPEN: 'off' }, cwd,
       timeout: 5000,
     }, (error, stdout) => {
       if (error) return reject(error);
@@ -1373,7 +1373,8 @@ test('the package entry point defaults to short hosted check, screening and idea
   const api = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     const query = url.searchParams.get('name');
-    paths.push([url.pathname, query, request.headers['x-domain-hound-client']]);
+    paths.push([url.pathname, query, request.headers['x-domain-hound-client'],
+      request.headers['x-domain-hound-internal'], request.headers['x-domain-hound-test']]);
     let data;
     if (url.pathname === '/v1/check') {
       const exactDomain = query === domain ? domain : null;
@@ -1404,7 +1405,7 @@ test('the package entry point defaults to short hosted check, screening and idea
     call(5, triage, 'triage_names'), call(6, { ...triage, detail: 'full' }, 'triage_names'),
     call(7, idea, 'triage_names'), call(8, { ...idea, detail: 'full' }, 'triage_names'),
     call(9, { query: name }),
-  ], { DOMAIN_HOUND_LOCAL: '0', DOMAIN_HOUND_API_URL: 'http://127.0.0.1:' + api.address().port });
+  ], { DOMAIN_HOUND_LOCAL: '0', DOMAIN_HOUND_INTERNAL: '1', DOMAIN_HOUND_API_URL: 'http://127.0.0.1:' + api.address().port });
 
   // Google Play and the US trademark are still pending and the public name sources did not answer: the short answer
   // leaves all three out instead of saying so.
@@ -1436,7 +1437,11 @@ test('the package entry point defaults to short hosted check, screening and idea
   for (const tool of resultOf(responses, 2).tools.slice(0, 2)) assert.equal(tool.inputSchema.properties.detail.default, 'short');
   assert.deepEqual(paths.filter(([path]) => path === '/v1/check').map(([, query]) => query).sort(), [name, name, domain]);
   assert.equal(paths.filter(([path]) => path === '/v1/generate').length, 1);
-  assert.ok(paths.every(([, , client]) => client === 'mcp/' + version));
+  for (const [, , client, internal, test] of paths) {
+    assert.equal(client, 'mcp/' + version);
+    assert.equal(internal, '1');
+    assert.equal(test, '1');
+  }
 });
 
 test('a local name screen with extra handles stays short unless full detail is requested', async () => {
@@ -1479,16 +1484,20 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
     threeYearUsd: 25, buyUrl: 'https://www.dynadot.com/domain/search?domain=exampleheron.dev' };
   const domain = { domain: 'exampleheron.dev', ending: 'dev', status: 'available', prices: [offer, { ...offer, shop: 'Porkbun', threeYearUsd: 30 }] };
   const appStore = { status: 'unknown', reason: 'rate-limited', matches: [] };
-  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test' },
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', DOMAIN_HOUND_INTERNAL: '1', DOMAIN_HOUND_TEST: '0' },
     fetchFn: async (url, init) => {
       const parsed = new URL(url);
       paths.push(parsed.pathname);
       if (parsed.hostname === 'itunes.apple.com') {
         assert.equal(parsed.searchParams.get('term'), 'exampleheron');
         assert.equal(new Headers(init.headers).get('X-Domain-Hound-Client'), null);
+        assert.equal(new Headers(init.headers).get('X-Domain-Hound-Internal'), null);
+        assert.equal(new Headers(init.headers).get('X-Domain-Hound-Test'), null);
         return Response.json({ results: [{ trackName: 'Exampleheron', trackId: 12345 }] });
       }
       assert.equal(init.headers['X-Domain-Hound-Client'], 'mcp/' + version);
+      assert.equal(init.headers['X-Domain-Hound-Internal'], '1');
+      assert.equal(init.headers['X-Domain-Hound-Test'], undefined);
       assert.equal(parsed.hostname, 'api.example.test');
       if (parsed.pathname === '/v1/check') return Response.json({
         version: 1, query: { name: 'exampleheron', ascii: 'exampleheron', exactDomain: null }, complete: true,
