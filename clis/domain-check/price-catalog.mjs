@@ -29,6 +29,10 @@ const refreshMarker = 'price-refresh.attempt';
 const pricingPage = 'https://www.spaceship.com/domain-search/pricing/';
 
 export function priceEvidenceUrl(shop, ending) {
+  if (ending === 'si') {
+    const source = Object.values(bundledCatalog?.catalogs ?? {}).find(catalog => catalog.prices.si?.shop === shop);
+    if (source?.prices.si.source) return source.prices.si.source;
+  }
   return ({
     Spaceship: pricingPage,
     Dynadot: 'https://www.dynadot.com/domain/prices?currency=USD',
@@ -45,9 +49,11 @@ function validPrice(row, shop) {
 
 function validSource(id, prices) {
   const entries = Object.entries(prices ?? {});
-  const required = id === 'spaceship' ? spaceshipEndings : ['gandi', ...snapshotShops].includes(id) ? [] : ['com', 'io'];
+  const required = id === 'spaceship' ? spaceshipEndings : ['gandi', 'namecheap', ...snapshotShops].includes(id) ? [] : ['com', 'io'];
   return entries.length > 0 && required.every(tld => Object.hasOwn(prices, tld)) &&
-    entries.every(([tld, row]) => supportedEndings.includes(tld) && validPrice(row, shops[id].name));
+    entries.every(([tld, row]) => supportedEndings.includes(tld) &&
+      (validPrice(row, shops[id].name) || (id === 'cloudflare' && tld === 'si' && row?.shop === shops[id].name
+        && row.status === 'not sold' && row.firstYear === undefined && row.renewal === undefined)));
 }
 
 function validDate(value) {
@@ -60,7 +66,7 @@ export function validCatalog(value) {
     return legacyCatalogEndings.every(tld => validPrice(value.prices?.[tld], otherEndings.includes(tld) ? 'Gandi' : 'Spaceship'));
   }
   return Object.keys(value.catalogs).length > 0 && Object.entries(value.catalogs).every(([id, source]) =>
-    [...primaryShops, 'gandi', ...snapshotShops].includes(id) && validDate(source.checkedAt) && validSource(id, source.prices));
+    [...primaryShops, 'gandi', 'namecheap', ...snapshotShops].includes(id) && validDate(source.checkedAt) && validSource(id, source.prices));
 }
 
 export async function loadCachedCatalog(directory = cacheDir) {
@@ -108,8 +114,10 @@ export const bundledCatalog = readBundledCatalog();
 // Snapshot-only registrars (Cloudflare) join by registrar: a fresh cached row for that registrar wins, else its dated
 // snapshot row. Fresh data from the other shops never discards them.
 export function datedListPrices(catalog, tld, now = new Date(), bundled = bundledCatalog) {
-  const cachedAll = listedPrices(catalog, tld);
   const shippedAll = listedPrices(bundled, tld).map(row => ({ ...row, bundled: true }));
+  // The public feeds include promotional .si prices. Use the dated standard rates for comparison.
+  if (tld === 'si' && shippedAll.length) return shippedAll;
+  const cachedAll = listedPrices(catalog, tld);
   const refreshable = rows => rows.filter(row => !snapshotShops.includes(row.id));
   const pinned = snapshotShops.flatMap(id => {
     const row = cachedAll.find(item => item.id === id && isListPriceUsable(item.checkedAt, now)) ?? shippedAll.find(item => item.id === id);
@@ -174,6 +182,12 @@ export async function getNameCatalog({ directory = cacheDir, now = new Date(), s
 
 export function listedPrices(catalog, tld) {
   const sources = sourcesOf(catalog);
+  if (tld === 'si') {
+    return Object.entries(sources).flatMap(([id, data]) => {
+      const row = data.prices[tld];
+      return validPrice(row, shops[id]?.name) ? [{ ...row, id, checkedAt: row.checkedAt ?? data.checkedAt }] : [];
+    });
+  }
   const listed = primaryShops.flatMap(id => sources[id]?.prices[tld] ? [{
     ...sources[id].prices[tld], id, checkedAt: sources[id].checkedAt,
   }] : []);
@@ -375,6 +389,7 @@ export function catalogOffers(catalog, tld, domain, rows = listedPrices(catalog,
   return rows.map(row => offer(row.id, domain, {
     firstYear: row.firstYear, regularFirstYear: row.firstYear, renewal: row.renewal,
     transferPrice: row.transfer, regularTransferPrice: row.transfer,
+    ...(row.note && { note: row.note }),
     evidence: 'shop', source: row.bundled ? 'bundled' : 'saved', checkedAt: row.checkedAt,
   }));
 }

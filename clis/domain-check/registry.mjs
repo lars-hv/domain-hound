@@ -11,6 +11,7 @@ export const takenLifetime = 24 * 3_600_000;
 export const freeLifetime = 10 * 60_000;
 const googleFreeLifetime = 30 * 60_000;
 const identityDigital = 'https://rdap.identitydigital.services';
+const siOrigin = 'https://rdap.register.si';
 const rdapRateLimit = 'Registry RDAP returned HTTP 429';
 // A rate-limited registry host is left alone for its Retry-After in this process and the next.
 const legacyIdentityCooldown = 'rdap-identity-digital-cooldown.json';
@@ -165,9 +166,12 @@ export function registrySignal(text) {
 }
 
 // Only the human-readable fields of an RDAP error document are read.
+function parseJson(body) {
+  try { return JSON.parse(body); } catch { return null; }
+}
+
 export function rdapSignal(body) {
-  let data;
-  try { data = JSON.parse(body); } catch { return null; }
+  const data = parseJson(body);
   const text = [data?.title, data?.description, ...(Array.isArray(data?.notices) ? data.notices : [])
     .flatMap(notice => [notice?.title, notice?.description])].flat().filter(value => typeof value === 'string');
   return registrySignal(text.join('\n'));
@@ -305,6 +309,8 @@ function retryWait(value, attempt, limited = false) {
 }
 
 async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, registry, attempts, directory) {
+  const si = new URL(base).origin === siOrigin;
+  const url = rdapDomainUrl(base, domain);
   let last = unknown('rdap', 'Registry lookup timed out');
   for (let attempt = 0; attempt < attempts && timeLeft() > 0; attempt++) {
     const now = Date.now();
@@ -323,13 +329,24 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
     if (timeLeft() <= 0) return last;
     let wait = retryWait(null, attempt);
     try {
-      const response = await fetcher(rdapDomainUrl(base, domain), {
+      const response = await fetcher(url, {
+        ...(si && { redirect: 'manual', cache: 'no-store' }),
         headers: { Accept: 'application/rdap+json, application/json' },
         signal: AbortSignal.timeout(Math.min(1900, timeLeft() || 1)),
       });
       const { status } = response;
+      const mediaType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase();
+      if (si && (response.redirected || (response.url && response.url !== url)
+        || ([200, 403, 404].includes(status) && !['application/rdap+json', 'application/json'].includes(mediaType)))) {
+        await response.body?.cancel().catch(() => {});
+        return unknown('rdap', 'Registry RDAP returned an unverified response');
+      }
       if (status === 200) {
         const data = await response.json().catch(() => null);
+        if (si && (data?.objectClassName !== 'domain' || typeof data.ldhName !== 'string'
+          || data.ldhName.toLowerCase().replace(/\.$/, '') !== domain)) {
+          return unknown('rdap', 'Registry RDAP did not identify the requested name');
+        }
         const expires = readExpiry && Array.isArray(data?.events)
           ? data.events.find(event => event?.eventAction === 'expiration')?.eventDate : null;
         const nameservers = Array.isArray(data?.nameservers)
@@ -337,10 +354,22 @@ async function lookupRdap(base, domain, fetcher, timeLeft, readExpiry, pause, re
         return { status: 'taken', source: 'rdap', ...saleSignal(nameservers),
           ...(Number.isFinite(Date.parse(expires)) && { expires }) };
       }
+      if (si && status === 403) {
+        const body = await response.json().catch(() => null);
+        if (body?.errorCode === 403 && typeof body.title === 'string'
+          && body.title.startsWith(domain + ' is forbidden (Rezervirano')) return signalled('rdap', 'reserved');
+        return unknown('rdap', 'Registry RDAP returned HTTP 403');
+      }
       if (status === 404) {
         // A 404 says only that the name is not registered. It is not a standard-price signal; a registry
         // that exposes premium or reserved status in the error document is read here.
         const body = await response.text().catch(() => '');
+        if (si) {
+          const data = parseJson(body);
+          if (data?.errorCode !== 404 || Number(response.headers.get('age') ?? 0) !== 0) {
+            return unknown('rdap', 'Registry RDAP returned an unverified 404');
+          }
+        }
         return signalled('rdap', rdapSignal(body.slice(0, 16_384)));
       }
       await response.body?.cancel().catch(() => {});
@@ -466,8 +495,8 @@ export async function lookupRegistrations(candidates, {
   // slow WHOIS server never uses up the time of the DNS step. A WHOIS answer settles the row; DNS only suggests.
   await mapLimit(unsettled, 6, async ({ row, result, filename, viaWhois }) => {
     const { domain, tld } = row.candidate;
-    // IANA lists RDAP as the sole registration service for Google's .app and .dev.
-    const query = ['app', 'dev'].includes(tld) ? null : fallbackWhois;
+    // Google has no WHOIS. Use .si WHOIS only when the IANA bootstrap has no .si RDAP route.
+    const query = ['app', 'dev', 'si'].includes(tld) ? null : fallbackWhois;
     const [answer, likely] = await Promise.all([
       query && !viaWhois && timeLeft() > 600
         ? lookupWhois(domain, tld, query, () => timeLeft() - 300, referrals, { pause, directory })

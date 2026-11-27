@@ -55,6 +55,45 @@ test('routes .co directly and settles a rate-limited .me/.io batch via registry 
 
 const identityBatch = domains => domains.map(domain => ({ domain, tld: domain.split('.').at(-1) }));
 
+test('.si uses IANA RDAP, shares retry and cache rules, and distinguishes reserved from unverified replies', async t => {
+  const path = await mkdtemp(join(tmpdir(), 'hound-registry-'));
+  t.after(() => rm(path, { recursive: true, force: true }));
+  const requests = [];
+  const names = identityBatch(['example-taken.si', 'example-free.si', 'example-reserved.si', 'example-unverified.si']);
+  const options = {
+    directory: pathToFileURL(path + '/'),
+    resolveNs: async () => [],
+    pause: async () => {},
+    fetcher: async (url, init) => {
+      if (url === 'https://data.iana.org/rdap/dns.json') {
+        return Response.json({ services: [[['si'], ['https://rdap.register.si/']]] });
+      }
+      assert.equal(new URL(url).hostname, 'rdap.register.si');
+      assert.equal(init.redirect, 'manual');
+      const domain = url.split('/').at(-1);
+      requests.push(domain);
+      const headers = { 'content-type': 'application/rdap+JSON' };
+      if (domain === 'example-taken.si') {
+        return Response.json({ objectClassName: 'domain', ldhName: domain }, { headers });
+      }
+      if (domain === 'example-reserved.si') {
+        return Response.json({ errorCode: 403, title: domain + ' is forbidden (Rezervirano)' }, { status: 403, headers });
+      }
+      if (domain === 'example-unverified.si') return new Response('Not found', { status: 404 });
+      if (requests.filter(request => request === domain).length === 1) return new Response(null, { status: 500 });
+      return Response.json({ errorCode: 404, title: "Domain '" + domain + "' not found" }, { status: 404, headers });
+    },
+  };
+  const records = await lookupRegistrations(names, options);
+  assert.deepEqual(records.map(row => [row.status, row.source, row.signal]), [
+    ['taken', 'rdap', undefined], ['free', 'rdap', undefined], ['unknown', 'rdap', 'reserved'], ['unknown', 'rdap', undefined],
+  ]);
+  assert.equal(requests.filter(request => request === 'example-free.si').length, 2);
+  requests.length = 0;
+  assert.ok((await lookupRegistrations(names.slice(0, 2), options)).every(row => row.checkedAt));
+  assert.deepEqual(requests, []);
+});
+
 test('while Identity Digital RDAP cools down, .ai/.io/.me go to their IANA-listed WHOIS hosts, paced per host', async t => {
   resetWhoisPacing();
   const path = await mkdtemp(join(tmpdir(), 'hound-registry-'));

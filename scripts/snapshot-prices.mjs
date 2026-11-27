@@ -16,6 +16,15 @@ if (missing.length) throw new Error('The cached price catalog has no price for .
 const current = JSON.parse(await readFile(target, 'utf8'));
 const kept = Object.fromEntries(snapshotShops.filter(id => current.catalogs?.[id]).map(id => [id, current.catalogs[id]]));
 const catalogs = catalog.catalogs ? { ...catalog.catalogs, ...kept } : null;
-await writeFile(target, JSON.stringify({ checkedAt: catalog.checkedAt,
+// Keep the dated standard .si rates and unsupported status across automated storefront refreshes.
+if (catalogs) {
+  for (const [id, source] of Object.entries(current.catalogs ?? {})) {
+    if (!source.prices.si?.source) continue;
+    catalogs[id] ??= { checkedAt: source.checkedAt, prices: {} };
+    catalogs[id].prices.si = source.prices.si;
+  }
+}
+await writeFile(target, JSON.stringify({ checkedAt: [catalog.checkedAt, ...(catalogs ? Object.values(catalogs)
+  .map(source => source.prices.si?.checkedAt).filter(Boolean) : [])].sort().at(-1),
   ...(catalogs ? { catalogs } : { prices: catalog.prices }) }, null, 2) + '\n');
 console.log('Snapshot from ' + catalog.checkedAt.slice(0, 10) + ' written for ' + targetEndings.length + ' endings.');

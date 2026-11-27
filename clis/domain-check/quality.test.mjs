@@ -9,7 +9,7 @@ import { resultPages } from '../../results.mjs';
 import { readShareFragment } from '../../site/r/share-format.mjs';
 import { pickAlternatives } from './dossier.mjs';
 import { lightTargets } from './index.mjs';
-import { bundledCatalog, datedListPrices, requestEndings, snapshotShops, targetEndings } from './price-catalog.mjs';
+import { bundledCatalog, datedListPrices, priceEvidenceUrl, requestEndings, snapshotShops, targetEndings } from './price-catalog.mjs';
 import { choosePick, comparePicks, defaultEndings, listQuote, pickCapUsd, pickName, qualityEndings, qualityRank, rankName } from './name-search.mjs';
 import { bestValue } from './triage.mjs';
 
@@ -251,6 +251,21 @@ test('the broker dossier uses the same order and pick rule', () => {
     [['example.me', 'pick'], ['example.ai', 'exact-ending'], ['example.io', 'exact-ending']]);
 });
 
+test('.si is optional and shows five standard list prices even when a storefront cache has a sale', () => {
+  assert.ok(requestEndings.includes('si') && !defaultEndings.includes('si'));
+  assert.equal(bundledCatalog.catalogs.cloudflare.prices.si.status, 'not sold');
+  const checkedAt = '2026-11-28T00:00:00.000Z';
+  const sale = { catalogs: { porkbun: { checkedAt, prices: { si: { shop: 'Porkbun', firstYear: 19.94, renewal: 17.12 } } } } };
+  const rows = datedListPrices(sale, 'si', new Date(checkedAt));
+  assert.deepEqual(Object.fromEntries(rows.map(row => [row.shop, [row.firstYear, row.renewal]])), {
+    Spaceship: [11.88, 11.98], Porkbun: [23.70, 23.70], Dynadot: [11.30, 11.30],
+    Namecheap: [15.48, 15.48], Gandi: [126, 215.98],
+  });
+  assert.ok(rows.every(row => row.checkedAt.startsWith('2026-11-27') &&
+    row.source === priceEvidenceUrl(row.shop, 'si') && row.source.startsWith('https://')));
+  assert.equal(listQuote(sale, { domain: 'example-name.si', tld: 'si' }, new Date(checkedAt)).shop, 'Dynadot');
+});
+
 test('Cloudflare: one checked official snapshot, merged by registrar with fresh cache, flagged Needs Cloudflare DNS', async t => {
   assert.deepEqual(snapshotShops, ['cloudflare']);
   const cloudflare = bundledCatalog.catalogs.cloudflare;
@@ -258,7 +273,7 @@ test('Cloudflare: one checked official snapshot, merged by registrar with fresh 
   assert.equal(cloudflare.checkedAt.slice(0, 10), '2026-11-25');
   const standard = { com: 11.17, ai: 80, io: 50, dev: 12.2, app: 14.2, co: 30, me: 16.56, xyz: 13.5, tech: 49.2, net: 11.86,
     org: 11.2, studio: 31.2, uk: 5.3, 'co.uk': 5.3 };
-  assert.deepEqual(Object.fromEntries(Object.entries(cloudflare.prices).map(([tld, item]) => [tld, item.firstYear])), standard);
+  assert.deepEqual(Object.fromEntries(Object.entries(cloudflare.prices).filter(([, item]) => item.status !== 'not sold').map(([tld, item]) => [tld, item.firstYear])), standard);
   for (const item of Object.values(cloudflare.prices)) assert.equal(item.renewal, item.firstYear);
 
   // A fresh cache from the shops that refresh at run time keeps the dated Cloudflare row instead of dropping the snapshot.
