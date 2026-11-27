@@ -93,6 +93,7 @@ function priceLine(offer, cheapest) {
 }
 
 export function pickLine(pick) {
+  if (pick.owned) return 'You own ' + md(pick.domain) + '.';
   return 'The Hound’s pick is ' + md(pick.domain) + ' at ' + md(pick.shop) + ' for ' + money(pick.threeYearUsd) + ' over three years.';
 }
 
@@ -107,6 +108,7 @@ export function checkLines(check, pending, { local = false, includePick = true }
       : Number.isInteger(score?.value) ? [md(check.query.name) + ' · Name score ' + score.value + '/100 · ' + md(score.band),
         ...(score.reasons ?? []).map(md)] : []),
     ...(pick && includePick ? [pickLine(pick)] : []),
+    ...domains.filter(row => row.status === 'owned').map(row => 'Yours · ' + md(row.domain)),
     ...domains.filter(row => row.status === 'available').flatMap(row => [
       'Available · ' + md(row.domain),
       ...(row.prices?.length ? row.prices.map((offer, index) => priceLine(offer, !local && index === 0)) : ['Check the price at the shop.']),

@@ -131,15 +131,15 @@ test('offers its latest protocol for an unsupported version', async () => {
   assert.equal(resultOf(responses, 1).protocolVersion, '2025-11-25');
 });
 
-test('advertises eleven distinct tools with intent descriptions and complete annotations', async () => {
+test('advertises thirteen distinct tools with intent descriptions and complete annotations', async () => {
   const responses = await exchange([...handshake(), request(2, 'tools/list')]);
   const { tools } = resultOf(responses, 2);
-  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'check_batch', 'naming_guide', 'watch_domain',
+  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'check_batch', 'naming_brief', 'domainhound_generate_names', 'naming_guide', 'watch_domain',
     'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
-  const [check, triage, batch, naming, watch, , portfolio] = tools;
+  const [check, triage, batch, naming, , , watch, , portfolio] = tools;
   assert.equal(batch.inputSchema.properties.candidates.maxItems, 60);
   assert.deepEqual(batch.inputSchema.required, ['candidates']);
-  assert.match(batch.description, /one call.*stop without a follow-up question.*Offer another round only if asked/s);
+  assert.match(batch.description, /^Use this after naming_brief.*one call/);
   const { inputSchema } = check;
   function assertDescriptions(schema) {
     for (const property of Object.values(schema.properties ?? {})) {
@@ -150,7 +150,7 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
     if (schema.additionalProperties && typeof schema.additionalProperties === 'object') assertDescriptions(schema.additionalProperties);
   }
   for (const tool of tools) {
-    assert.match(tool.description, /^Use this (?:directly )?when /);
+    assert.match(tool.description, /^Use this (?:when |first |after )/);
     assert.doesNotMatch(tool.description, /clickable Results page link/);
     assert.ok(tool.annotations.title);
     for (const hint of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
@@ -165,10 +165,9 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
   }
   assert.match(check.description, /purchase: true/);
   assert.match(check.description, /explicit live shop check/);
-  assert.match(triage.description, /For new names, use check_batch\./);
+  assert.match(triage.description, /For new names, start with naming_brief\./);
   assert.equal(triage.inputSchema.properties.proposals.maxItems, 60);
   for (const tool of [check, triage]) {
-    assert.match(tool.description, /Show the table as given\. If a source is missing, leave it out; never tell the user a check failed\./);
     assert.doesNotMatch(tool.description, /Repeat .*collect/);
   }
   assert.match(triage.description, /idea alone when host brainstorming is unavailable/);
@@ -182,7 +181,7 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   assert.equal(check._meta['anthropic/maxResultSizeChars'], 40_000);
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'detail', 'ownedDomains', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
+  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'detail', 'market', 'budgetThreeYearUsd', 'ownedDomains', 'likes', 'dislikes', 'idea', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
   for (const flag of ['shortlist', 'purchase', 'picked', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
   assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
   assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no', 'eu']);
@@ -209,7 +208,8 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
   for (const value of ['grøn stue', 'grøn—stue', 'a.b.com']) assert.equal(pattern.test(value), false, value);
   assert.match(query.description, /^One name or exact domain, e\.g\. "lanternbay\.me"/);
   assert.match(names.description, /^1 to 20 bare names or exact domains, e\.g\./);
-  assert.equal(naming.inputSchema.properties.about.maxLength, 512);
+  assert.equal(naming.inputSchema.properties.idea.maxLength, 400);
+  assert.equal(tools.find(tool => tool.name === 'naming_guide').inputSchema.properties.about.maxLength, 512);
   assert.equal(naming.inputSchema.additionalProperties, false);
 });
 
@@ -368,7 +368,7 @@ test('naming_method serves the four questions in order and describes the checked
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
   for (const phrase of ['six territories', 'familiar anchor', 'say-and-spell', 'one check_batch call with idea and up to 60 candidates',
-    'do not call again', 'table as given', 'exact liked words', 'latest feedback', 'three rounds']) {
+    'do not call again', 'up to two lines of advice', 'exact liked words', 'latest feedback', 'three rounds']) {
     assert.ok(recipe.includes(phrase), phrase);
   }
 });
@@ -1084,7 +1084,6 @@ test('forwards per-name GEO from the client memory and rejects anything else', a
   assert.equal(geo.type, 'object');
   assert.equal(geo.maxProperties, 20);
   assert.match(geo.description, /own knowledge only, without searching/);
-  assert.match(triage.description, /Show the table as given\. .*The table and its supporting lines are the complete first reply/);
   const pattern = new RegExp(geo.additionalProperties.pattern);
   for (const value of ['known: notes app', 'Known (notes app)', 'unknown']) assert.ok(pattern.test(value), value);
   for (const value of ['known', 'maybe', 'unknown brand']) assert.ok(!pattern.test(value), value);
@@ -1112,7 +1111,7 @@ test('forwards per-name naming evidence for the Name score and rejects anything 
   assert.deepEqual(candidates.additionalProperties.properties.relation.enum, ['direct', 'loose', 'none']);
   assert.match(candidates.description, /Missing evidence counts as not checked/);
   const naming = resultOf(responses, 2).tools.find(tool => tool.name === 'naming_guide');
-  assert.match(naming.description, /explore naming directions or blend past choices/);
+  assert.match(naming.description, /naming method.*naming_brief/);
   const flags = callData(responses, 3).flags;
   const at = flags.indexOf('--candidates');
   assert.ok(at > 0);
@@ -1255,7 +1254,7 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
       const responses = await runServer([fileURLToPath(entry)],
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
       assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
-      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'check_batch', 'naming_guide',
+      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'check_batch', 'naming_brief', 'domainhound_generate_names', 'naming_guide',
         'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
@@ -1461,9 +1460,9 @@ test('the local idea fallback gives a short next step and keeps the recipe in fu
   const args = { idea: 'An app for planning a library' };
   const responses = await exchange([...handshake(), call(2, args, 'triage_names'),
     call(3, { ...args, detail: 'full' }, 'triage_names')]);
-  assert.match(callText(responses, 2), /naming_guide/);
+  assert.match(callText(responses, 2), /naming_brief/);
   assert.ok(callText(responses, 2).length < 200);
-  assert.match(callText(responses, 3), /Use this naming method/);
+  assert.match(callText(responses, 3), /Use naming_brief, then send your candidates to check_batch/);
   assert.ok(callText(responses, 3).length > 1000);
 });
 
@@ -2086,8 +2085,8 @@ test('short domain check combines stated and saved ownership, ranked variants an
   assert.doesNotMatch(text, /—/);
   assert.doesNotMatch(text, /unrelated\.dev/);
   const supporting = text.split('\n').filter(line => line && !/^\||^All prices|^Taken: /.test(line));
-  assert.deepEqual(supporting.map(line => line.split(' ')[0]), ['Keep', 'Apps:']);
-  assert.equal(supporting[0], 'Keep using lanternbay.ai and hold off on lanternbay.com.');
+  assert.deepEqual(supporting.map(line => line.split(' ')[0]), ['Apps:', 'Who']);
+  assert.match(supporting[1], /^Who else/);
   assert.equal(evidence.context, undefined);
   assert.deepEqual(rows[0].statuses.owned, ['lanternbay.ai', 'lanternbay.io']);
   assert.deepEqual(rows[0].statuses.taken, ['com']);
@@ -2300,4 +2299,44 @@ test('check_batch checks up to 60 host names locally and returns five ranked pic
   const tooMany = await mcp.ask(call(4, { candidates: Array.from({ length: 61 }, (_, i) => ({ name: 'Name ' + i })) }, 'check_batch'));
   assert.equal(tooMany.result.isError, true);
   assert.match(tooMany.result.content[0].text, /Send 1 to 60 candidates in one call\./);
+});
+
+test('a host naming brief carries market, cap, ownership and preferences into a checked batch', async t => {
+  const asked = [];
+  const trademark = { status: 'exact_match_found', marks: [{ mark: 'TRAVEL LAMP', owner: 'Example Studio' }] };
+  const mcp = await local(t, { context: {
+    async batchDomains(domains) {
+      asked.push(...domains);
+      return domains.map(domain => ({ domain, ending: domain.split('.')[1], status: 'available', prices: [{
+        shop: 'Example Shop', firstPaymentUsd: 8, renewalUsd: 10, threeYearUsd: domain.endsWith('.com') ? 45 : 28,
+        buyUrl: 'https://example.test/buy', source: 'https://example.test/prices',
+      }] }));
+    },
+    async localChecks() { return { trademarks: { us: trademark } }; },
+  } });
+  const context = { idea: 'Help families rebook cancelled flights', market: ['NO'], eligible: ['no'],
+    budgetThreeYearUsd: 30, ownedDomains: ['LanternGo.io'], likes: ['lamp'], dislikes: ['.ai'] };
+  const guide = await mcp.ask(call(2, context, 'naming_brief'));
+  assert.deepEqual(guide.result.structuredContent.brief, context);
+  assert.match(guide.result.content[0].text, /Markets: NO\nThree-year USD cap: 30\nOwned domains: LanternGo\.io/);
+  const candidates = [
+    { name: 'Travel Gate', why: 'A gate helps families rebook flights' },
+    { name: 'Travel Lamp', why: 'A lamp guides families after cancelled flights' },
+    { name: 'Lantern Go', why: 'A lantern helps travellers find a way' },
+  ];
+  const norway = await mcp.ask(call(3, { ...context, candidates }, 'check_batch'));
+  const picks = norway.result.structuredContent.picks;
+  assert.deepEqual(picks.map(({ domain }) => domain), ['lanterngo.io', 'travellamp.no', 'travelgate.no']);
+  assert.equal(picks[0].domainFacts.status, 'owned');
+  assert.equal(picks[1].domainFacts.price.threeYearUsd, 28);
+  assert.deepEqual(picks[1].trademarks.us, trademark);
+  assert.match(norway.result.content[0].text, /exact US trademark match/);
+  assert.doesNotMatch(norway.result.content[0].text, /matters if you sell in the US/i);
+  assert.ok(!asked.some(domain => domain.endsWith('.ai')));
+  assert.ok(!asked.includes('lanterngo.io'));
+
+  const us = await mcp.ask(call(4, { ...context, market: ['NO', 'US'], candidates }, 'check_batch'));
+  assert.match(us.result.content[0].text, /Near miss:.*Matters if you sell in the US/);
+  const capped = await mcp.ask(call(5, { ...context, budgetThreeYearUsd: 0, candidates }, 'check_batch'));
+  assert.deepEqual(capped.result.structuredContent.picks.map(({ domain }) => domain), ['lanterngo.io']);
 });

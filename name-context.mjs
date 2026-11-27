@@ -190,11 +190,16 @@ export function brandConflict(context, trademarks) {
       context?.entities?.some(row => /company|corporation|brand|manufacturer|retailer/i.test(row.description)));
 }
 
-export function whoElse(context, { pick, ownedDomains = [], blockedBrand, hasAdvice } = {}) {
+export const businessWords = text => new Set((text ?? '').toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) ?? []);
+export const businessFit = (text, keywords) => [...businessWords(text)].filter(word => keywords.has(word)).length;
+
+export function whoElse(context, { pick, ownedDomains = [], blockedBrand, hasAdvice, idea } = {}) {
   if (!context) return '';
   const { domain, site, listing, registration, entities, companies, linkedin } = context;
-  const relevantEntity = entities?.find(row => /company|corporation|business|brand|enterprise|manufacturer|retailer|apparel/i.test(row.description))
-    ?? entities?.[0];
+  const keywords = businessWords(idea);
+  const byFit = keywords.size ? entities?.toSorted((a, b) => businessFit(b.description, keywords) - businessFit(a.description, keywords)) : entities;
+  const relevantEntity = byFit?.find(row => /company|corporation|business|brand|enterprise|manufacturer|retailer|apparel/i.test(row.description))
+    ?? byFit?.[0];
   const facts = [];
   if (domain) {
     let holder = 'holder unclear';

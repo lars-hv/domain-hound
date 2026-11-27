@@ -1,4 +1,4 @@
-export const showAsIs = 'Show `display` exactly as written, then add at most two sentences of advice below it.';
+export const showAsIs = 'Share the display and its checked facts, then add up to two lines of advice if useful.';
 export const purchaseLine = 'This check leaves checkout to you; use the link above.';
 
 export const googleSearchInstruction = 'Before answering, use your built-in web search for each name marked google.search (up to 3). '
@@ -15,19 +15,23 @@ export const geoInstruction = 'GEO (presence in AI answers): for each name, answ
 export const steeringQuestion = 'Which word would you keep, and what do you like about another name?';
 const shortText = text => text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim();
 
-export const namingRecipe = (about = '') => [
+export const namingRecipe = (about = '', context = {}) => [
   'Naming recipe from Domain Hound',
   about ? 'Brief: ' + shortText(about) : 'Ask once if the brief is missing: What does it do, for whom, in one sentence?',
+  ...Object.entries({ Customer: context.customer, Markets: context.market?.join(', '),
+    'Three-year USD cap': context.budgetThreeYearUsd, 'Owned domains': context.ownedDomains?.join(', '),
+    Likes: context.likes?.join(', '), Dislikes: context.dislikes?.join(', '), 'Eligible endings': context.eligible?.join(', ') })
+    .filter(([, value]) => value || value === 0).map(([label, value]) => label + ': ' + shortText(String(value))),
   '1. Best domain: check the exact name and report the best ending, upfront price and renewal.',
   '2. Best alternative: try other suitable endings for the same name and choose the strongest available one.',
   '3. Rebrand: picture a real customer moment. Explore six territories: the job, result, familiar metaphor, object or place, role, and real-word twist.',
   'A compound can work in any territory if both words add meaning. Write 12–18 ideas across all six territories and put the strongest first. Try Glean’s verb, Sentry’s watchful role or Dropbox’s everyday action as patterns.',
   'Cut names that fail truth, recognition, connection, say-and-spell or recall. Prefer two syllables. Reject category mash-ups, forced spelling and generic endings such as -ify or -hub.',
   'Give each name a plain reason of at most 16 words naming the familiar anchor and its link to the work.',
-  'Make one check_batch call with idea and up to 60 candidates, preferring names that fit .com, .app or .ai; show its five picks and stop. The territory field must be exactly one of: job, result, metaphor, object, role, twist.',
+  'Make one check_batch call with idea and up to 60 candidates. Include the same known context and put your strongest names first. The territory field must be exactly one of: job, result, metaphor, object, role, twist.',
   'Set anchor to a familiar word appearing in the name, and repeat it in why. Send name, territory, anchor, why and optional parents. Use the original business brief as idea.',
   'Answer from that one result; do not call again to collect late checks. They fill in on the results page.',
-  'Show the tool’s table as given: up to five names from different territories, each with why, domain, price now and at renewal, and settled checks.',
+  'Share the compact table and its checked facts. Add up to two lines of advice tailored to the user.',
   '4. A name that lasts: pick an easy-to-recall checked name that can grow beyond the first feature. Name any screen still needed for the audience.',
   'When the founder is still exploring, ask: ' + steeringQuestion,
   'Keep exact liked words and remember sounds, images, tone, rejected patterns, parent names and all ideas already shown.',

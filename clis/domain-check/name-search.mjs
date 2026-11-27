@@ -104,11 +104,12 @@ export function choosePick(options, { requested = [], eligible = [], budget, all
     (exactLabel || domainEnding(option.domain) !== 'ai' || asked(option.domain, requested) >= 0
       || (budget != null && known(option.total) && cents(option.total) <= cents(budget))));
   const rank = option => qualityRank(option.domain, requested, eligible);
-  const byQuality = (a, b) => (exactLabel ? domainTier(a.domain, exactLabel) - domainTier(b.domain, exactLabel)
+  const tier = domain => domain.split('.')[0] === exactLabel && asked(domain, requested) >= 0 ? 0 : domainTier(domain, exactLabel);
+  const byQuality = (a, b) => (exactLabel ? tier(a.domain) - tier(b.domain)
     : Number(a.exact === false) - Number(b.exact === false)) || rank(a) - rank(b)
     || (a.total ?? Infinity) - (b.total ?? Infinity)
     || (a.now ?? Infinity) - (b.now ?? Infinity) || a.domain.localeCompare(b.domain);
-  const withinCap = allowed.filter(option => upfrontCap != null ? known(option.total) : fitsCap(option, { budget }));
+  const withinCap = allowed.filter(option => upfrontCap != null && budget == null ? known(option.total) : fitsCap(option, { budget }));
   return withoutLockIn(withinCap).sort(byQuality)[0]
     ?? (allowOverCap ? lowestTotal(withoutLockIn(allowed), rank) : undefined);
 }

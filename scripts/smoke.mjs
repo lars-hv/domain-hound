@@ -12,7 +12,7 @@ const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const scratch = join(root, '.verify');
 const query = 'example-hound-test';
-const tools = ['check_domains', 'triage_names', 'check_batch', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
+const tools = ['check_domains', 'triage_names', 'check_batch', 'naming_brief', 'domainhound_generate_names', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 // The engine filters .inc out of a bare-name result unless it finds an affordable available registration.
 const endings = defaultEndings.filter(ending => ending !== 'inc');
 const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
