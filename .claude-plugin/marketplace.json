@@ -5,9 +5,9 @@
   "plugins": [
     {
       "name": "domain-hound",
-      "version": "0.1.20",
+      "version": "0.1.21",
       "source": "./",
-      "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
+      "description": "Ask Claude for a name or domain. Get one you can buy. It checks the domain, the cheapest shop including renewal, the app stores and US trademarks, in one answer. Free. Never buys without your yes.",
       "relevance": { "topic": "Domains", "signals": { "hosts": ["rdap.org", "porkbun.com"] } }
     }
   ]

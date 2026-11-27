@@ -1,16 +1,26 @@
 {
   "name": "domain-hound",
   "displayName": "Domain Hound",
-  "version": "0.1.20",
-  "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
+  "version": "0.1.21",
+  "description": "Ask Claude for a name or domain. Get one you can buy. It checks the domain, the cheapest shop including renewal, the app stores and US trademarks, in one answer. Free. Never buys without your yes.",
   "author": {
     "name": "Lars Hvinden"
   },
   "homepage": "https://domainhound.dev",
   "license": "MIT",
   "keywords": [
-    "mcp",
-    "domains"
+    "domain name",
+    "domain availability",
+    "domain prices",
+    "renewal price",
+    "startup name",
+    "business name",
+    "naming",
+    "app name",
+    "trademark",
+    "rebrand",
+    ".com",
+    ".ai"
   ],
   "mcpServers": {
     "domain-hound": {
@@ -24,5 +34,6 @@
   "icon": "./assets/icon-512.png",
   "documentationUrl": "https://github.com/lars-hv/domain-hound#readme",
   "supportUrl": "https://github.com/lars-hv/domain-hound/issues",
-  "privacyPolicyUrl": "https://domainhound.dev/privacy/"
+  "privacyPolicyUrl": "https://domainhound.dev/privacy/",
+  "termsOfServiceUrl": "https://domainhound.dev/terms/"
 }
