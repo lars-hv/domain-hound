@@ -6,7 +6,7 @@ Install the package to use Domain Hound locally in Claude Code or Codex. Never b
 
 App checks cover the App Store and Google Play. Exact US trademark matches only. Similar names aren't checked. Dated list prices, source shown. Trademark results are a search aid, not legal advice.
 
-- **Find and check:** `check_batch`, `triage_names`, `check_domains`, `naming_guide`
+- **Find and check:** `naming_brief`, `check_batch`, `check_domains`, `triage_names`, `domainhound_generate_names`
 - **Buy and set up:** `quote_domain`, `buy_domain`, `setup_domain`
 - **Watch taken domains:** `taken_domain_dossier`, `watch_domain`
 - **Plan a move:** `move_domain`
@@ -82,7 +82,7 @@ When the hosted lookup cannot check a .dev or .app domain, the package can ask G
 
 Pass `idea` to `triage_names` to find checked names. The results page updates as screening finishes.
 
-For a clear brief, send 12 to 20 strong names directly to `check_batch`. It accepts up to 60 in one call. The package checks .com for every name and .app and .ai for the first ones, then App Store, Google Play and exact US trademarks, and returns up to five picks: clean names first, then near misses with their one issue. It needs no hosted naming service.
+Start a new naming round with `naming_brief`, write 12 to 18 candidates in your host, then send them to `check_batch` once. Pass the business description, markets, three-year USD cap, owned domains and preferences when known. It accepts up to 60 in one call. The package checks .com for every name and .app and .ai for the first ones, then App Store, Google Play and exact US trademarks, and returns up to five picks: clean names first, then near misses with their one issue. It needs no hosted naming service.
 Pass `names` to screen existing names. For another naming round, send the same `idea`, the previous `shown` names,
 your updated `taste` and the latest `feedback`. Add `proposals` with up to 20 host-written candidates per call
 to use the same checks on your own ideas. Use `pick` with a previously shown name to recheck one winner.
@@ -108,13 +108,13 @@ For the optional browser fallback, run `npm install domain-hound playwright && n
 - [Find an available startup name](https://domainhound.dev/guides/find-an-available-startup-name/)
 - [Check whether an app name is taken](https://domainhound.dev/guides/is-my-app-name-available/)
 
-Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to generate names for an idea or screen names you already have. Ask for `naming_guide` to see the naming process.
+Use `check_domains` for one exact domain or up to 20 names or domains. Use `triage_names` to screen names you already have. Use `domainhound_generate_names` when the client cannot write its own candidates or wants extra inspiration.
 
 ### Naming skill and Name score
 
 The Claude Code plugin ships one skill at `skills/domain-hound/SKILL.md`. It walks through the best domain
 and price, the best alternative if it is taken, a possible rebrand, and a name that will still fit as the business grows.
-Any MCP client can get the method from `naming_guide`. Generated names include a short reason linking a familiar
+Any MCP client can get the method from `naming_brief`. Generated names include a short reason linking a familiar
 word or image to the business. New ideas are shown after the domain, app stores and exact US trademark checks finish.
 
 `triage_names` gives each of the first five names a **Name score**, 0 to 100: how clear the road is. It is not a probability. Points come from the best available ending (22), its 3-year price (3), trademarks (25), rivals (20), apps (8), handles (7) and name quality (15). Bans (digits, hyphens, -ly, -ify, -io, AI, GPT, bot, smart, generic words like hub or labs, over 12 letters) and hard filters (no available ending within $60 over 3 years, an identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning) run first, in code; those names get no score and are never a pick. A check that failed counts 40% of its points and says "Not checked". Trademarks stay at 20 of 25 until the EU office answers. A failed US trademark or rival check keeps the total at 79 or less, and so does missing `candidates` evidence for the bans code cannot judge on its own. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Picks rank by score. Each scored name shows up to three reasons. The hosted generator includes its own Name score in each suggestion. A local bare-name lookup can also provide a preliminary score.
