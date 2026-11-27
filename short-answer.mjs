@@ -1,3 +1,5 @@
+import { brandConflict, domainTier, rankedAlternatives, selectionReason, whoElse } from './name-context.mjs';
+import { qualityRank } from './clis/domain-check/name-search.mjs';
 const plain = value => String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim();
 const usd = value => '$' + value.toFixed(2);
 const taken = row => ['taken', 'exact_match_found'].includes(row?.status);
@@ -44,6 +46,9 @@ function appChecks(check, pending) {
 }
 
 export function shortDomainAnswer(check, { pending, link } = {}) {
+  if (check.context || check.advice || check.ownedDomains?.length || check.ranked) {
+    return rankedDomainAnswer(check, { pending, link });
+  }
   const exact = check.query.exactDomain;
   const alternatives = check.alternatives;
   const rows = alternatives?.domains ?? check.domains;
@@ -86,6 +91,54 @@ export function shortDomainAnswer(check, { pending, link } = {}) {
   return [first, ...endings, apps, warning && 'Heads-up: ' + warning,
     late.length ? 'Still checking ' + late.join(', ') + '.' : '', link].filter(Boolean).join('\n');
 }
+
+function rankedDomainAnswer(check, { pending, link }) {
+  const { query, ownedDomains = [], alternatives, context, advice } = check;
+  const exact = query.exactDomain;
+  const label = query.ascii ?? context?.label ?? (exact || query.name).toLowerCase().split('.')[0];
+  const rows = alternatives?.domains ?? check.domains;
+  const exactPick = check.choice?.pick;
+  const best = alternatives?.choice?.pick ?? exactPick;
+  const row = rows.find(row => row.domain === best?.domain);
+  const hit = check.domains.find(row => row.domain === exact);
+  const displayPick = !exact || best?.domain !== exact ? row : hit;
+  const reason = best && selectionReason(best.domain, label);
+  const priced = displayPick && domainPrice(displayPick, best);
+  const owned = ownedDomains.length ? 'You own: ' + ownedDomains.join(', ') : '';
+  let first;
+  if (exact && ownStatus(hit, ownedDomains, exact)) first = best && best.domain !== exact && priced
+    ? 'Alternative: ' + best.domain + ', ' + priced + '. ' + reason : 'Keep using ' + exact + '.';
+  else if (exact && hit?.status === 'available' && !best && !hit.premium) first = exact + ' is available' +
+    (hit.prices?.length ? ' above your price cap.' : '. Price unconfirmed.');
+  else if (exact && hit?.status === 'available' && best?.domain === exact && priced) first = exact + ' is available: ' + priced + '.';
+  else if (exact) {
+    const state = hit?.status === 'taken' ? ' is taken.' : hit?.reason === 'reserved' ? ' is reserved.'
+      : hit?.premium ? ' has ' + (/may be|possible|risk/i.test(hit.premium) ? 'possible premium pricing.' : 'premium pricing.')
+        : hit?.status === 'available' ? ' is above your price cap.' : ' could not be confirmed.';
+    first = exact + state + (best && priced ? ' Best alternative: ' + best.domain + ', ' + priced + '. ' + reason : '');
+  } else if (best && priced) first = best.domain + ' is your best bet: ' + priced + '. ' + reason;
+  else if (owned) first = 'Keep using ' + ownedDomains[0] + '.';
+  else if (rows.filter(row => !row.variant).every(row => row.status === 'taken' || row.status === 'owned')) {
+    first = 'All ' + rows.filter(row => !row.variant).length + ' checked endings are taken. Try a new name.';
+  } else first = 'No priced domain confirmed within the cap. Try a new name.';
+  const compare = (a, b) => domainTier(a.domain, label) - domainTier(b.domain, label) ||
+    qualityRank(a.domain) - qualityRank(b.domain);
+  const also = rankedAlternatives(rows, displayPick ?? hit, label, compare);
+  const { apps, late, warning } = appChecks(check, pending);
+  const appLine = [apps, late.filter(label => label !== 'US trademark').length
+    ? 'Still checking ' + late.filter(label => label !== 'US trademark').join(', ') : ''].filter(Boolean).join(' · ');
+  const trademarkLine = warning ? 'Heads-up: ' + warning : late.includes('US trademark') ? 'Still checking US trademark.' : '';
+  const others = whoElse(context, { pick: best, ownedDomains, hasAdvice: Boolean(advice),
+    blockedBrand: brandConflict(context, check.trademarks) });
+  const lines = [first, appLine, trademarkLine, others, advice?.text, link].filter(Boolean);
+  const extra = also.length ? 'Also available: ' + also.map(row => row.domain).join(', ') : '';
+  if (owned && lines.length < 6) lines.splice(1, 0, owned);
+  else if (owned) lines[0] += ' · ' + owned;
+  if (extra && lines.length < 6) lines.splice(owned && lines[1] === owned ? 2 : 1, 0, extra);
+  return lines.join('\n');
+}
+
+const ownStatus = (row, owned, exact) => row?.status === 'owned' || owned.includes(exact);
 
 export function shortIdeaAnswer(checks, { pending, link } = {}) {
   const lines = checks.slice(0, 5).map(check => {

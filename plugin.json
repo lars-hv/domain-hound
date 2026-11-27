@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "domain-hound",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "author": {
     "name": "Lars Hvinden"

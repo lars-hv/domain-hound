@@ -196,7 +196,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
   }
 
   return {
-    async check(name, extraEndings, signal, onDomains) {
+    async check(name, extraEndings, signal, onDomains, { compareExact } = {}) {
       const [main, ...extras] = await Promise.all([get(name, signal),
         ...extraEndings.map(ending => get(normalizeName(name) + '.' + ending, signal))]);
       const { details, ...answer } = main;
@@ -212,7 +212,7 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
       if (comparison) answer[alternativeEndings] = withInc(inc);
       answer.complete = main.complete && extras.every(extra => extra.complete);
       const exact = main.query.exactDomain;
-      const needsAlternatives = exact && main.domains.length === 1 && main.domains[0].domain === exact && main.domains[0].status === 'taken';
+      const needsAlternatives = exact && main.domains.length === 1 && main.domains[0].domain === exact && (main.domains[0].status === 'taken' || compareExact?.(main.domains[0]));
       // Run alongside the name checks. An unavailable comparison must not discard the exact answer.
       const alternatives = needsAlternatives ? get(main.query.ascii, signal).then(comparison =>
         comparison.query.ascii === main.query.ascii ? {

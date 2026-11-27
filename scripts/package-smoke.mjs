@@ -48,7 +48,7 @@ try {
     const [packed] = JSON.parse(stdout);
     const paths = packed.files.map(file => file.path);
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
-      'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
+      'watch.mjs', 'dossier.mjs', 'name-context.mjs', 'context-sources.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
       'share.mjs', 'site/r/share-format.mjs', 'skills/domain-hound/SKILL.md', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
       'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs']) {

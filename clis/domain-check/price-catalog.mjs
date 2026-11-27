@@ -8,7 +8,7 @@ import { withShopPages } from './confirm.mjs';
 import { catalogPrice, dynadotOffer, offer, shops } from './prices.mjs';
 
 // Default order follows the hosted checker. Other catalog endings are available on request.
-export const targetEndings = ['com', 'ai', 'io', 'dev', 'co', 'so', 'sh', 'inc', 'tech', 'app'];
+export const targetEndings = ['com', 'ai', 'io', 'dev', 'app', 'co', 'so', 'sh', 'tech', 'inc'];
 export const requestEndings = ['me', 'si', 'no', 'xyz', 'net', 'org', 'gg', 'studio', 'se', 'dk', 'de', 'uk', 'co.uk', 'eu'];
 export const supportedEndings = [...targetEndings, ...requestEndings];
 // Older on-disk snapshots used these required entries. Keep reading them on the local fallback path.
@@ -27,6 +27,16 @@ export const snapshotShops = ['cloudflare'];
 const automaticShops = ['porkbun', 'dynadot'];
 const refreshMarker = 'price-refresh.attempt';
 const pricingPage = 'https://www.spaceship.com/domain-search/pricing/';
+
+export function priceEvidenceUrl(shop, ending) {
+  return ({
+    Spaceship: pricingPage,
+    Dynadot: 'https://www.dynadot.com/domain/prices?currency=USD',
+    Porkbun: 'https://porkbun.com/products/domains',
+    Cloudflare: 'https://pricing.registrar.cloudflare.com/',
+    Gandi: 'https://www.gandi.net/en/domain/tld/' + encodeURIComponent(ending) + '?currency=USD',
+  })[shop] ?? null;
+}
 
 function validPrice(row, shop) {
   return row?.shop === shop && typeof row.firstYear === 'number' && typeof row.renewal === 'number' &&

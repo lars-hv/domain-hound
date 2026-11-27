@@ -95,6 +95,11 @@ function nameCard(card, index, multi, perNameShare) {
   const priority = new Map([['com', 0], ['ai', 1], ['io', 2]]);
   const rank = row => priority.get(row.domain.split('.')[1]) ?? priority.size;
   const others = taken.filter(row => row.domain !== card.exact).sort((a, b) => rank(a) - rank(b));
+  const [owned, overlap, ...sources] = [
+    card.evidence?.find(line => line.startsWith('You own:')),
+    card.evidence?.find(line => line.startsWith('Who else (rough read):')),
+    ...(card.evidence ?? []).filter(line => !line.startsWith('You own:') && !line.startsWith('Who else (rough read):')),
+  ];
   const unknown = card.domains.filter(row => row.status === 'unknown');
   const count = available.length;
   return '<article class="hunt-card" id="name-' + index + '">'
@@ -115,6 +120,9 @@ function nameCard(card, index, multi, perNameShare) {
       + ' <span class="taken-next">Watch an ending, or ask your agent to draft an offer.</span></p></div>' : '')
     + (unknown.length ? '<details class="local-evidence"><summary>' + unknown.length + ' ending' + (unknown.length === 1 ? '' : 's')
       + ' couldn’t be confirmed</summary>' + unknown.map(row => '<p>' + escape(row.domain + ' · ' + (row.note || 'Could not confirm')) + '</p>').join('') + '</details>' : '')
+    + (owned ? paragraph(owned) : '') + (overlap ? paragraph(overlap) : '')
+    + (sources.length ? '<details class="name-details"><summary>Sources and checked times</summary><div class="local-evidence">'
+      + sources.map(paragraph).join('') + '</div></details>' : '')
     + (card.checks ? '<details class="name-details"><summary>Name checks</summary><div class="local-evidence">'
       + card.checks + '</div></details>' : '')
     + '<div class="suggestion-foot">' + (Array.isArray(card.reasons) && card.reasons.length ? '<details><summary>Why this name?</summary><ul class="reason-list">'
@@ -129,7 +137,7 @@ function priceCaption(cards) {
     for (const row of card.domains.filter(row => row.status === 'available')) {
       const group = row.confirmed ? confirmed : dates;
       for (const quote of row.prices) {
-        const date = card.local ? quote.checkedAt ?? card.priceDate : card.priceDate ?? quote.checkedAt;
+        const date = quote.checkedAt ?? card.priceDate;
         group.add(priceDay(date));
       }
     }

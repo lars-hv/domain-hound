@@ -63,7 +63,7 @@ Then ask, for example: “Is lanternbay.com available?”, “Find a name for my
 The Claude Code and Codex plugins include one `domain-hound` skill for domain searches, price comparisons, naming, purchases and release watches.
 
 The package uses the same hosted search as [domainhound.dev](https://domainhound.dev). `check_domains` compares ten
-endings by default: .com, .ai, .io, .dev, .co, .so, .sh, .inc, .tech and .app. A typed domain checks that exact ending.
+endings by default: .com, .ai, .io, .dev, .app, .co, .so, .sh, .tech and .inc. A typed domain checks that exact ending.
 An affordable .inc result appears in a bare-name search only after the registry confirms availability.
 
 Each available domain shows the listed shops, first-year price, renewal and three-year cost, plus the cheapest shop

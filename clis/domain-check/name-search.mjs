@@ -1,3 +1,4 @@
+import { domainTier } from '../../name-context.mjs';
 import { domainToASCII, domainToUnicode } from 'node:url';
 import { checkDomainSite } from './com-site.mjs';
 import { cachedSignals, confirmingShops } from './confirm.mjs';
@@ -76,15 +77,16 @@ function fitsCap(option, { budget } = {}) {
 // The one pick rule. options are free, eligible, in-scope rows shaped { domain, now, total } (total = payments due in
 // 3 years). The pick is the highest-quality option within the cap; when none fits, the least paid over 3 years.
 // .ai is never the default: only when the person asked for it or its 3-year total fits the budget they gave.
-export function choosePick(options, { requested = [], eligible = [], budget, allowOverCap = true } = {}) {
-  const allowed = options.filter(option => domainEnding(option.domain) !== 'ai' || asked(option.domain, requested) >= 0
-    || (budget != null && known(option.total) && cents(option.total) <= cents(budget)));
+export function choosePick(options, { requested = [], eligible = [], budget, allowOverCap = true, exactLabel, upfrontCap } = {}) {
+  const allowed = options.filter(option => (upfrontCap == null || (known(option.now) && cents(option.now) <= cents(upfrontCap))) &&
+    (exactLabel || domainEnding(option.domain) !== 'ai' || asked(option.domain, requested) >= 0
+      || (budget != null && known(option.total) && cents(option.total) <= cents(budget))));
   const rank = option => qualityRank(option.domain, requested, eligible);
-  // A name variation (getexample.com) ranks after every exact ending.
-  const byQuality = (a, b) => Number(a.exact === false) - Number(b.exact === false) || rank(a) - rank(b)
+  const byQuality = (a, b) => (exactLabel ? domainTier(a.domain, exactLabel) - domainTier(b.domain, exactLabel)
+    : Number(a.exact === false) - Number(b.exact === false)) || rank(a) - rank(b)
     || (a.total ?? Infinity) - (b.total ?? Infinity)
     || (a.now ?? Infinity) - (b.now ?? Infinity) || a.domain.localeCompare(b.domain);
-  return allowed.filter(option => fitsCap(option, { budget })).sort(byQuality)[0]
+  return allowed.filter(option => upfrontCap != null ? known(option.total) : fitsCap(option, { budget })).sort(byQuality)[0]
     ?? (allowOverCap ? lowestTotal(allowed, rank) : undefined);
 }
 

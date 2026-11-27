@@ -33,8 +33,8 @@ test('normalizes a name into a valid single label', () => {
 
 test('checks all ten default endings and adds valid .com variants', () => {
   assert.deepEqual(domains, [
-    'example.com', 'example.ai', 'example.io', 'example.dev', 'example.co',
-    'example.so', 'example.sh', 'example.inc', 'example.tech', 'example.app',
+    'example.com', 'example.ai', 'example.io', 'example.dev', 'example.app',
+    'example.co', 'example.so', 'example.sh', 'example.tech', 'example.inc',
     'getexample.com', 'tryexample.com', 'useexample.com', 'examplehq.com',
   ]);
   assert.deepEqual(nameCandidates('example', { endings: ['ai'] }).map(row => row.domain), ['example.ai']);
@@ -132,7 +132,7 @@ test('ranks exact names in the quality order, cheapest first within an ending, a
   });
   const ranked = rankName(rows.reverse());
   assert.deepEqual(ranked.map(row => row.domain), [
-    'example.com', 'example.ai', 'example.dev', 'example.co', 'example.app', 'example.me',
+    'example.com', 'example.ai', 'example.dev', 'example.app', 'example.co', 'example.me',
     'examplehq.com', 'getexample.com', 'tryexample.com', 'useexample.com',
   ]);
   assert.equal(ranked.find(row => row.tld === 'co').renewalJump, true);

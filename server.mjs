@@ -1,5 +1,10 @@
+import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
+import { answerPolicy, affordableAdvice, appleSource, closeLabels, preferredEndings } from './name-context.mjs';
+import { publicSources, registrySource } from './context-sources.mjs';
+import { portfolioDomain } from './clis/portfolio/store.mjs';
+import { playSearchLink } from './clis/domain-check/google-play.mjs';
 import { geoInstruction, namingRecipe } from './clis/domain-check/naming-method.mjs';
-import { asciiDomain, defaultEndings, domainEnding, normalizeName, restrictedEndings, supportedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
+import { asciiDomain, canRecommend, choosePick, defaultEndings, domainEnding, normalizeName, pickCapUsd, restrictedEndings, supportedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -52,6 +57,7 @@ function regionalEnding(country) {
   const code = country?.toUpperCase();
   return Object.hasOwn(countryEnding, code) ? countryEnding[code] : europeanCountries.has(code) ? 'eu' : null;
 }
+const shopIds = new Map(Object.entries(shops).map(([id, shop]) => [shop.name, id]));
 const selectedEndings = args => [...new Set([...(args.endings ?? []), ...(args.eligible ?? []), regionalEnding(args.country), ...defaultEndings].filter(Boolean))];
 const lookupProperties = {
   country: { type: 'string', pattern: '^[A-Za-z]{2}$', description: 'Buyer country code if supplied, such as SE, DK, DE or GB for .co.uk. Do not infer it from language alone.' },
@@ -64,7 +70,7 @@ const lookupProperties = {
 };
 const searchAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const batchResultMeta = { 'anthropic/maxResultSizeChars': 40_000 };
-const showAnswer = 'Show the tool’s text answer as given. Offer details only if the user asks.';
+const showAnswer = 'Show the tool’s text answer as given. Offer details only if the user asks. ' + answerPolicy;
 const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
@@ -72,7 +78,7 @@ const serverInstructions = 'Use Domain Hound for domains and product, company or
   + 'When asked for new names, get the naming_guide, brainstorm in the host, then use triage_names with idea and proposals to check them. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
-  + 'Use my_domains to review renewals of domains the person already owns.';
+  + 'Pass stated ownership in ownedDomains. Use my_domains to review renewals of domains the person already owns.';
 
 const checkTool = {
   name: 'check_domains',
@@ -87,6 +93,8 @@ const checkTool = {
     properties: {
       ...lookupProperties,
       detail: detailSchema,
+      ownedDomains: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 253 },
+        description: 'Exact domains the user said they own, e.g. ["lanternbay.ai"]. Matching domains in my_domains are included automatically.' },
       query: { ...nameSchema,
         description: 'One name or exact domain, e.g. "lanternbay.me" or "lanternbay". Supply either query or names.' },
       names: { type: 'array', minItems: 1, maxItems: 20,
@@ -215,20 +223,37 @@ function toolResult(json, isError = false) {
 const errorResult = message => toolResult(errorText(message), true);
 
 // Keep the existing compact structured response, including the complete batch status list.
-function compactCheckResult(result) {
+function compactCheckResult(result, full) {
   if (result.isError) return result;
-  const { names, resultPage, pending } = result.structuredContent;
+  const { names, resultPage, pending, checks, nameEvidence } = result.structuredContent;
+  const text = result.content[0].text;
+  const batch = (names?.length ?? 0) > 1;
+  const listSources = !batch && (full || /All \d+ checked endings are taken\./.test(text));
   const rows = (names ?? []).map(({ name, free, taken, reserved, resale, likely_free, likely_taken, shop_check, checking }) => {
+    const owned = (checks ?? nameEvidence)?.find(check => (check.query.exactDomain ?? check.query.name) === name)?.ownedDomains ?? [];
+    const isOwned = ending => owned.includes(ending) || owned.includes(name + '.' + ending);
     const statuses = [
+      ['owned', owned],
       ['available', free?.filter(row => row.s !== 'prem' && !row.prem).map(row => row.d)],
       ['premium', free?.filter(row => row.s === 'prem' || row.prem).map(row => row.d)],
       ['taken', taken], ['reserved', reserved], ['listed for resale', resale], ['possibly available (DNS)', likely_free],
       ['likely taken (DNS)', likely_taken], ['check at shop', shop_check?.filter(ending =>
         !likely_free?.includes(ending) && !likely_taken?.includes(ending))], ['still checking', checking],
     ];
-    return { name, statuses: Object.fromEntries(statuses.filter(([, endings]) => endings?.length)) };
+    return { name, statuses: Object.fromEntries(statuses.map(([status, endings]) => [status, status === 'owned' ? endings : endings?.filter(ending => !isOwned(ending))]).filter(([, endings]) => endings?.length)) };
   });
+  const evidence = (checks ?? nameEvidence)?.filter(check => check.ranked || check.ownedDomains?.length).map(check => ({
+    name: check.query.name, exactDomain: check.query.exactDomain, ownedDomains: check.ownedDomains,
+    pick: check.choice?.pick, alternative: (check[alternativeEndings] ?? check.alternatives)?.choice?.pick, context: check.context, advice: check.advice,
+    domains: [...new Map([...((check[alternativeEndings] ?? check.alternatives)?.domains ?? []), ...check.domains].map(row => [row.domain, row])).values()].filter(row => listSources || text.includes(row.domain)).map(row => ({
+      domain: row.domain, status: row.status, variant: row.variant, checkedAt: row.checkedAt, source: row.source,
+      ...(full && !batch && row.status === 'available' && { prices: row.prices.slice(0, 3) }),
+    })),
+    appStore: check.appStore ?? check.nameChecks?.appStore, googlePlay: check.googlePlay ?? check.nameChecks?.googlePlay,
+    trademarks: check.trademarks ?? check.nameChecks?.trademarks,
+  }));
   const structuredContent = {
+    ...(evidence?.length && { evidence }),
     ...(resultPage && { resultPage }), ...(pending && { pending }),
     ...(rows.length && { rows }),
   };
@@ -247,7 +272,7 @@ function lookupResult(page, args, triage = false) {
     return result;
   }
   const link = page.resultPage && resultsLine(page.resultPage).replace(/^Results page:/, 'All prices, shops and handles:');
-  const local = page[shortPresentation];
+  const local = page.nameEvidence ?? page[shortPresentation];
   const checks = page.checks ?? local;
   if (!checks && page.pending) {
     const names = page.names ?? [];
@@ -277,7 +302,7 @@ function lookupResult(page, args, triage = false) {
   const options = { pending: Boolean(page.pending), link };
   const short = triage
     ? shortIdeaAnswer(visibleChecks(checks ?? [], args, page.generation), options)
-    : checks.map(check => shortDomainAnswer({ ...check, alternatives: check[alternativeEndings] }, {
+    : checks.map(check => shortDomainAnswer({ ...check, alternatives: check[alternativeEndings] ?? check.alternatives }, {
       ...options, link: checks.length === 1 ? link : undefined,
     })).join('\n\n');
   const notes = [
@@ -367,6 +392,10 @@ function cliArguments(args) {
     throw new Error('Supply an object with query or names.');
   }
   validateDetail(args);
+  if (Object.hasOwn(args, 'ownedDomains') && (!Array.isArray(args.ownedDomains) || args.ownedDomains.length > 100 ||
+    args.ownedDomains.some(domain => !portfolioDomain(domain)))) {
+    throw new Error('Owned domains must be a list of up to 100 exact domain names.');
+  }
   const flags = lookupFlags(args);
   if (args.endings) flags.push('--prefer-endings', args.endings.join(','));
   if (args.budget !== undefined) flags.push('--upfront-cap', String(args.budget));
@@ -643,6 +672,7 @@ export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
   pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
   onLookupEvent, scoreLog = scoreLogger(), hosted = cwd === capabilityDir ? hostedClient(serverVersion) : null,
+  context = cwd === capabilityDir ? publicSources() : null,
 } = {}) {
   const send = response => output.write(JSON.stringify({ jsonrpc: '2.0', ...response }) + '\n');
   const error = (id, code, message) => send({ id, error: { code, message } });
@@ -708,7 +738,92 @@ export async function serve({
     return tracked;
   };
 
-  async function hostedLookup(args, triage, started, { streamDomains = !triage } = {}) {
+  function nameEvidence(args) {
+    if (!context && !args.ownedDomains?.length) return null;
+    const portfolioDomains = Promise.resolve().then(() => context?.owned()).catch(() => []);
+    const names = new Map();
+    const registries = new Map();
+    const variants = new Map();
+    const localAlternatives = new Map();
+    function get(map, key, work, fallback) {
+      if (!map.has(key)) map.set(key, Promise.resolve().then(work).catch(() => fallback));
+      return map.get(key);
+    }
+    const ownedFor = async label => [...new Set([...(args.ownedDomains ?? []).map(portfolioDomain), ...(await portfolioDomains ?? [])])]
+      .filter(domain => domain?.startsWith(label + '.'));
+    const exceeds = row => row?.premium || (row?.prices?.length > 0 && row.prices.every(offer =>
+      args.budget == null ? offer.threeYearUsd > pickCapUsd : offer.firstPaymentUsd > args.budget));
+    return async (check, { local = false } = {}) => {
+      const label = check.query.ascii ?? normalizeName(check.query.name.split('.')[0]);
+      if (!label) return check;
+      const exact = check.query.exactDomain;
+      const ownedDomains = await ownedFor(label);
+      const owned = new Set(ownedDomains);
+      const limits = selectedEndings(args);
+      const hit = check.domains.find(row => row.domain === exact);
+      const comparison = check[alternativeEndings] ?? (local && exact &&
+        (hit?.status === 'taken' || owned.has(exact) || exceeds(hit)) && context?.comparison
+        ? { domains: await get(localAlternatives, label, () => context.comparison(label, limits), []) } : null);
+      const originals = comparison ? [...new Map([...comparison.domains, ...check.domains].map(row => [row.domain, row])).values()] : check.domains;
+      const com = label + '.com';
+      const blocked = originals.some(row => !row.variant && preferredEndings.includes(row.ending) &&
+        (row.status === 'taken' || owned.has(row.domain)));
+      const [name, domain, close, localChecks] = await Promise.all([
+        context ? get(names, label, () => context.names(check.query.name.split('.')[0], label), { entities: null, companies: null }) : null,
+        originals.some(row => row.domain === com && row.status === 'taken') && !owned.has(com)
+          ? context ? get(registries, label, () => context.domain(com), { domain: com }) : { domain: com } : null,
+        context && blocked ? get(variants, label, () => context.variants(closeLabels(label), preferredEndings), []) : [],
+        local && context?.localChecks ? context.localChecks(check.query.name.split('.')[0], label).catch(() => null) : null,
+      ]);
+      const adviceContext = { label, ...name, ...domain,
+        linkedin: check.nameChecks?.handles?.find(row => row.platform === 'LinkedIn' && row.state === 'taken') ?? name?.linkedin };
+      const priceLists = new Map(originals.filter(row => !row.variant).map(row => [row.ending, row.prices]));
+      const reprice = row => {
+        if (local || row.status !== 'available' || row.premium) return row;
+        const list = (priceLists.get(row.ending) ?? []).filter(offer => offer.checkedAt && offer.source?.startsWith('https://'))
+          .map(offer => ({ ...offer, buyUrl: offer.buyUrl ? shopSearchUrl(shopIds.get(offer.shop), row.domain) : null }));
+        const mostRecent = [...(row.prices ?? []), ...list].sort((a, b) => Date.parse(a.checkedAt) - Date.parse(b.checkedAt));
+        const prices = [...new Map(mostRecent.map(offer => [offer.shop, offer])).values()]
+          .sort((a, b) => a.threeYearUsd - b.threeYearUsd);
+        return { ...row, prices };
+      };
+      const seen = new Set();
+      const decorate = rows => rows.map(row => {
+        if (owned.has(row.domain)) return { ...row, status: 'owned', prices: [] };
+        const variant = row.variant ?? row.domain.split('.')[0] !== label;
+        return { ...row, variant, source: row.source?.includes('://') ? row.source : registrySource(row.domain, row.ending, row.evidence ?? row.source),
+          prices: (row.prices ?? []).map(offer => ({ ...offer, recommended:
+            args.budget == null ? offer.threeYearUsd <= pickCapUsd : offer.firstPaymentUsd <= args.budget })) };
+      });
+      const rows = decorate([...close.map(reprice), ...originals.filter(row => !close.some(variant => variant.domain === row.domain))]
+        .filter(row => !seen.has(row.domain) && seen.add(row.domain)));
+      const options = rows.filter(row => row.status === 'available' && !row.premium && canRecommend(row.ending, args.eligible))
+        .flatMap(row => row.prices.filter(offer => offer.buyUrl).map(offer => ({ ...offer, domain: row.domain,
+          now: offer.firstPaymentUsd, total: offer.threeYearUsd })));
+      const pick = (offers, requested = args.endings) => choosePick(offers, {
+        requested, eligible: args.eligible, exactLabel: label, upfrontCap: args.budget, allowOverCap: false,
+      }) ?? null;
+      const choice = { ...comparison?.choice, pick: pick(options) };
+      const domains = exact ? decorate(check.domains) : rows;
+      const exactChoice = exact ? { ...check.choice, pick: pick(options.filter(offer => offer.domain === exact), [exact]) } : choice;
+      const app = localChecks?.appStore ?? check.appStore ?? check.nameChecks?.appStore;
+      const play = localChecks?.googlePlay ?? check.googlePlay ?? check.nameChecks?.googlePlay;
+      const mark = localChecks?.trademarks?.us ?? check.trademarks?.us ?? check.nameChecks?.trademarks?.us;
+      const cheapestSameName = pick(options.filter(offer => offer.domain.startsWith(label + '.') &&
+        !offer.domain.endsWith('.com') && !offer.domain.endsWith('.ai')));
+      const advice = affordableAdvice(rows, adviceContext, cheapestSameName, check.checkedAt ?? new Date().toISOString(),
+        pickCapUsd, args.budget);
+      return { ...check, domains, choice: exactChoice,
+        [alternativeEndings]: exact && comparison ? { ...comparison, domains: rows, choice } : undefined,
+        ownedDomains, ranked: Boolean(context), context: name || domain ? adviceContext : null, advice,
+        ...(app && { appStore: { ...app, source: appleSource } }),
+        ...(play && { googlePlay: { ...play, source: play.link ?? playSearchLink(check.query.name) } }),
+        ...(mark && { trademarks: { us: { ...mark, source: mark.searchUrl ?? 'https://tmsearch.uspto.gov/' } } }),
+      };
+    };
+  }
+
+  async function hostedLookup(args, triage, started, streamDomains = false) {
     if (!hosted || args?.confirm === true || (triage && args?.additionalHandles?.length)) return null;
     let rows;
     try {
@@ -724,6 +839,7 @@ export async function serve({
     const repeat = Boolean(lookup);
     if (!lookup) {
       const extra = selectedEndings(args).filter(ending => !defaultEndings.includes(ending));
+      const enhance = !triage && streamDomains ? nameEvidence(args) : null;
       const controller = new AbortController();
       const signal = AbortSignal.any([controller.signal, hostedShutdown.signal, AbortSignal.timeout(hostedLookupMs)]);
       const job = { result: null, first: null };
@@ -743,18 +859,21 @@ export async function serve({
         if (received === rows.length && canStream) {
           // Keep the domain answer available at the deadline, even while Apple's retry runs in the background.
           job.first = within({ done: Promise.all(firstChecks) }, Math.min(timeout, hostedFirstAnswerMs) - (performance.now() - started))
-            .then(() => renderHostedLookup(early.map(answer => ({ ...answer })), lookupArgs, triage, { pending: true }));
+            .then(() => renderHostedLookup(early.map(answer => ({ ...answer })), lookupArgs, triage, { pending: true, enhance }));
           ready();
         }
       };
       job.done = Promise.all(rows.map(async ({ name }, index) => {
         const answer = await hosted.check(name, name.includes('.') ? [] : extra, signal,
-          streamDomains ? (value, apple, alternatives) => receive(value, index, true, apple, alternatives) : undefined);
+          streamDomains ? (value, apple, alternatives) => receive(value, index, true, apple, alternatives) : undefined,
+          enhance ? { compareExact: row => (args.ownedDomains ?? []).some(domain => portfolioDomain(domain) === row.domain) ||
+            ['com', 'ai'].includes(row.ending) && (row.premium || row.prices?.length && row.prices.every(offer =>
+              args.budget == null ? offer.threeYearUsd > pickCapUsd : offer.firstPaymentUsd > args.budget)) } : undefined);
         receive(answer, index);
         return answer;
       })).then(async answers => {
         const first = await job.first;
-        return renderHostedLookup(answers, lookupArgs, triage, { reuse: first?.resultPage });
+        return renderHostedLookup(answers, lookupArgs, triage, { reuse: first?.resultPage, enhance });
       }, problem => {
           if (problem instanceof HostedRateLimit) return errorResult('The Hound needs a breather. Try again in a few minutes.');
           hostedDebug('Hosted domain lookup could not finish; using the local check.');
@@ -785,9 +904,10 @@ export async function serve({
     return lookupResult(page, args, triage);
   }
 
-  async function renderHostedLookup(checks, args, triage, { pending = false, reuse } = {}) {
+  async function renderHostedLookup(checks, args, triage, { pending = false, reuse, enhance } = {}) {
     try {
-      const evidence = hostedChecks(checks, args, triage);
+      const base = hostedChecks(checks, args, triage);
+      const evidence = enhance ? await Promise.all(base.map(check => enhance(check))) : base;
       const page = await pages(hostedResult(evidence, args, null, { pending }), args, { triage, reuse, refresh: pending });
       if (triage && scoreLog?.enabled) {
         const scored = evidence.filter(check => Number.isInteger(check.score?.value))
@@ -1087,15 +1207,15 @@ export async function serve({
     if (name !== checkTool.name && name !== 'broker_find') return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    const legacy = name === 'broker_find';
-    const result = await hostedLookup(args, false, started, { streamDomains: !legacy }) ?? await runLookup(
-      args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args).then(page => withCheckQuoteOffer(page, args)),
+    const result = await hostedLookup(args, false, started, name === checkTool.name) ?? await runLookup(
+      args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args,
+        { enhance: name === checkTool.name ? nameEvidence(args) : null }).then(page => withCheckQuoteOffer(page, args)),
       (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started,
     );
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
     }
-    return reply(legacy ? result : compactCheckResult(result));
+    return reply(name === checkTool.name ? compactCheckResult(result, args?.detail === 'full') : result);
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });

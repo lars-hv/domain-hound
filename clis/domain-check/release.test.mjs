@@ -233,7 +233,7 @@ test('an exact .com adds one list-price line for the other endings and a benchma
   const result = await agentResult('lanternbay.com', options);
   assert.deepEqual(asked, ['lanternbay.com']);
   assert.deepEqual(result.names[0], { name: 'lanternbay.com', taken: ['com'] });
-  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'dev', 'co', 'so', 'sh', 'tech', 'app']);
+  assert.deepEqual(Object.keys(result.otherEndings), ['ai', 'io', 'dev', 'app', 'co', 'so', 'sh', 'tech']);
   assert.deepEqual(result.otherEndings.ai, { now: 159.96, renew: 159.96, y3: 319.92, term: 2, shop: 'Dynadot' });
   const display = displayOf(result);
   assert.match(display, /^\*\*lanternbay\.com is taken\. This check leaves checkout to you\.\*\*/);

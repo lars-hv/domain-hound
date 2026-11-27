@@ -46,12 +46,12 @@ const cards = shared => shared.groups.map(({ records }) => ({ pick: records.find
 test('the local fallback uses the ten hosted endings in the same order', () => {
   assert.deepEqual(qualityEndings, defaultEndings);
   assert.equal(pickCapUsd, 60);
-  assert.deepEqual(defaultEndings, ['com', 'ai', 'io', 'dev', 'co', 'so', 'sh', 'inc', 'tech', 'app']);
+  assert.deepEqual(defaultEndings, ['com', 'ai', 'io', 'dev', 'app', 'co', 'so', 'sh', 'tech', 'inc']);
   assert.ok(!targetEndings.includes('net') && !targetEndings.includes('org'));
   assert.ok(requestEndings.includes('net') && requestEndings.includes('org'));
   const order = ['a.tech', 'a.org', 'a.no', 'a.me', 'a.com', 'a.xyz', 'a.net', 'a.so', 'a.ai', 'a.si', 'a.dev', 'a.io', 'a.co', 'a.app']
     .sort((a, b) => qualityRank(a) - qualityRank(b));
-  assert.deepEqual(order, ['a.com', 'a.ai', 'a.io', 'a.dev', 'a.co', 'a.so', 'a.tech', 'a.app', 'a.me', 'a.si', 'a.no', 'a.xyz', 'a.net', 'a.org']);
+  assert.deepEqual(order, ['a.com', 'a.ai', 'a.io', 'a.dev', 'a.app', 'a.co', 'a.so', 'a.tech', 'a.me', 'a.si', 'a.no', 'a.xyz', 'a.net', 'a.org']);
   // Asked-for endings and typed domains come first in the person's order; an eligibility opt-in follows .com.
   assert.ok(qualityRank('a.xyz', ['xyz']) < qualityRank('a.com', ['xyz']));
   assert.ok(qualityRank('a.xyz', ['a.xyz']) < qualityRank('a.com'));

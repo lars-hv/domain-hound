@@ -1,3 +1,5 @@
+import { brandConflict, sourceLinks, whoElse } from './name-context.mjs';
+import { registrySource } from './context-sources.mjs';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -11,7 +13,7 @@ import { dnsNeed, shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { trademarkSearches } from './clis/domain-check/triage-sources.mjs';
 import { attributed, localCheckNotice, safeLink } from './display.mjs';
 import { appNameLines, checkLines, domainAnswer, nameCheckLines, pickDomain, pickLine, trademarkLines, usTrademark, visibleChecks } from './hosted-results.mjs';
-import { datedListPrices, loadCachedCatalog } from './clis/domain-check/price-catalog.mjs';
+import { datedListPrices, loadCachedCatalog, priceEvidenceUrl } from './clis/domain-check/price-catalog.mjs';
 import { alternativeEndings } from './hosted.mjs';
 import { anchor, escape, paragraph, priceDay, publicShare, renderCards } from './results-cards.mjs';
 import { shareUrl } from './share.mjs';
@@ -115,7 +117,7 @@ function resultGroups(data, eligibleEndings, preferred = []) {
       const shopUrl = shopSearchUrl(shopIds.get(shop) ?? fallbackShop(ending), domain);
       const checkout = taken || reserved || !eligible ? null : [raw?.checkout, shopUrl].find(url => safeLink(url, domain)) ?? null;
       return { domain, ending, rank: qualityRank(domain, requested, eligibleList), state, status, ...usd, total,
-        shop, checkout, eligible, source, ...(raw?.savings && { savings: raw.savings }),
+        shop, checkout, eligible, source, evidence: raw?.source, ...(raw?.savings && { savings: raw.savings }),
         ...(includePrice && dnsNeed(usd.shop) && { dns: cloudflareDns }),
         priceLabel: usd.now != null || usd.renew != null ? (confirmed ? 'Shop quote' : taken ? 'Standard list price benchmark' : 'List price') : '',
         checkedAt: raw?.checkedAt ?? data.checkedAt, priceAt: confirmed ? raw?.checkedAt ?? data.checkedAt : raw?.priceAt ?? data.priceListDate,
@@ -235,7 +237,8 @@ function checkedOption(record) {
   const term = record.term ?? 1;
   return { domain: record.domain, shop: record.shop, firstYearUsd: record.now == null ? null : record.now / term,
     renewalUsd: record.renew == null ? null : record.renew / term, renewalPaymentUsd: record.renew, firstPaymentUsd: record.now, threeYearUsd: record.total,
-    minimumYears: term, buyUrl: record.checkout, needsCloudflareDns: Boolean(record.dns) };
+    minimumYears: term, buyUrl: record.checkout, needsCloudflareDns: Boolean(record.dns),
+    checkedAt: record.priceAt, source: record.priceLabel === 'Shop quote' ? record.checkout : priceEvidenceUrl(record.shop, record.ending) ?? record.checkout };
 }
 
 function localExactPick(records, args, exactDomain) {
@@ -254,7 +257,9 @@ function localPresentation(groups, selection, args) {
       : selection.names[index]?.pick && checkedOption(selection.names[index].pick);
     const domains = records.map(record => ({
       domain: record.domain, ending: record.ending,
-      status: record.state === 'free' || record.state === 'taken' ? (record.state === 'free' ? 'available' : 'taken') : 'unknown',
+      status: ['free', 'premium'].includes(record.state) ? 'available' : record.state === 'taken' ? 'taken' : 'unknown',
+      ...(record.state === 'premium' && { premium: record.status }),
+      checkedAt: record.checkedAt, source: registrySource(record.domain, record.ending, record.evidence),
       reason: record.status === 'Not offered for registration' ? 'reserved' : null,
       prices: record.now == null ? [] : [checkedOption(record)],
     }));
@@ -561,6 +566,28 @@ function hostedNameChecks(details, pending) {
   }).join('') + '</dl></div>';
 }
 
+function checkedEvidence(check, rows, pick) {
+  const makeSource = (label, url, date) => [url?.startsWith('https://') ? '[' + label + '](' + url.replaceAll('(', '%28').replaceAll(')', '%29') + ')'
+    : label + (url ? ' (' + url + ')' : ''), date].filter(Boolean).join(' · ');
+  const app = check.appStore ?? check.nameChecks?.appStore;
+  const play = check.googlePlay ?? check.nameChecks?.googlePlay;
+  const mark = usTrademark(check);
+  return [
+    check.ownedDomains?.length ? 'You own: ' + check.ownedDomains.join(', ') : '',
+    whoElse(check.context, { pick, ownedDomains: check.ownedDomains, hasAdvice: Boolean(check.advice), blockedBrand: brandConflict(check.context, check.trademarks) }),
+    check.advice?.text,
+    check.advice && makeSource('Example', check.advice.source, check.advice.checkedAt),
+    check.advice?.price && makeSource('Price that prompted the alternative', check.advice.price.source, check.advice.price.checkedAt),
+    ...sourceLinks(check.context).map(row => makeSource(row.label ?? row.name ?? row.platform ?? new URL(row.url).hostname, row.url, row.checkedAt)),
+    ...[['App Store', app], ['Google Play', play], ['US trademark', mark]].flatMap(([label, row]) => row?.source
+      ? [makeSource(label, row.source, row.checkedAt)] : []),
+    ...rows.flatMap(row => [
+      ...(row.source && row.status !== 'owned' ? [makeSource(row.domain + ' · ' + row.status, row.source, row.checkedAt)] : []),
+      ...(row.status !== 'available' ? [] : (row.prices ?? []).map(offer => makeSource(row.domain + ' · ' + offer.shop + ' price', offer.source, offer.checkedAt))),
+    ]),
+  ].filter(Boolean);
+}
+
 function hostedCard(check, pending, args, snapshot) {
   const { query, nameChecks, score } = check;
   const alternatives = check[alternativeEndings];
@@ -576,6 +603,7 @@ function hostedCard(check, pending, args, snapshot) {
   return { name: query.exactDomain ?? query.name, exact: query.exactDomain, domains, pick, cap: check.choice?.capUsd ?? alternatives?.choice?.capUsd,
     answer: domainAnswer(check), apps: appNameLines(check, pending).map(paragraph).join(''),
     warning: hostedWarning(check, pending), checks: hostedNameChecks(nameChecks, pending),
+    evidence: check.ranked || check.ownedDomains?.length ? checkedEvidence(check, rows, pick) : [],
     score: scoreText({ score }), reasons: score?.reasons, priceDate: alternatives?.priceSnapshot?.checkedAt ?? check.priceSnapshot?.checkedAt ?? snapshot,
     share: (sameExact && publicShare(alternatives.share?.url)) || publicShare(check.share?.url), complete: alternatives?.complete ?? check.complete, alternativesFailed: alternatives === null };
 }
@@ -633,7 +661,7 @@ function render(groups, lines, checkedAt, coverage, watch, companyType, { data, 
   const comparison = groups.length ? lines.filter(line => /^(?:Cheapest|Best value):/.test(line)) : [];
   const html = renderCards({ data, cards, checkedAt, shared, shareLabel, watch, lines, savings, note, sources,
     comparison, refresh, hiddenWarnings });
-  const md = ['# ' + (watch ? 'Domain watch' : 'Domain results'), '', 'Domain Hound · ' + checkedAt, '', ...lines, ...(savings.length ? ['', ...savings] : []), '',
+  const md = ['# ' + (watch ? 'Domain watch' : 'Domain results'), '', 'Domain Hound · ' + checkedAt, '', ...lines, ...cards.flatMap(card => card.evidence ?? []), ...(savings.length ? ['', ...savings] : []), '',
     ...groups.flatMap(group => ['## ' + markdown(group.row.name), '',
       ...(group.row.verdict ? [markdown(group.row.verdict + '. ' + group.row.reason), markdown(nameSnapshot(group)), ''] : []),
       ...(scoreText(group.row) ? [markdown(scoreText(group.row)), ...scoreReasons(group.row).map(line => '- ' + markdown(line)), ''] : []),
@@ -703,7 +731,7 @@ export function resultsLine(url) {
 export function resultPages({ env = process.env,
   directory = env.DOMAIN_HOUND_RESULTS_DIR || join(homedir(), '.domain-hound', 'results') } = {}) {
   let writes = Promise.resolve();
-  return (data, args, { triage = false, watch = false, reuse = null, refresh = false } = {}) => {
+  return (data, args, { triage = false, watch = false, reuse = null, refresh = false, enhance } = {}) => {
     const work = writes.then(async () => {
       const at = data.checkedAt ?? new Date().toISOString();
       let groups = watch || data.hosted ? [] : resultGroups(data, args.eligible, args.endings);
@@ -714,6 +742,8 @@ export function resultPages({ env = process.env,
       }
       const local = !watch && data.source === 'local';
       const selection = receiptSelection(groups, args, triage, args.eligible ?? data.eligible ?? [], local);
+      const localChecks = enhance && local && !triage ? await Promise.all(localPresentation(groups, selection, args)
+        .map(check => enhance(check, { local: true }))) : null;
       const { lines, savings, shortLines } = data.hosted ? { lines: data.lines, savings: [] } : watch ? { lines: data.say.split('\n'), savings: [] } : data.pending ? { lines: [
         ...(data.failed ? ['Some checks did not finish. Registry answers received are on the page.']
           : ['Still checking trademark, app and web sources. Registry answers so far are on the page.', 'The results page updates by itself.']),
@@ -737,7 +767,9 @@ export function resultPages({ env = process.env,
       if (data.generation?.stage === 'final') shown.sort((a, b) => (b.score?.value ?? -1) - (a.score?.value ?? -1));
       const hiddenWarnings = (data.checks ?? []).filter(check => !shown.includes(check) && usTrademark(check)?.status === 'exact_match_found').map(check => hostedWarning(check)).join('');
       const cards = data.hosted ? shown.map(check => hostedCard(check, data.pending, args, data.generation?.priceSnapshot?.checkedAt))
-        : groups.map((group, index) => localCard(group, data.pending ? null : selection.names[index].pick, data, args, catalog));
+        : groups.map((group, index) => localChecks?.[index] ? {
+          ...hostedCard(localChecks[index], data.pending, args, data.priceListDate), local: true,
+        } : localCard(group, data.pending ? null : selection.names[index].pick, data, args, catalog));
       const page = render(groups, local ? [localCheckNotice, ...lines] : lines, at, data.sources, watch ? data : null, args.companyType,
         { data, cards, savings, hiddenWarnings, note: watch ? '' : data.hosted ? 'Domain Hound’s hosted service checks registries, prices and public name sources.' : disclosure(data, triage),
           refresh: Boolean(refresh), shareFacts });
@@ -760,7 +792,7 @@ export function resultPages({ env = process.env,
         const { hosted, lines, ...structured } = data;
         return { display: say, say, ...structured, resultPage: url };
       }
-      const short = watch ? undefined : localPresentation(groups, selection, args);
+      const short = watch ? undefined : localChecks ?? localPresentation(groups, selection, args);
       if (triage && args.shortlist) return { [shortPresentation]: short, display: say, say, ...(local && { source: 'local' }), checkedAt: at, resultPage: url };
       const { receiptDetails, say: priorSay, display: priorDisplay, ...structured } = data;
       if (triage && receiptDetails) structured.names = structured.names.map((row, index) => ({
@@ -770,7 +802,9 @@ export function resultPages({ env = process.env,
       if (!watch && !triage) structured.names = structured.names.map((row, index) => ({
         ...row, ...(groups[index].row.score && { score: groups[index].row.score }),
       }));
-      return { [shortPresentation]: short, display: say, say, ...structured, checkedAt: at, resultPage: url };
+      return { [shortPresentation]: short, ...(localChecks && { nameEvidence: localChecks.map(check => ({
+        ...check, alternatives: check[alternativeEndings],
+      })) }), display: say, say, ...structured, checkedAt: at, resultPage: url };
     });
     writes = work.catch(() => {});
     return work;

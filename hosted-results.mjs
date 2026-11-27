@@ -199,12 +199,13 @@ export function hostedResult(checks, args, generation, { pending = false, failed
       ? ['Dated list prices in USD before tax · ' + md((generation?.priceSnapshot ?? checks[0].priceSnapshot).checkedAt.slice(0, 10))] : []),
   ];
   const names = checks.map(check => {
+    const key = row => row.variant ? row.domain : row.ending;
     const rows = status => check.domains.filter(row => row.status === status);
     return { name: check.query.exactDomain ?? check.query.name,
-      available: rows('available').map(row => row.ending), free: rows('available').map(row => ({ d: row.ending })),
-      taken: rows('taken').map(row => row.ending),
-      reserved: rows('unknown').filter(row => row.reason === 'reserved').map(row => row.ending),
-      shop_check: rows('unknown').filter(row => row.reason !== 'reserved').map(row => row.ending),
+      available: rows('available').map(key), free: rows('available').map(row => ({ d: key(row) })),
+      taken: rows('taken').map(key),
+      reserved: rows('unknown').filter(row => row.reason === 'reserved').map(key),
+      shop_check: rows('unknown').filter(row => row.reason !== 'reserved').map(key),
       ...(check.score && { score: check.score }) };
   });
   const { details, ...generationResult } = generation ?? {};
