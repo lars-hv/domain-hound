@@ -4,12 +4,12 @@
   "title": "Domain Hound: Domains for agents",
   "description": "One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.16",
+      "version": "0.1.17",
       "transport": {
         "type": "stdio"
       }
