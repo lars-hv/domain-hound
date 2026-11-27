@@ -11,6 +11,7 @@ permissions:
 
 env:
   DOMAIN_HOUND_OPEN: 'off'
+  DOMAIN_HOUND_TEST: '1'
 
 jobs:
   test:

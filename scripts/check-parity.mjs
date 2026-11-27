@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 const base = new URL(process.argv[2] ?? 'http://127.0.0.1:8787');
 const temp = await mkdtemp(join(tmpdir(), 'domain-hound-parity-'));
 const child = spawn(process.execPath, [fileURLToPath(new URL('../bin/domain-hound.mjs', import.meta.url))], {
-  env: { ...process.env, DOMAIN_HOUND_LOCAL: '0', DOMAIN_HOUND_API_URL: base.origin, DOMAIN_HOUND_OPEN: 'off',
+  env: { ...process.env, DOMAIN_HOUND_LOCAL: '0', DOMAIN_HOUND_API_URL: base.origin, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_TEST: '1',
     DOMAIN_HOUND_RESULTS_DIR: join(temp, 'results'), DOMAIN_HOUND_CACHE_DIR: join(temp, 'cache'),
     DOMAIN_HOUND_SCORE_LOG: '0' },
   stdio: ['pipe', 'pipe', 'inherit'],
@@ -44,7 +44,7 @@ try {
   send({ method: 'notifications/initialized' });
   for (const name of ['brightboard', 'tripfixer', 'parity' + randomBytes(5).toString('hex')]) {
     const site = await fetch(new URL('/v1/check?' + new URLSearchParams({ name }), base), {
-      headers: { Origin: 'https://domainhound.dev' }, signal: AbortSignal.timeout(6000),
+      headers: { Origin: 'https://domainhound.dev', 'X-Domain-Hound-Test': '1' }, signal: AbortSignal.timeout(6000),
     });
     assert.equal(site.status, 200, 'Site check failed for ' + name);
     const webAnswer = await site.json();
