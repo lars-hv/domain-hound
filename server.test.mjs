@@ -1375,7 +1375,11 @@ test('the package entry point defaults to short hosted check, screening and idea
   const check = { query: domain };
   const triage = { names: [name] };
   const idea = { idea: 'An app for planning a library' };
-  const responses = await runServer([fileURLToPath(new URL('./bin/domain-hound.mjs', import.meta.url))], [
+  const fixtureFetch = `const fetchLocal = globalThis.fetch;
+    globalThis.fetch = (input, init) => new URL(input?.url ?? input).hostname === '127.0.0.1'
+      ? fetchLocal(input, init) : Promise.resolve(new Response(null, { status: 503 }));`;
+  const responses = await runServer(['--import', 'data:text/javascript,' + encodeURIComponent(fixtureFetch),
+    fileURLToPath(new URL('./bin/domain-hound.mjs', import.meta.url))], [
     ...handshake('2025-06-18'), request(2, 'tools/list'),
     call(3, check), call(4, { ...check, detail: 'full' }),
     call(5, triage, 'triage_names'), call(6, { ...triage, detail: 'full' }, 'triage_names'),
@@ -1387,7 +1391,7 @@ test('the package entry point defaults to short hosted check, screening and idea
     'exampleheron.dev is available: $5.00 now, then $10.00/yr (Example Shop).',
     'App Store: no app with this name · Still checking Google Play',
     'Still checking US trademark.',
-    'Who else (rough read): no exact match in the public sources that answered.',
+    'Who else (rough read): public name sources unavailable.',
   ]);
   assert.match(callText(responses, 9), /^exampleheron\.dev is your best bet: \$5\.00 now, then \$10\.00\/yr \(Example Shop\)\./);
   assert.match(callText(responses, 4), /Ask to quote exampleheron\.dev\./);
