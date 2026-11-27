@@ -52,6 +52,8 @@ jobs:
 
       - run: npm ci
 
+      # Diagnostics print npm's timers and requests and the server's startup times, so a slow cold start explains itself.
       - run: node scripts/package-smoke.mjs
         env:
           DOMAIN_HOUND_LOCAL: '1'
+          PACKAGE_SMOKE_DIAGNOSTICS: '1'

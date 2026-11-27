@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { mkdir, open, stat, unlink } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { cacheDir, readCache, writeCache } from './cache.mjs';
 import { withShopPages } from './confirm.mjs';
+import { capabilityArgs, packageJson } from '../../packaged.mjs';
 import { catalogPrice, dynadotOffer, offer, shops } from './prices.mjs';
 
 // Default order follows the hosted checker. Other catalog endings are available on request.
@@ -91,7 +91,7 @@ export function isListPriceUsable(checkedAt, now = new Date()) {
 // as estimates with their date while the first background refresh fills the user's own cache.
 function readBundledCatalog() {
   try {
-    const value = JSON.parse(readFileSync(new URL('./price-snapshot.json', import.meta.url), 'utf8'));
+    const value = packageJson('clis/domain-check/price-snapshot.json');
     return validCatalog(value) ? value : null;
   } catch {
     return null;
@@ -142,7 +142,7 @@ async function startRefresh(directory) {
   try { lock = await open(marker, 'wx', 0o600); }
   catch (error) { if (error.code === 'EEXIST') return; throw error; }
   await lock.close();
-  const child = spawn(process.execPath, [fileURLToPath(new URL('./index.mjs', import.meta.url)), '--refresh-prices'], {
+  const child = spawn(process.execPath, capabilityArgs(['--refresh-prices']), {
     detached: true, stdio: 'ignore',
     env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_PRICE_CACHE: fileURLToPath(directory) },
   });

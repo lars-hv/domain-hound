@@ -4,6 +4,7 @@ import { mkdir, open, readFile, rename, stat, unlink, writeFile } from 'node:fs/
 import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { cacheDir, mapLimit, readCache, writeCache } from './cache.mjs';
+import { capabilityArgs } from '../../packaged.mjs';
 import { bootstrapUrl, rdapBase, rdapDomainUrl, registryCooldown } from './registry.mjs';
 import { compactText, day, letters, readJson, request } from './triage-sources.mjs';
 
@@ -140,7 +141,7 @@ async function startTrancoRefresh(directory) {
     if (error.code !== 'ENOENT') throw error;
   }
   try { await (await open(marker, 'wx', 0o600)).close(); } catch { return; }
-  const child = spawn(process.execPath, [fileURLToPath(new URL('./index.mjs', import.meta.url)), '--refresh-tranco'], {
+  const child = spawn(process.execPath, capabilityArgs(['--refresh-tranco']), {
     detached: true, stdio: 'ignore', env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_TRANCO_CACHE: fileURLToPath(directory) },
   });
   child.on('error', () => {});

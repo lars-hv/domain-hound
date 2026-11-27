@@ -3,13 +3,15 @@ import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { buildPackage } from './build.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const dist = join(root, 'dist');
 const plugin = JSON.parse(await readFile(join(root, 'plugin.json'), 'utf8'));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const filename = `domain-hound-${pkg.version}.mcpb`;
-const entry = 'server.mjs';
+const entry = 'dist/domain-hound.mjs';
+const icon = 'assets/icon-512.png';
 const buildEnv = { ...process.env, TZ: 'UTC' };
 const epoch = new Date('2000-01-01T00:00:00Z');
 
@@ -17,7 +19,6 @@ async function bundleFiles(directory, prefix = '') {
   const paths = [];
   for (const item of await readdir(join(directory, prefix), { withFileTypes: true })) {
     const path = prefix + item.name;
-    if (path === 'node_modules/.package-lock.json') continue;
     if (item.isDirectory()) paths.push(...await bundleFiles(directory, path + '/'));
     else if (item.isFile()) paths.push(path);
   }
@@ -29,23 +30,19 @@ const staging = await mkdtemp(join(dist, '.mcpb-'));
 try {
   const bundle = join(staging, 'bundle');
   await mkdir(bundle);
+  // The npm package's one script has no runtime dependencies, so the bundle needs no install.
+  await buildPackage();
   // Reuse the npm allowlist for runtime files and exclude distribution metadata.
   const [pack] = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
     cwd: root, encoding: 'utf8',
   }));
   const paths = pack.files.map(file => file.path).filter(path =>
-    ['package.json', 'README.md', 'LICENSE', entry, 'display.mjs', 'results.mjs', 'results-cards.mjs', 'results-style.mjs', 'share.mjs',
-      'hosted.mjs', 'hosted-results.mjs',
-      'site/r/share-format.mjs', 'watch.mjs', 'dossier.mjs'].includes(path)
-    || /^(?:assets|clis|bin)\//.test(path));
-  for (const path of [...paths, 'package-lock.json']) {
+    ['package.json', 'README.md', 'LICENSE', icon].includes(path) || path.startsWith('dist/'));
+  for (const path of paths) {
     const target = join(bundle, path);
     await mkdir(dirname(target), { recursive: true });
     await copyFile(join(root, path), target);
   }
-  execFileSync('npm', ['ci', '--omit=dev', '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], {
-    cwd: bundle, stdio: ['ignore', 'inherit', 'inherit'],
-  });
   const manifest = {
     manifest_version: '0.3',
     name: pkg.name,
@@ -57,7 +54,7 @@ try {
     repository: { type: 'git', url: pkg.repository.url.replace(/^git\+/, '') },
     support: pkg.bugs.url,
     license: pkg.license,
-    icon: 'assets/icon-512.png',
+    icon,
     server: {
       type: 'node',
       entry_point: entry,

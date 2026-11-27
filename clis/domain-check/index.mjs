@@ -3,6 +3,7 @@ import { getDefaultAutoSelectFamilyAttemptTimeout, setDefaultAutoSelectFamilyAtt
 import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { isEntry } from '../../packaged.mjs';
 import { apiShops, cachedSignals, confirmDomain, confirmingShops, lightConfirm } from './confirm.mjs';
 import { checkDomainSite } from './com-site.mjs';
 import { appStoreSearchLink, googleSearchLink, nameCheckLines, playSearchLink } from './google-search.mjs';
@@ -746,8 +747,8 @@ function runConfirmation(shop, domain) {
   return confirmDomain(shop, domain, { unsupported: ['so', 'no'], fresh: true });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const args = process.argv.slice(2);
+// The command line: node index.mjs <mode> ..., or the packaged script with its capability flag.
+export async function main(args) {
   // The 250 ms default was cutting off the IPv4 leg before several public sources could connect.
   // The individual request deadlines and the first-answer deadline still apply.
   if (args[0] === '--triage') setDefaultAutoSelectFamilyAttemptTimeout(Math.max(900, getDefaultAutoSelectFamilyAttemptTimeout()));
@@ -781,3 +782,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     printResult(args[0] === '--triage' ? triageOutput(result, options) : result);
   }
 }
+
+if (isEntry(import.meta.url)) await main(process.argv.slice(2));
