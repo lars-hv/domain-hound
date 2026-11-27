@@ -9,9 +9,11 @@
 // Every attempt also times the cold start the way a host sees it: the initialize handshake must answer within the
 // hosts' connect window, and in packed mode the first lookup must return a short table answer within the tool limit,
 // with no wording about checks that failed or are still running, and the separate instruction to stop there.
+// With PACKAGE_SMOKE_DIAGNOSTICS=1 every attempt also prints where its cold start went: npm's own timers and network
+// requests (npm --timing), and when node started the server, reached its entry, loaded it and answered initialize.
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -32,9 +34,13 @@ const version = published ?? packageVersion;
 const windowMs = Math.min(600_000, Number(process.env.PACKAGE_SMOKE_WINDOW_MS) || 600_000);
 const retryDelayMs = Math.min(15_000, Number(process.env.PACKAGE_SMOKE_RETRY_DELAY_MS ?? 15_000));
 const attemptMs = 90_000;
-// Claude Code and Codex give an MCP server about 30 s to connect; a tool answer has about 15 s.
-const maxInitMs = Number(process.env.PACKAGE_SMOKE_MAX_INIT_MS) || 30_000;
-const maxLookupMs = Number(process.env.PACKAGE_SMOKE_MAX_LOOKUP_MS) || 15_000;
+// Hard ceilings that an override can only lower. 30 s is Claude Code's default MCP connect timeout (MCP_TIMEOUT);
+// Codex's default startup_timeout_sec is 10 s, so this is a ceiling, not a target. The server answers each tool call
+// within its own 14 s budget, and 15 s leaves a second for transport.
+const ceiling = (value, max) => Math.min(max, Number(value) || max);
+const maxInitMs = ceiling(process.env.PACKAGE_SMOKE_MAX_INIT_MS, 30_000);
+const maxLookupMs = ceiling(process.env.PACKAGE_SMOKE_MAX_LOOKUP_MS, 15_000);
+const diagnostics = process.env.PACKAGE_SMOKE_DIAGNOSTICS === '1';
 const doneGuidance = 'Done. Show this; do not call more tools unless the user asks.';
 const unknownWording = /still checking|couldn’t|couldn't|could not|failed|blocked|unknown|unavailable|unreachable|call the same tool/i;
 const deadline = performance.now() + windowMs;
@@ -55,16 +61,19 @@ try {
       { cwd: root, env: { ...baseEnv, npm_config_cache: cache } });
     const [packed] = JSON.parse(stdout);
     const paths = packed.files.map(file => file.path);
-    for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
-      'watch.mjs', 'dossier.mjs', 'name-context.mjs', 'context-sources.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
-      'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
-      'share.mjs', 'site/r/share-format.mjs', 'skills/domain-hound/SKILL.md', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
-      'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs',
-      // parse5 and its one dependency ship inside the package, so a cold npx fetches one tarball instead of three.
-      'node_modules/parse5/package.json', 'node_modules/entities/package.json']) {
+    // One executable with everything it reads inlined, its notices, and the plugin metadata; no dependency installs.
+    for (const file of ['package.json', 'dist/domain-hound.mjs', 'dist/THIRD-PARTY-NOTICES.txt', 'skills/domain-hound/SKILL.md']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
-    assert.ok(!paths.some(file => /\.test\.mjs$|^fixtures\/|^test-support\/|^scripts\/|^\.github\//.test(file)), 'Tarball ships test or build files');
+    assert.deepEqual(paths.filter(file => /\.(?:mjs|cjs|js)$/.test(file)), ['dist/domain-hound.mjs'], 'One script in the tarball');
+    assert.ok(!paths.some(file => /^node_modules\/|\.test\.mjs$|^fixtures\/|^test-support\/|^scripts\/|^\.github\//.test(file)), 'Tarball ships dependencies, test or build files');
+    const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+    assert.equal(manifest.bin['domain-hound'], 'dist/domain-hound.mjs');
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies', 'bundleDependencies', 'bundledDependencies']) {
+      assert.ok(!Object.keys(manifest[field] ?? {}).length, 'The package must install nothing: ' + field);
+    }
+    for (const script of ['preinstall', 'install', 'postinstall', 'prepare']) assert.ok(!manifest.scripts?.[script], 'Install script ' + script);
+    console.log(`Packed ${packed.filename}: ${packed.size} B gzip, ${packed.unpackedSize} B unpacked, ${packed.entryCount} files`);
     filename = packed.filename;
     tarball = 'file:' + join(temp, filename);
   }
@@ -72,8 +81,11 @@ try {
   // One npx start with a new, empty npm cache. Returns the failure (or null) and whether the server ever answered.
   const attempt = async number => {
     const cache = await mkdtemp(join(temp, 'npx-cache-'));
-    const env = { ...baseEnv, npm_config_cache: cache, npm_config_color: 'false' };
+    const logs = join(temp, 'npm-logs-' + number);
+    const env = { ...baseEnv, npm_config_cache: cache, npm_config_color: 'false',
+      ...diagnostics && { npm_config_timing: 'true', npm_config_logs_dir: logs, DOMAIN_HOUND_STARTUP_TRACE: '1' } };
     const started = performance.now();
+    const spawnedAt = Date.now();
     const child = spawn(windows ? 'npx.cmd' : 'npx', ['-y', tarball], {
       cwd: temp, env, shell: windows, detached: !windows, stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -115,6 +127,7 @@ try {
     let description;
     let toolsListed;
     let initializedMs;
+    let initializedAt;
     let listedMs;
     let lookupMs;
     let checkBytes;
@@ -123,6 +136,7 @@ try {
       const init = await request(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {},
         clientInfo: { name: 'domain-hound-package-smoke', version: '1' } });
       initializedMs = Math.round(performance.now() - started);
+      initializedAt = Date.now();
       assert.ok(initializedMs < maxInitMs, `Cold npx initialize took ${initializedMs} ms; hosts allow about ${maxInitMs} ms`);
       assert.equal(init.serverInfo.version, version);
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
@@ -173,6 +187,7 @@ try {
       child.stdin.end();
       exitCode = await closed;
       clearTimeout(timer);
+      if (diagnostics) await diagnose({ spawnedAt, initializedAt, stderr, logs });
     }
     if (timedOut) return {
       failure: new Error(`npx smoke timed out after ${Math.ceil(limit / 1000)} s`),
@@ -190,6 +205,25 @@ try {
     }
     return { failure, retryable: exitCode !== 0 && !responded && notListedYet(stderr) };
   };
+
+  // Where one cold start went: the smoke's clock, the server's startup line and npm's debug log.
+  async function diagnose({ spawnedAt, initializedAt, stderr, logs }) {
+    const line = stderr.match(/^domain-hound startup (\{.*\})\r?$/m);
+    const startup = line ? JSON.parse(line[1]) : null;
+    const parts = startup ? [`npx until node started the server ${startup.processStart - spawnedAt} ms`,
+      `node startup ${startup.entered - startup.processStart} ms`, `loading the server ${startup.loaded - startup.entered} ms`,
+      initializedAt ? `then initialize answered after ${initializedAt - startup.loaded} ms` : 'initialize never answered']
+      : [`the server never started (${Date.now() - spawnedAt} ms after npx was spawned)`];
+    console.error('Cold start diagnostics: ' + parts.join(', '));
+    const names = await readdir(logs).catch(() => []);
+    for (const name of names.filter(file => file.endsWith('.log'))) {
+      const text = await readFile(join(logs, name), 'utf8');
+      const timers = [...text.matchAll(/timing (\S+) Completed in (\d+)ms/g)].map(([, timer, ms]) => [timer, Number(ms)])
+        .sort((a, b) => b[1] - a[1]).slice(0, 12);
+      console.error(`npm ${name} slowest timers: ` + timers.map(([timer, ms]) => `${timer} ${ms} ms`).join(', '));
+      for (const request of text.split(/\r?\n/).filter(row => /\bhttp fetch\b/.test(row))) console.error('npm ' + request.replace(/^\d+\s+/, ''));
+    }
+  }
 
   let sawMissingVersion = false;
   for (let number = 1; ; number++) {

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { packageJson } from '../../packaged.mjs';
 import { foldLatin } from './triage-sources.mjs';
 
 // Bad-meaning screen from the open LDNOOBW lists (CC BY 4.0, see meaning-words.LICENSE.txt), built by
@@ -9,7 +9,7 @@ import { foldLatin } from './triage-sources.mjs';
 // - sounds like: the name or one word of it is spelled differently but said the same as one of those long words
 //   (ph/f, c/k, doubled letters).
 // Words with accents match only with their accents ("göt" never matches "got"), unless five or more letters long.
-const data = JSON.parse(readFileSync(new URL('./meaning-words.json', import.meta.url), 'utf8'));
+const data = packageJson('clis/domain-check/meaning-words.json');
 const languageNames = { en: 'English', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian',
   no: 'Norwegian', sv: 'Swedish', da: 'Danish', nl: 'Dutch', pl: 'Polish', tr: 'Turkish', 'ja-Latn': 'Japanese',
   'zh-Latn': 'Chinese' };

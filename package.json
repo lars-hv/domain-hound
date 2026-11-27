@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "domain-hound": "bin/domain-hound.mjs"
+    "domain-hound": "dist/domain-hound.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -38,69 +38,10 @@
   ],
   "mcpName": "dev.domainhound/domain-hound",
   "files": [
-    "bin/domain-hound.mjs",
-    "server.mjs",
-    "hosted.mjs",
-    "hosted-results.mjs",
-    "display.mjs",
-    "short-answer.mjs",
-    "name-context.mjs",
-    "context-sources.mjs",
-    "results.mjs",
-    "results-style.mjs",
-    "results-cards.mjs",
-    "share.mjs",
-    "site/r/share-format.mjs",
-    "watch.mjs",
-    "dossier.mjs",
-    "clis/domain-check/broker-atom.mjs",
-    "clis/domain-check/cache.mjs",
-    "clis/domain-check/com-site.mjs",
-    "clis/domain-check/company-search.mjs",
-    "clis/domain-check/confirm.mjs",
-    "clis/domain-check/dossier.mjs",
-    "clis/domain-check/google-play.mjs",
-    "clis/domain-check/google-search.mjs",
-    "clis/domain-check/handles.mjs",
-    "clis/domain-check/public-name-checks.mjs",
-    "clis/domain-check/youtube-handle.mjs",
-    "clis/domain-check/index.mjs",
-    "clis/domain-check/marketplaces.mjs",
-    "clis/domain-check/name-search.mjs",
-    "clis/domain-check/name-score.mjs",
-    "clis/domain-check/score-log.mjs",
-    "clis/domain-check/naming-method.mjs",
-    "clis/domain-check/parking.mjs",
-    "clis/domain-check/price-catalog.mjs",
-    "clis/domain-check/price-snapshot.json",
-    "clis/domain-check/prices.mjs",
-    "clis/domain-check/progress.mjs",
-    "clis/domain-check/registry.mjs",
-    "clis/domain-check/safe-web.mjs",
-    "clis/domain-check/terms.json",
-    "clis/domain-check/traction.mjs",
-    "clis/domain-check/triage-sources.mjs",
-    "clis/domain-check/triage.mjs",
-    "clis/domain-check/trademarks.mjs",
-    "clis/domain-check/meaning.mjs",
-    "clis/domain-check/meaning-words.json",
-    "clis/domain-check/meaning-words.LICENSE.txt",
-    "clis/spaceship/buy.mjs",
-    "clis/spaceship/client.mjs",
-    "clis/spaceship/dns.mjs",
-    "clis/spaceship/quote.mjs",
-    "clis/spaceship/setup.mjs",
-    "clis/spaceship/store.mjs",
-    "clis/spaceship/tools.mjs",
-    "clis/spaceship/transfer.mjs",
-    "clis/portfolio/checks.mjs",
-    "clis/portfolio/discover.mjs",
-    "clis/portfolio/move.mjs",
-    "clis/portfolio/page.mjs",
-    "clis/portfolio/portfolio.mjs",
-    "clis/portfolio/store.mjs",
-    "clis/portfolio/transfer-prices.mjs",
-    "assets/",
+    "dist/domain-hound.mjs",
+    "dist/THIRD-PARTY-NOTICES.txt",
+    "assets/icon-512.png",
+    "assets/icon-1024.png",
     "skills/domain-hound/SKILL.md",
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
@@ -110,18 +51,18 @@
     "server.json"
   ],
   "scripts": {
-    "test": "node --test server.test.mjs results.test.mjs share.test.mjs dossier.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs clis/portfolio/*.test.mjs",
+    "build": "node scripts/build.mjs",
+    "prepack": "node scripts/build.mjs",
+    "test": "node --test package.test.mjs server.test.mjs results.test.mjs share.test.mjs dossier.test.mjs clis/domain-check/*.test.mjs clis/domain-check/test.mjs clis/spaceship/*.test.mjs clis/portfolio/*.test.mjs",
     "smoke": "node scripts/smoke.mjs",
     "snapshot-prices": "node scripts/snapshot-prices.mjs",
     "build-mcpb": "node scripts/build-mcpb.mjs"
   },
-  "dependencies": {
+  "devDependencies": {
+    "esbuild": "0.28.2",
     "parse5": "^7.3.0"
   },
   "bugs": {
     "url": "https://github.com/lars-hv/domain-hound/issues"
-  },
-  "bundleDependencies": [
-    "parse5"
-  ]
+  }
 }

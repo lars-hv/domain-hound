@@ -1271,7 +1271,8 @@ test('the package, lockfile, server and every manifest carry one version, and th
   assert.deepEqual(versions, versions.map(() => pkg.version));
   const responses = await exchange(handshake());
   assert.equal(resultOf(responses, 1).serverInfo.version, pkg.version);
-  assert.ok(pkg.files.includes('clis/domain-check/price-snapshot.json'));
+  // The packaged script carries the snapshot inline (see package.test.mjs).
+  assert.ok((await import('./scripts/build.mjs')).inlinedFiles.includes('clis/domain-check/price-snapshot.json'));
 });
 
 test('replies before checking handles and collects the completed handle rows with the same call', async t => {

@@ -1,6 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { packageJson } from '../../packaged.mjs';
 
-const terms = JSON.parse(readFileSync(new URL('./terms.json', import.meta.url), 'utf8'));
+const terms = packageJson('clis/domain-check/terms.json');
 const termsByShop = new Map(terms.map(item => [item.shop, item]));
 export const vatNorway = terms.every(item => item.vatNorway === 'unknown') ? 'unknown' : null;
 

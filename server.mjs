@@ -6,27 +6,24 @@ import { playSearchLink } from './clis/domain-check/google-play.mjs';
 import { geoInstruction, namingRecipe } from './clis/domain-check/naming-method.mjs';
 import { asciiDomain, canRecommend, choosePick, defaultEndings, domainEnding, normalizeName, pickCapUsd, restrictedEndings, supportedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { checkSocialHandles, handlePriorities, pendingHandleRows, requestPlatforms } from './clis/domain-check/handles.mjs';
 import { progressPrefix } from './clis/domain-check/progress.mjs';
 import { attributed, errorText, localCheckNotice, md, progressText } from './display.mjs';
 import { resultPages, resultsLine, shortPresentation } from './results.mjs';
 import { watchDomain, watchTool } from './watch.mjs';
-import { domainDossier, dossierTool } from './dossier.mjs';
-import { myDomains, portfolioTool } from './clis/portfolio/portfolio.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
 import { alternativeEndings, HostedRateLimit, hostedClient, hostedDebug } from './hosted.mjs';
 import { checkLines, generatedChecks, hostedChecks, hostedResult, visibleChecks } from './hosted-results.mjs';
 import { doneGuidance, shortBatchAnswer, shortDomainAnswer, shortIdeaAnswer } from './short-answer.mjs';
+import { capabilityArgs, capabilityDir, isEntry, packageJson } from './packaged.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
-export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
+export { capabilityDir };
 // One version for the server, package and manifests; the release workflow checks the tag against it.
-const serverVersion = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+const serverVersion = packageJson('package.json').version;
 // Each call answers within this budget, leaving a second under the clients' 15-second limit for formatting and
 // transport. A lookup that needs longer keeps running, and a repeated call with the same input collects it.
 const timeoutMs = 14_000;
@@ -604,7 +601,8 @@ function startLookup(args, cwd, maxMs, onLookupEvent) {
   const triage = args[0] === '--triage';
   const lookup = { started: performance.now(), progress: { answers: new Map(), stage: null }, finished: false, exited: false,
     collect: false, outcome: null };
-  const child = spawn(process.execPath, ['index.mjs', ...args], {
+  // An injected test directory runs its own index.mjs.
+  const child = spawn(process.execPath, cwd === capabilityDir ? capabilityArgs(args) : ['index.mjs', ...args], {
     cwd, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, DOMAIN_HOUND_OPEN: 'off', DOMAIN_HOUND_PROGRESS: '1', DOMAIN_HOUND_MCP_OUTPUT: '1',
       DOMAIN_HOUND_DEFER_HANDLES: triage ? '1' : '', DOMAIN_HOUND_FOLLOW_UP: triage ? '1' : '' },
   });
@@ -701,7 +699,9 @@ function pendingTriage(progress, rows) {
 
 export async function serve({
   input = process.stdin, output = process.stdout, cwd = capabilityDir, timeout = timeoutMs, maxLookup = maxLookupMs,
-  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles, dossier = domainDossier, portfolio = myDomains,
+  pages = resultPages(), watch = watchDomain, socialLookup = checkSocialHandles,
+  dossier = async args => (await import('./dossier.mjs')).domainDossier(args),
+  portfolio = async args => (await import('./clis/portfolio/portfolio.mjs')).myDomains(args),
   onLookupEvent, scoreLog = scoreLogger(), hosted = cwd === capabilityDir ? hostedClient(serverVersion) : null,
   context = cwd === capabilityDir ? publicSources() : null,
 } = {}) {
@@ -1209,7 +1209,12 @@ export async function serve({
     }
     if (method !== 'tools/list' && method !== 'tools/call') return error(id, -32601, 'Method not found');
     if (!initialized) return error(id, -32000, 'Domain Hound has not been initialized');
-    if (method === 'tools/list') return reply({ tools: registeredTools([checkTool, triageTool, namingTool, watchTool, dossierTool, portfolioTool]) });
+    if (method === 'tools/list') {
+      const [{ dossierTool }, { portfolioTool }] = await Promise.all([
+        import('./dossier.mjs'), import('./clis/portfolio/portfolio.mjs'),
+      ]);
+      return reply({ tools: registeredTools([checkTool, triageTool, namingTool, watchTool, dossierTool, portfolioTool]) });
+    }
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
     if (name === namingTool.name || name === 'naming_method') {
@@ -1231,14 +1236,14 @@ export async function serve({
       const data = await pages(result, {}, { watch: true }).catch(() => ({ ...result, display: result.say }));
       return reply(toolResult(JSON.stringify(data)));
     }
-    if (name === dossierTool.name) {
+    if (name === 'taken_domain_dossier') {
       try {
         return reply(toolResult(JSON.stringify(await dossier(args))));
       } catch (problem) {
         return reply(errorResult(problem.message));
       }
     }
-    if (name === portfolioTool.name) {
+    if (name === 'my_domains') {
       try {
         return reply(toolResult(JSON.stringify(await portfolio(args))));
       } catch (problem) {
@@ -1299,4 +1304,4 @@ export async function serve({
   await Promise.all([...lookups.values()].flatMap(lookup => [lookup.done, lookup.later]));
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await serve();
+if (isEntry(import.meta.url)) await serve();
