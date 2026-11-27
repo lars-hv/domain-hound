@@ -131,7 +131,9 @@ const namingContext = {
   customer: { ...namingText(160), description: 'Who the business serves.' },
   feedback: { ...namingText(400), description: 'Latest feedback in the founder’s own words.' },
   pick: { ...namingText(40), description: 'One previously shown name to recheck.' },
-  shown: { type: 'array', maxItems: 15, items: namingCandidate, description: 'Earlier shown names, projected to name, territory, anchor, why and parents.' },
+  shown: { type: 'array', maxItems: 15, items: { anyOf: [namingCandidate, { type: 'object', required: ['name'],
+    additionalProperties: false, properties: { name: namingText(40) } }] },
+    description: 'Earlier shown names with creative details when present, or just the name.' },
   proposals: { type: 'array', minItems: 1, maxItems: 20, items: namingCandidate, description: 'Host-written naming ideas to check against the brief.' },
   taste: { type: 'array', maxItems: 20, items: {
     type: 'object', required: ['id', 'kind'], additionalProperties: false, properties: {
@@ -196,7 +198,7 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_guide',
-  description: 'Start here when the user asks for new product, company or app names, a rebrand or a blend of earlier names. '
+  description: 'Use this when the user asks for new product, company or app names, a rebrand or a blend. Call it before brainstorming. '
     + 'Brainstorm using the guide, then send idea and proposals to triage_names to check domains, apps and exact US trademarks.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
@@ -491,6 +493,9 @@ function generationArguments(args) {
     }
   }
   if (round !== undefined && (!Number.isInteger(round) || round < 1 || round > 3)) throw new Error('Choose a round from 1 to 3.');
+  if (Array.isArray(args.proposals) && args.proposals.some(proposal => !namingTerritories.includes(proposal?.territory))) {
+    throw new Error('Use one of these territory values for each proposal: ' + namingTerritories.join(', ') + '.');
+  }
   const context = Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(namingContext, key)));
   if (Buffer.byteLength(JSON.stringify(context)) > (context.proposals ? 11_000 : 3500)) {
     throw new Error('Keep the current brief, taste notes and shown names short enough for one round.');
