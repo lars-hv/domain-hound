@@ -1,5 +1,5 @@
 {
-  "checkedAt": "2026-11-25T09:07:26.876Z",
+  "checkedAt": "2026-11-27T00:00:00.000Z",
   "catalogs": {
     "spaceship": {
       "checkedAt": "2026-11-24T18:15:47.403Z",
@@ -48,9 +48,11 @@
         },
         "si": {
           "shop": "Spaceship",
-          "firstYear": 10.98,
+          "firstYear": 11.88,
           "renewal": 11.98,
-          "transfer": null
+          "transfer": null,
+          "checkedAt": "2026-11-27T00:00:00.000Z",
+          "source": "https://www.spaceship.com/en-GB/domains/cctld/si/"
         }
       }
     },
@@ -101,9 +103,11 @@
         },
         "si": {
           "shop": "Porkbun",
-          "firstYear": 19.95,
-          "renewal": 17.13,
-          "transfer": null
+          "firstYear": 23.7,
+          "renewal": 23.7,
+          "transfer": 0,
+          "checkedAt": "2026-11-27T00:00:00.000Z",
+          "source": "https://porkbun.com/tld/si"
         },
         "net": {
           "shop": "Porkbun",
@@ -292,9 +296,11 @@
         },
         "si": {
           "shop": "Dynadot",
-          "firstYear": 11.29,
-          "renewal": 11.29,
-          "transfer": null
+          "firstYear": 11.3,
+          "renewal": 11.3,
+          "transfer": 0,
+          "checkedAt": "2026-11-27T00:00:00.000Z",
+          "source": "https://www.dynadot.com/domain/prices?currency=USD"
         },
         "no": {
           "shop": "Dynadot",
@@ -392,6 +398,39 @@
           "firstYear": 5.3,
           "renewal": 5.3,
           "transfer": null
+        },
+        "si": {
+          "shop": "Cloudflare",
+          "status": "not sold",
+          "checkedAt": "2026-11-27T00:00:00.000Z",
+          "source": "https://pricing.registrar.cloudflare.com/"
+        }
+      }
+    },
+    "namecheap": {
+      "checkedAt": "2026-11-27T00:00:00.000Z",
+      "prices": {
+        "si": {
+          "shop": "Namecheap",
+          "firstYear": 15.48,
+          "renewal": 15.48,
+          "transfer": 0,
+          "checkedAt": "2026-11-27T00:00:00.000Z",
+          "source": "https://www.namecheap.com/domains/registration/cctld/si/"
+        }
+      }
+    },
+    "gandi": {
+      "checkedAt": "2026-11-27T00:00:00.000Z",
+      "prices": {
+        "si": {
+          "shop": "Gandi",
+          "firstYear": 126,
+          "renewal": 215.98,
+          "transfer": 0,
+          "note": "Requires a Gandi Corporate Services contract",
+          "checkedAt": "2026-11-27T00:00:00.000Z",
+          "source": "https://www.gandi.net/en-US/domain/tld/si"
         }
       }
     }

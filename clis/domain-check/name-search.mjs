@@ -26,6 +26,10 @@ const facts = {
     note: 'Registration requires citizenship, residence or establishment in the EU, Iceland, Liechtenstein or Norway',
     source: 'https://eurid.eu/en/knowledge-centre/rules-for-eu-domains/', checked: '2026-11-25',
   },
+  si: {
+    note: 'Open to individuals and organizations worldwide. Names must be 2–63 characters and follow registry rules on characters, reserved names and third-party rights.',
+    source: 'https://www.register.si/en/general-terms/', checked: '2026-11-27',
+  },
   io: {
     note: 'Long-term registry uncertainty',
     source: 'https://www.icann.org/en/blogs/details/the-chagos-archipelago-and-the-io-domain-14-11-2024-en', checked,

@@ -45,7 +45,7 @@ const nameSchema = { type: 'string', minLength: 1, maxLength: 127, pattern: entr
 const endingsSchema = {
   type: 'array', minItems: 1, maxItems: supportedEndings.length, uniqueItems: true,
   items: { type: 'string', enum: supportedEndings },
-  description: 'Preferred endings and any extra endings to check, e.g. ["com","de"]. The ten defaults are still checked for bare names.',
+  description: 'Preferred endings and any extra endings to check, e.g. ["com","si"]. The ten defaults are still checked for bare names. Include si among the options when the user asks for more endings.',
 };
 const countryEnding = {
   SH: 'sh', GG: 'gg', SE: 'se', DK: 'dk', DE: 'de', GB: 'co.uk', UK: 'co.uk', EU: 'eu',
