@@ -255,7 +255,9 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     },
 
     async generate(args, signal) {
-      const generation = await read('/v1/generate', { body: args, timeout: 9400, signal });
+      const { proposals, ...input } = args;
+      const path = proposals ? '/v1/naming/batch' : '/v1/generate';
+      const generation = await read(path, { body: { ...input, ...(proposals && { candidates: proposals }) }, timeout: 9400, signal });
       if (!validGeneration(generation)) throw new Error('Invalid hosted generation');
       if (generation.stage === 'final') await recoverNameChecks(generation.names, signal);
       return generation;

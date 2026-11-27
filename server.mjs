@@ -68,7 +68,8 @@ const showAnswer = 'Show the tool’s text answer as given. Offer details only i
 const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
-  + 'Start with check_domains for availability or prices, triage_names for naming or trademark screening, and watch_domain for a release watch. '
+  + 'Use check_domains for availability or prices, triage_names for trademark screening, and watch_domain for a release watch. '
+  + 'When asked for new names, get the naming_guide, brainstorm in the host, then use triage_names with idea and proposals to check them. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Use my_domains to review renewals of domains the person already owns.';
@@ -114,10 +115,44 @@ const candidateDescriptions = {
   language: 'Name language, e.g. "english".',
 };
 
+const namingTerritories = ['job', 'result', 'metaphor', 'object', 'role', 'twist'];
+const namingText = maxLength => ({ type: 'string', minLength: 1, maxLength });
+const namingCandidate = {
+  type: 'object', additionalProperties: false, required: ['name', 'territory', 'anchor', 'why'],
+  properties: {
+    name: { ...namingText(40), description: 'Name as it should appear.' },
+    territory: { type: 'string', enum: namingTerritories, description: 'Creative direction from the naming guide.' },
+    why: { ...namingText(180), description: 'In at most 16 words, connect the anchor to the business.' },
+    anchor: { ...namingText(36), description: 'Familiar word or phrase in the name.' },
+    parents: { type: 'array', maxItems: 3, items: namingText(40), description: 'Previously shown names that supplied a part.' },
+  },
+};
+const namingContext = {
+  customer: { ...namingText(160), description: 'Who the business serves.' },
+  feedback: { ...namingText(400), description: 'Latest feedback in the founder’s own words.' },
+  pick: { ...namingText(40), description: 'One previously shown name to recheck.' },
+  shown: { type: 'array', maxItems: 15, items: { anyOf: [namingCandidate, { type: 'object', required: ['name'],
+    additionalProperties: false, properties: { name: namingText(40) } }] },
+    description: 'Earlier shown names with creative details when present, or just the name.' },
+  proposals: { type: 'array', minItems: 1, maxItems: 20, items: namingCandidate, description: 'Host-written naming ideas to check against the brief.' },
+  taste: { type: 'array', maxItems: 20, items: {
+    type: 'object', required: ['id', 'kind'], additionalProperties: false, properties: {
+      id: { type: 'string', pattern: '^[a-z0-9-]{1,24}$', description: 'Stable ID for this preference.' },
+      kind: { type: 'string', enum: ['keep-word', 'keep-trait', 'keep-name', 'ban-word', 'ban-territory', 'ban-trait', 'forget'],
+        description: 'What to keep, avoid, or remove from the notes.' },
+      value: { ...namingText(80), description: 'The exact preferred word, trait or pattern.' },
+      source: { ...namingText(40), description: 'Earlier name the preference refers to.' },
+      role: { ...namingText(32), description: 'Role of the named part, such as product or action.' },
+      count: { type: 'integer', minimum: 1, maximum: 20, description: 'Times the founder picked the part.' },
+    },
+  }, description: 'Remembered likes, banned patterns and their sources. Reuse an ID when a preference changes.' },
+};
+
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'Pass idea to use the website’s name generator ({"idea":"A room booking app"}) or names to screen candidates ({"names":["Quiet Otter"]}). '
+    + 'For new names, use naming_guide first, then pass idea and up to 20 host-written proposals per batch. '
+    + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
     + 'Repeat with the same input to collect pending checks. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
@@ -129,7 +164,8 @@ const triageTool = {
         description: 'Names liked last round, e.g. ["Quiet Otter"].' },
       avoid: { type: 'array', maxItems: 5, items: { type: 'string', minLength: 1, maxLength: 40 },
         description: 'Names rejected last round, e.g. ["Hush Room"].' },
-      round: { type: 'integer', minimum: 1, maximum: 20, description: 'Naming round, e.g. 2.' },
+      round: { type: 'integer', minimum: 1, maximum: 3, description: 'Naming round, e.g. 2.' },
+      ...namingContext,
       ...lookupProperties,
       detail: detailSchema,
       names: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 100 },
@@ -162,8 +198,8 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_guide',
-  description: 'Use this when the user asks how to name a product or wants a naming method before brainstorming. '
-    + 'It explains the recipes, quality rules and feedback question. Use triage_names to generate or screen actual names.',
+  description: 'Use this when the user asks for new product, company or app names, a rebrand or a blend. Call it before brainstorming. '
+    + 'Brainstorm using the guide, then send idea and proposals to triage_names to check domains, apps and exact US trademarks.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },
@@ -443,8 +479,8 @@ function validateDetail(args) {
 
 function generationArguments(args) {
   validateDetail(args);
-  if (Object.keys(args).some(key => !['idea', 'wanted', 'avoid', 'round', 'detail'].includes(key))) {
-    throw new Error('Supply idea and optional wanted, avoid and round.');
+  if (Object.keys(args).some(key => !['idea', 'wanted', 'avoid', 'round', 'detail', ...Object.keys(namingContext)].includes(key))) {
+    throw new Error('Supply an idea and any naming preferences or proposals.');
   }
   const { idea, wanted, avoid, round } = args;
   if (typeof idea !== 'string' || idea.trim().length < 3 || idea.length > 400 || !/\p{L}/u.test(idea) || /[\p{Cc}\p{Cf}]/u.test(idea)) {
@@ -456,8 +492,15 @@ function generationArguments(args) {
       throw new Error('Wanted and avoid can list up to five names, each up to 40 characters.');
     }
   }
-  if (round !== undefined && (!Number.isInteger(round) || round < 1 || round > 20)) throw new Error('Choose a round from 1 to 20.');
-  return { idea: idea.trim(), ...(wanted && { wanted }), ...(avoid && { avoid }), ...(round && { round }) };
+  if (round !== undefined && (!Number.isInteger(round) || round < 1 || round > 3)) throw new Error('Choose a round from 1 to 3.');
+  if (Array.isArray(args.proposals) && args.proposals.some(proposal => !namingTerritories.includes(proposal?.territory))) {
+    throw new Error('Use one of these territory values for each proposal: ' + namingTerritories.join(', ') + '.');
+  }
+  const context = Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(namingContext, key)));
+  if (Buffer.byteLength(JSON.stringify(context)) > (context.proposals ? 11_000 : 3500)) {
+    throw new Error('Keep the current brief, taste notes and shown names short enough for one round.');
+  }
+  return { idea: idea.trim(), ...(wanted && { wanted }), ...(avoid && { avoid }), ...(round && { round }), ...context };
 }
 
 // The capability prints one JSON object on stdout.

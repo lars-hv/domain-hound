@@ -50,7 +50,7 @@ try {
     for (const file of ['bin/domain-hound.mjs', 'server.mjs', 'display.mjs', 'results.mjs', 'results-style.mjs',
       'watch.mjs', 'dossier.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
-      'share.mjs', 'site/r/share-format.mjs', 'skills/domains/SKILL.md', 'skills/naming/SKILL.md', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
+      'share.mjs', 'site/r/share-format.mjs', 'skills/domain-hound/SKILL.md', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
       'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
