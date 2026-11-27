@@ -87,10 +87,13 @@ async function domainSite(domain, options) {
   return https.state === 'unconfirmed' && !options.signal.aborted ? evidence(await read('http')) : https;
 }
 
-async function candidateRows(labels, endings, variant) {
-  const candidates = labels.flatMap(name => endings.map(tld => ({ domain: name + '.' + tld, tld, exact: !variant })));
+async function candidateRows(labels, endings, variant, budgetMs = 3500) {
+  return registryRows(labels.flatMap(name => endings.map(tld => ({ domain: name + '.' + tld, tld, exact: !variant }))), variant, budgetMs);
+}
+
+async function registryRows(candidates, variant, budgetMs) {
   if (!candidates.length) return [];
-  const { groups } = await searchCandidates([{ candidates }], { budgetMs: 3500, cachedOnly: true, skipComSite: true });
+  const { groups } = await searchCandidates([{ candidates }], { budgetMs, cachedOnly: true, skipComSite: true });
   return groups[0].results.map(row => {
     const status = ['confirmed', 'probably-free', 'premium'].includes(row.status) ? 'available' : row.status === 'taken' ? 'taken' : 'unknown';
     return { domain: row.domain, ending: row.tld, status, variant, premium: row.premium,
@@ -138,6 +141,9 @@ export function publicSources({ fetcher = globalThis.fetch, env = process.env } 
     variants: (labels, endings) => candidateRows(labels, endings, true),
     comparison: (label, endings) => candidateRows([label], endings, false),
     proposalDomains: labels => candidateRows(labels, ['com', 'app', 'dev'], false),
+    // Exact domains for a host batch, e.g. every name on .com and the first ones on .app and .ai.
+    batchDomains: (domains, budgetMs = 8000) => registryRows(domains.map(domain => ({ domain, tld: domain.slice(domain.indexOf('.') + 1),
+      exact: true })), false, budgetMs),
     async localChecks(name, label) {
       const signal = AbortSignal.timeout(2800);
       const [apps, play, marks] = await Promise.all([

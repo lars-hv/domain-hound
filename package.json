@@ -1,6 +1,6 @@
 {
   "name": "domain-hound",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "license": "MIT",
   "type": "module",

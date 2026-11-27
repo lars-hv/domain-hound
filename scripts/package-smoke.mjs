@@ -19,11 +19,12 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import { doneGuidance } from '../short-answer.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains',
+const tools = ['check_domains', 'triage_names', 'check_batch', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains',
   'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');
@@ -41,7 +42,6 @@ const ceiling = (value, max) => Math.min(max, Number(value) || max);
 const maxInitMs = ceiling(process.env.PACKAGE_SMOKE_MAX_INIT_MS, 30_000);
 const maxLookupMs = ceiling(process.env.PACKAGE_SMOKE_MAX_LOOKUP_MS, 15_000);
 const diagnostics = process.env.PACKAGE_SMOKE_DIAGNOSTICS === '1';
-const doneGuidance = 'Done. Show this; do not call more tools unless the user asks.';
 const unknownWording = /still checking|couldn’t|couldn't|could not|failed|blocked|unknown|unavailable|unreachable|call the same tool/i;
 const deadline = performance.now() + windowMs;
 // npm and npx are .cmd files on Windows and need a shell there.
@@ -162,15 +162,16 @@ try {
         const display = checked.content[0].text;
         assert.equal(checked.structuredContent.rows[0].name, 'example.com');
         assert.deepEqual(checked.structuredContent.rows[0].statuses.taken, ['com']);
-        // The first answer is a table with the exact verdict and at most two supporting lines.
+        // The exact verdict leads, with a priced table when an alternative was found.
         const lines = display.split('\n');
-        assert.equal(lines[0], '| | Domain | Status | Now | Then/yr | Where |');
-        assert.equal(lines[1], '|---|---|---|---|---|---|');
-        assert.equal(lines[2], '| Asked | example.com | taken | — | — | — |');
+        assert.match(lines[0], /^Taken: example\.com(?:,|$)/);
+        assert.doesNotMatch(display, /—/);
         assert.match(lines.at(-1), /All prices, shops and handles: \[Open results\]\(.+\.html>?\)$/);
         const tableEnd = lines.findLastIndex(line => line.startsWith('|'));
-        assert.equal(lines[tableEnd + 1], '', 'Markdown separates the table from the notes');
-        assert.ok(lines.length - tableEnd - 2 <= 2, 'At most two supporting lines: ' + display);
+        if (tableEnd >= 0) {
+          assert.equal(lines[tableEnd + 1], '', 'Markdown separates the table from the notes');
+          assert.ok(lines.length - tableEnd - 2 <= 2, 'At most two supporting lines: ' + display);
+        }
         assert.doesNotMatch(display, unknownWording);
         assert.equal(checked.content.length, 2);
         assert.equal(checked.content[1].text, doneGuidance);

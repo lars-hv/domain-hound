@@ -4,7 +4,7 @@ One MCP for everything domains: find, check, buy, set up, watch, move, renew, ke
 
 Domain Hound finds names and checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. Connect your Spaceship account to quote a domain, buy it with your approval and set up DNS. It also investigates and watches taken domains, plans moves to a cheaper registrar, and keeps track of every domain you own. It runs locally.
 
-- **Find and check:** `triage_names`, `check_domains`, `naming_guide`
+- **Find and check:** `check_batch`, `triage_names`, `check_domains`, `naming_guide`
 - **Buy and set up:** `quote_domain`, `buy_domain`, `setup_domain`
 - **Watch taken domains:** `taken_domain_dossier`, `watch_domain`
 - **Plan a move:** `move_domain`
@@ -79,6 +79,8 @@ If `check_domains` says a check is pending, repeat the same call to collect it. 
 When the hosted lookup cannot check a .dev or .app domain, the package can ask Google Registry from your device and pass the result back to the hosted service to calculate the pick. It also tries Apple from your device when the hosted App Store lookup is rate-limited.
 
 Pass `idea` to `triage_names` to find checked names. The results page updates as screening finishes.
+
+For a clear brief, send 12 to 20 strong names directly to `check_batch`. It accepts up to 60 in one call. The package checks .com for every name and .app and .ai for the first ones, then App Store, Google Play and exact US trademarks, and returns up to five picks: clean names first, then near misses with their one issue. It needs no hosted naming service.
 Pass `names` to screen existing names. For another naming round, send the same `idea`, the previous `shown` names,
 your updated `taste` and the latest `feedback`. Add `proposals` with up to 20 host-written candidates per call
 to use the same checks on your own ideas. Use `pick` with a previously shown name to recheck one winner.
