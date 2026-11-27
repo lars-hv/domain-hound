@@ -137,6 +137,7 @@ export function publicSources({ fetcher = globalThis.fetch, env = process.env } 
     },
     variants: (labels, endings) => candidateRows(labels, endings, true),
     comparison: (label, endings) => candidateRows([label], endings, false),
+    proposalDomains: labels => candidateRows(labels, ['com', 'app', 'dev'], false),
     async localChecks(name, label) {
       const signal = AbortSignal.timeout(2800);
       const [apps, play, marks] = await Promise.all([

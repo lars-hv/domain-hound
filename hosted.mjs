@@ -9,6 +9,27 @@ export const hostedBase = 'https://domainhound-mcp.domainhound.workers.dev';
 // Page-only evidence. Symbols survive the internal object spreads and stay out of MCP JSON.
 export const alternativeEndings = Symbol('alternative endings');
 export class HostedRateLimit extends Error {}
+// The hosted naming batch takes up to 20 candidates; a larger call is split into groups of this size.
+export const proposalGroup = 20;
+const generationParts = Symbol('generation parts');
+const score = entry => Number.isFinite(entry?.score?.total) ? entry.score.total : -Infinity;
+
+// One answer from several naming groups: all names, best score first, still pending while any group is pending.
+export function mergeGenerations(parts, missing = false) {
+  const pending = parts.filter(part => part.stage === 'initial' && typeof part.details?.id === 'string');
+  const names = parts.flatMap(part => part.names).map((entry, index) => ({ entry, index }))
+    .sort((a, b) => score(b.entry) - score(a.entry) || a.index - b.index).map(({ entry }) => entry);
+  const suggestions = parts.flatMap(part => part.suggestions ?? []);
+  const merged = {
+    ...parts[0], stage: pending.length ? 'initial' : 'final',
+    details: pending.length ? { id: pending.map(part => part.details.id).join(','), pollAfterMs: pending[0].details.pollAfterMs } : null,
+    complete: !missing && parts.every(part => part.complete), names,
+    ...(suggestions.length && { suggestions }),
+    few: parts.every(part => part.few),
+  };
+  merged[generationParts] = parts;
+  return merged;
+}
 
 export function hostedDebug(message, env = process.env) {
   if (env.DOMAIN_HOUND_DEBUG === '1') process.stderr.write('Domain Hound: ' + message + '\n');
@@ -257,13 +278,28 @@ export function hostedClient(version, { env = process.env, fetchFn = fetch, appl
     async generate(args, signal) {
       const { proposals, ...input } = args;
       const path = proposals ? '/v1/naming/batch' : '/v1/generate';
-      const generation = await read(path, { body: { ...input, ...(proposals && { candidates: proposals }) }, timeout: 9400, signal });
-      if (!validGeneration(generation)) throw new Error('Invalid hosted generation');
-      if (generation.stage === 'final') await recoverNameChecks(generation.names, signal);
-      return generation;
+      const groups = [];
+      for (let index = 0; index < (proposals?.length ?? 0); index += proposalGroup) groups.push(proposals.slice(index, index + proposalGroup));
+      const one = async group => {
+        const generation = await read(path, { body: { ...input, ...(group && { candidates: group }) }, timeout: 9400, signal });
+        if (!validGeneration(generation)) throw new Error('Invalid hosted generation');
+        if (generation.stage === 'final') await recoverNameChecks(generation.names, signal);
+        return generation;
+      };
+      if (groups.length <= 1) return one(groups[0]);
+      // Groups run side by side. One group that fails costs only its names, unless every group fails.
+      const settled = await Promise.allSettled(groups.map(one));
+      const parts = settled.filter(result => result.status === 'fulfilled').map(result => result.value);
+      if (!parts.length) throw settled[0].reason;
+      return mergeGenerations(parts, settled.length > parts.length);
     },
 
     async finishGeneration(initial) {
+      if (initial[generationParts]) {
+        const parts = await Promise.all(initial[generationParts].map(part => part.stage === 'initial' && typeof part.details?.id === 'string'
+          ? this.finishGeneration(part).catch(() => ({ ...part, stage: 'final', details: null, complete: false })) : part));
+        return mergeGenerations(parts, initial.complete === false);
+      }
       const { id, pollAfterMs } = initial.details;
       const signal = AbortSignal.timeout(34_000);
       let delay = pollAfterMs;
