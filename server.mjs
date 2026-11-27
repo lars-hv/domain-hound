@@ -68,7 +68,8 @@ const showAnswer = 'Show the tool’s text answer as given. Offer details only i
 const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
-  + 'Start with check_domains for availability or prices, triage_names for naming or trademark screening, and watch_domain for a release watch. '
+  + 'Use check_domains for availability or prices, triage_names for trademark screening, and watch_domain for a release watch. '
+  + 'When asked for new names, get the naming_guide, brainstorm in the host, then use triage_names with idea and proposals to check them. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Use my_domains to review renewals of domains the person already owns.';
@@ -148,7 +149,8 @@ const namingContext = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'Pass idea to use the website’s name generator ({"idea":"A room booking app"}) or names to screen candidates ({"names":["Quiet Otter"]}). '
+    + 'For new names, use naming_guide first, then pass idea and up to 20 host-written proposals per batch. '
+    + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
     + 'Repeat with the same input to collect pending checks. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
@@ -194,8 +196,8 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_guide',
-  description: 'Use this when someone asks for a method before brainstorming, to find a domain alternative, to rebrand or to choose a name that lasts. '
-    + 'Use triage_names to generate ideas or screen names.',
+  description: 'Start here when the user asks for new product, company or app names, a rebrand or a blend of earlier names. '
+    + 'Brainstorm using the guide, then send idea and proposals to triage_names to check domains, apps and exact US trademarks.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },
