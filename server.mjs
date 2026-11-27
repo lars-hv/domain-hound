@@ -70,11 +70,12 @@ const lookupProperties = {
 };
 const searchAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const batchResultMeta = { 'anthropic/maxResultSizeChars': 40_000 };
-const showAnswer = 'Show the answer as given; offer details only if the user asks. ' + answerPolicy;
-const detailSchema = { type: 'string', enum: ['short', 'full'],
-  description: 'Choose how much to show, e.g. "full" for all shops and handles.' };
+const showAnswer = 'Show the tool’s text answer as given. Offer details only if the user asks. ' + answerPolicy;
+const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
+  description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
-  + 'Start with check_domains for availability or prices, triage_names for naming or trademark screening, and watch_domain for a release watch. '
+  + 'Use check_domains for availability or prices, triage_names for trademark screening, and watch_domain for a release watch. '
+  + 'When asked for new names, get the naming_guide, brainstorm in the host, then use triage_names with idea and proposals to check them. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Pass stated ownership in ownedDomains. Use my_domains to review renewals of domains the person already owns.';
@@ -156,7 +157,8 @@ const namingContext = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'Pass idea to use the website’s name generator ({"idea":"A room booking app"}) or names to screen candidates ({"names":["Quiet Otter"]}). '
+    + 'For new names, use naming_guide first, then pass idea and up to 20 host-written proposals per batch. '
+    + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
     + 'Repeat with the same input to collect pending checks. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
@@ -202,8 +204,8 @@ const triageTool = {
 
 const namingTool = {
   name: 'naming_guide',
-  description: 'Use this when someone asks for a method before brainstorming, to find a domain alternative, to rebrand or to choose a name that lasts. '
-    + 'Use triage_names to generate ideas or screen names.',
+  description: 'Start here when the user asks for new product, company or app names, a rebrand or a blend of earlier names. '
+    + 'Brainstorm using the guide, then send idea and proposals to triage_names to check domains, apps and exact US trademarks.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },
@@ -258,7 +260,7 @@ function compactCheckResult(result, full) {
 
 function lookupResult(page, args, triage = false) {
   const result = toolResult(JSON.stringify(page));
-  if (args.detail === 'full' || args.additionalHandles?.length) {
+  if (args.detail === 'full') {
     const alternatives = triage ? [] : (page.checks ?? []).flatMap(check => {
       const options = check.query.exactDomain && check[alternativeEndings];
       return options ? checkLines({ ...options, domains: options.domains.filter(row => row.domain !== check.query.exactDomain) },
@@ -268,8 +270,11 @@ function lookupResult(page, args, triage = false) {
     return result;
   }
   const link = page.resultPage && resultsLine(page.resultPage).replace(/^Results page:/, 'All prices, shops and handles:');
-  if (!page.checks && page.pending && page.names?.length) {
-    const progressRows = (triage ? page.names.slice(0, 5) : page.names).map(({ name, free, taken, premium }) => {
+  const local = page.nameEvidence ?? page[shortPresentation];
+  const checks = page.checks ?? local;
+  if (!checks && page.pending) {
+    const names = page.names ?? [];
+    const progressRows = (triage ? names.slice(0, 5) : names).map(({ name, free, taken, premium }) => {
       const show = values => values.map(value => {
         const ending = value.d ?? value;
         return ending === name ? ending : '.' + ending;
@@ -287,14 +292,14 @@ function lookupResult(page, args, triage = false) {
       args.purchase && !triage ? 'This check leaves checkout to you.' : '', link].filter(Boolean).join('\n');
     return result;
   }
-  if (!page.resultPage) return result;
-  const local = page.nameEvidence ?? page[shortPresentation];
-  const checks = page.checks ?? local;
-  if (!checks) return result;
+  if (!triage && !checks?.length) {
+    result.content[0].text = ['No domain results to show.', link].filter(Boolean).join('\n');
+    return result;
+  }
 
-  const options = { pending: Boolean(page.generation && page.pending), link };
+  const options = { pending: Boolean(page.pending), link };
   const short = triage
-    ? shortIdeaAnswer(visibleChecks(checks, args, page.generation), options)
+    ? shortIdeaAnswer(visibleChecks(checks ?? [], args, page.generation), options)
     : checks.map(check => shortDomainAnswer({ ...check, alternatives: check[alternativeEndings] ?? check.alternatives }, {
       ...options, link: checks.length === 1 ? link : undefined,
     })).join('\n\n');
@@ -305,7 +310,7 @@ function lookupResult(page, args, triage = false) {
   const text = triage ? short : [
     short.replace(/^[^\n]+/, first => [first, ...notes].join(' ')),
     ...(checks.length !== 1 ? [link] : []),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   return { ...result, content: [{ type: 'text', text }] };
 }
 
@@ -675,7 +680,7 @@ export async function serve({
 
   // Join the running or finished lookup for the same input, or start one. Answer within the budget with the
   // result, or with the progress so far while the lookup keeps running for a repeated call to collect.
-  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}, started = performance.now(), legacy = false) {
+  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}, started = performance.now()) {
     let cliArgs;
     let rows;
     try {
@@ -706,7 +711,7 @@ export async function serve({
       try {
         const snapshot = await renderProgress(lookup.progress, {
           rows, elapsedMs: performance.now() - lookup.started, budgetMs: timeout }, lookup);
-        return legacy ? toolResult(snapshot) : lookupResult(JSON.parse(snapshot), args, buildArgs === triageArguments);
+        return lookupResult(JSON.parse(snapshot), args, buildArgs === triageArguments);
       } catch {
         return errorResult('Domain Hound could not format the progress.');
       }
@@ -717,7 +722,7 @@ export async function serve({
     }
     try {
       const page = await render(lookup.outcome.data, lookup);
-      return legacy ? toolResult(JSON.stringify(page)) : lookupResult(page, args, buildArgs === triageArguments);
+      return lookupResult(page, args, buildArgs === triageArguments);
     } catch {
       return errorResult('Domain Hound could not format the result.');
     }
@@ -884,14 +889,14 @@ export async function serve({
         if (page) return lookupResult(page, args);
       }
       hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
-      const result = toolResult(JSON.stringify({ display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
-        complete: false, pending: true }));
-      if (detail !== 'full' && (triage || streamDomains)) result.content[0].text = 'Still checking ' + (triage ? 'names and domains.' : 'domains.');
-      return result;
+      return lookupResult({
+        display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
+        complete: false, pending: true,
+      }, args, triage);
     }
     const page = lookup.finished ? lookup.result : await lookup.first;
     if (!page || page.isError) return page;
-    return triage || streamDomains ? lookupResult(page, args, triage) : toolResult(JSON.stringify(page));
+    return lookupResult(page, args, triage);
   }
 
   async function renderHostedLookup(checks, args, triage, { pending = false, reuse, enhance } = {}) {
@@ -919,9 +924,12 @@ export async function serve({
     } catch (problem) {
       return errorResult(problem.message);
     }
-    const local = () => toolResult(JSON.stringify({ display: attributed(
-      'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n'
-      + namingRecipe(input.idea)), source: 'local' }));
+    const local = () => toolResult(JSON.stringify({
+      display: attributed(args.detail === 'full'
+        ? 'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n' + namingRecipe(input.idea)
+        : 'Name generation is unavailable. Use naming_guide, then send your candidates to triage_names.'),
+      source: 'local',
+    }));
     if (!hosted) return local();
     const key = JSON.stringify(input);
     let job = generations.get(key);
@@ -1197,7 +1205,7 @@ export async function serve({
     const result = await hostedLookup(args, false, started, name === checkTool.name) ?? await runLookup(
       args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args,
         { enhance: name === checkTool.name ? nameEvidence(args) : null }).then(page => withCheckQuoteOffer(page, args)),
-      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started, name !== checkTool.name,
+      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started,
     );
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
