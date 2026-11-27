@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -1076,7 +1077,7 @@ test('forwards per-name GEO from the client memory and rejects anything else', a
   assert.equal(geo.type, 'object');
   assert.equal(geo.maxProperties, 20);
   assert.match(geo.description, /own knowledge only, without searching/);
-  assert.match(triage.description, /Show the answer as given; offer details only if the user asks/);
+  assert.match(triage.description, /Show the tool’s text answer as given\. Offer details only if the user asks/);
   const pattern = new RegExp(geo.additionalProperties.pattern);
   for (const value of ['known: notes app', 'Known (notes app)', 'unknown']) assert.ok(pattern.test(value), value);
   for (const value of ['known', 'maybe', 'unknown brand']) assert.ok(!pattern.test(value), value);
@@ -1348,6 +1349,68 @@ test('keeps a fully priced hosted check and a twenty-name batch within the MCP r
     assert.ok(expected.every(name => receipt.includes(name + '.com')));
     assert.match(receipt, /Gandi/);
   }
+});
+
+test('the package entry point defaults to short hosted check, screening and idea replies', async t => {
+  const name = 'exampleheron';
+  const domain = name + '.dev';
+  const offer = { domain, shop: 'Example Shop', firstYearUsd: 5, firstPaymentUsd: 5, renewalUsd: 10, threeYearUsd: 25 };
+  const row = { domain, ending: 'dev', status: 'available', prices: [offer] };
+  const appStore = { status: 'no_match_found', matches: [] };
+  const googlePlay = { status: 'taken' };
+  const trademarks = { us: { status: 'no_exact_match_found', marks: [] } };
+  const paths = [];
+  const api = createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    const query = url.searchParams.get('name');
+    paths.push([url.pathname, query, request.headers['x-domain-hound-client']]);
+    let data;
+    if (url.pathname === '/v1/check') {
+      const exactDomain = query === domain ? domain : null;
+      data = { version: 1, query: { name, ascii: name, exactDomain }, complete: true,
+        domains: [row], choice: { pick: offer }, appStore,
+        ...(exactDomain ? { details: { id: 'fixture-id' } } : { googlePlay, trademarks }) };
+    } else if (url.pathname === '/v1/generate') {
+      request.resume();
+      data = { version: 2, stage: 'final', complete: true,
+        names: [{ name, domain: offer, domains: [row], nameChecks: { appStore, googlePlay, trademarks } }] };
+    }
+    response.writeHead(data ? 200 : 404, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(data ?? {}));
+  });
+  await new Promise(resolve => api.listen(0, '127.0.0.1', resolve));
+  t.after(() => { api.closeAllConnections(); return new Promise(resolve => api.close(resolve)); });
+
+  const check = { query: domain };
+  const triage = { names: [name] };
+  const idea = { idea: 'An app for planning a library' };
+  const responses = await runServer([fileURLToPath(new URL('./bin/domain-hound.mjs', import.meta.url))], [
+    ...handshake(), request(2, 'tools/list'),
+    call(3, check), call(4, { ...check, detail: 'full' }),
+    call(5, triage, 'triage_names'), call(6, { ...triage, detail: 'full' }, 'triage_names'),
+    call(7, idea, 'triage_names'), call(8, { ...idea, detail: 'full' }, 'triage_names'),
+    call(9, { query: name }),
+  ], { DOMAIN_HOUND_LOCAL: '0', DOMAIN_HOUND_API_URL: 'http://127.0.0.1:' + api.address().port });
+
+  assert.deepEqual(callText(responses, 3).split('\n').slice(0, -1), [
+    'exampleheron.dev is available: $5.00 now, then $10.00/yr (Example Shop).',
+    'App Store: no app with this name',
+    'Still checking Google Play, US trademark.',
+  ]);
+  assert.match(callText(responses, 9), /^exampleheron\.dev is your best bet: \$5\.00 now, then \$10\.00\/yr \(Example Shop\)\./);
+  assert.match(callText(responses, 4), /Ask to quote exampleheron\.dev\./);
+  assert.match(callText(responses, 5), /^exampleheron - .* · App Store free · Google Play taken\n/);
+  assert.match(callText(responses, 7), /^exampleheron - exampleheron\.dev, \$5\.00 now, then \$10\.00\/yr \(Example Shop\) · App Store free · Google Play taken\n/);
+  for (const [short, full] of [[3, 4], [5, 6], [7, 8]]) {
+    assert.match(callText(responses, short), /\nAll prices, shops and handles: \[Open results\]/);
+    assert.doesNotMatch(callText(responses, short), /Available ·|first year/);
+    assert.match(callText(responses, full), /Available · exampleheron\.dev\nExample Shop.*\$5\.00 first year/);
+    assert.equal(resultOf(responses, short).structuredContent.resultPage, resultOf(responses, full).structuredContent.resultPage);
+  }
+  for (const tool of resultOf(responses, 2).tools.slice(0, 2)) assert.equal(tool.inputSchema.properties.detail.default, 'short');
+  assert.deepEqual(paths.filter(([path]) => path === '/v1/check').map(([, query]) => query).sort(), [name, name, domain]);
+  assert.equal(paths.filter(([path]) => path === '/v1/generate').length, 1);
+  assert.ok(paths.every(([, , client]) => client === 'mcp/' + version));
 });
 
 test('hosted domain checks keep shop order and recover a rate-limited App Store result locally', async t => {

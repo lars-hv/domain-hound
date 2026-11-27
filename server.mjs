@@ -64,9 +64,9 @@ const lookupProperties = {
 };
 const searchAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const batchResultMeta = { 'anthropic/maxResultSizeChars': 40_000 };
-const showAnswer = 'Show the answer as given; offer details only if the user asks.';
-const detailSchema = { type: 'string', enum: ['short', 'full'],
-  description: 'Choose how much to show, e.g. "full" for all shops and handles.' };
+const showAnswer = 'Show the tool’s text answer as given. Offer details only if the user asks.';
+const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
+  description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
   + 'Start with check_domains for availability or prices, triage_names for naming or trademark screening, and watch_domain for a release watch. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
@@ -235,7 +235,7 @@ function lookupResult(page, args, triage = false) {
   const checks = page.checks ?? local;
   if (!checks) return result;
 
-  const options = { pending: Boolean(page.generation && page.pending), link };
+  const options = { pending: Boolean(page.pending), link };
   const short = triage
     ? shortIdeaAnswer(visibleChecks(checks, args, page.generation), options)
     : checks.map(check => shortDomainAnswer({ ...check, alternatives: check[alternativeEndings] }, {
@@ -662,8 +662,9 @@ export async function serve({
     return tracked;
   };
 
-  async function hostedLookup(args, triage, started, streamDomains = false) {
+  async function hostedLookup(args, triage, started, { legacy = false } = {}) {
     if (!hosted || args?.confirm === true || (triage && args?.additionalHandles?.length)) return null;
+    const streamDomains = !triage && !legacy;
     let rows;
     try {
       (triage ? triageArguments : cliArguments)(args);
@@ -731,12 +732,12 @@ export async function serve({
       hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
       const result = toolResult(JSON.stringify({ display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
         complete: false, pending: true }));
-      if (detail !== 'full' && (triage || streamDomains)) result.content[0].text = 'Still checking ' + (triage ? 'names and domains.' : 'domains.');
+      if (!legacy && detail !== 'full') result.content[0].text = 'Still checking ' + (triage ? 'names and domains.' : 'domains.');
       return result;
     }
     const page = lookup.finished ? lookup.result : await lookup.first;
     if (!page || page.isError) return page;
-    return triage || streamDomains ? lookupResult(page, args, triage) : toolResult(JSON.stringify(page));
+    return legacy ? toolResult(JSON.stringify(page)) : lookupResult(page, args, triage);
   }
 
   async function renderHostedLookup(checks, args, triage, { pending = false, reuse } = {}) {
@@ -1038,14 +1039,15 @@ export async function serve({
     if (name !== checkTool.name && name !== 'broker_find') return error(id, -32602, 'Unknown tool');
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
-    const result = await hostedLookup(args, false, started, name === checkTool.name) ?? await runLookup(
+    const legacy = name === 'broker_find';
+    const result = await hostedLookup(args, false, started, { legacy }) ?? await runLookup(
       args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args).then(page => withCheckQuoteOffer(page, args)),
-      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started, name !== checkTool.name,
+      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started, legacy,
     );
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
     }
-    return reply(name === checkTool.name ? compactCheckResult(result) : result);
+    return reply(legacy ? result : compactCheckResult(result));
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });
