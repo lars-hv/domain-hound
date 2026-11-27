@@ -23,7 +23,7 @@ import { promisify } from 'node:util';
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 const windows = process.platform === 'win32';
-const tools = ['check_domains', 'triage_names', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains',
+const tools = ['check_domains', 'triage_names', 'check_batch', 'naming_guide', 'watch_domain', 'taken_domain_dossier', 'my_domains',
   'quote_domain', 'buy_domain', 'setup_domain', 'move_domain'];
 const { version: packageVersion } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const flag = process.argv.indexOf('--published');

@@ -1,11 +1,14 @@
 import { brandConflict, domainTier, rankedAlternatives, selectionReason, whoElse } from './name-context.mjs';
-import { normalizeName, qualityRank } from './clis/domain-check/name-search.mjs';
+import { normalizeName, preferUnlocked, qualityRank } from './clis/domain-check/name-search.mjs';
 import { md } from './display.mjs';
 
 // The short answer is a small Markdown table plus at most two supporting lines. It never mentions a source that
 // failed, was blocked or is still running: that source is left out here and stays on the results page.
 // The closing instruction to the host travels as its own text block.
-export const doneGuidance = 'Done. Show this; do not call more tools unless the user asks.';
+export const doneGuidance = 'Done. Show this; do not call more tools unless the user asks. '
+  + 'For an exact domain that is taken, always show its best available alternative from the answer, even for a yes/no question. '
+  + 'Mention resale only if the user asks about buying the taken domain. '
+  + 'Report only the facts and checks listed in the answer. Leave out discussion of missing checks.';
 
 const plain = value => String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim();
 const usd = value => '$' + value.toFixed(2);
@@ -21,18 +24,19 @@ function table(header, rows) {
   return [line(header), '|' + header.map(() => '---').join('|') + '|', ...rows.map(row => line(row.map(value => value ?? empty)))].join('\n');
 }
 
-// Upfront payment, renewal and shop. A multi-year minimum term says so in both price cells.
+// Upfront payment, renewal and shop. A multi-year minimum term says so in both price cells. Shop conditions such as a
+// required DNS provider stay on the results page.
 export function priceCells(offer) {
   const term = offer?.minimumYears ?? 1;
   const now = offer?.firstPaymentUsd ?? offer?.firstYearUsd;
   const renew = term > 1 ? offer?.renewalPaymentUsd : offer?.renewalUsd;
   if (!Number.isFinite(now) || !Number.isFinite(renew) || !offer.shop) return null;
   return [usd(now) + (term > 1 ? ' for ' + term + ' yrs' : ''), usd(renew / term) + (term > 1 ? ' (' + term + '-yr term)' : ''),
-    cell(offer.shop) + (offer.needsCloudflareDns ? ' (needs Cloudflare DNS)' : '')];
+    cell(offer.shop)];
 }
 
 function rowOffer(row, pick) {
-  const offer = pick?.domain === row.domain ? pick : row.prices?.[0];
+  const offer = pick?.domain === row.domain ? pick : preferUnlocked(row.prices ?? []);
   return priceCells(offer) ?? priceCells(row.prices?.find(candidate => candidate.shop === offer?.shop));
 }
 
@@ -86,35 +90,43 @@ function answer(body, notes, link) {
   return [body, lines.join('\n')].filter(Boolean).join('\n\n');
 }
 
+// The table holds only priced, available rows. Taken, owned and unpriced domains go on one status line below it,
+// never as rows of empty cells.
 function domainRows(check, { primary, pick, also, owned, label }) {
   const rows = [];
   const seen = new Set();
+  const taken = [];
+  const yours = [];
+  const other = [];
   const add = (role, row) => {
     if (!row || seen.has(row.domain)) return;
     const status = rowStatus(row, owned);
     if (!status) return;
     seen.add(row.domain);
     const prices = ['available', 'premium'].includes(status) ? rowOffer(row, pick) : null;
-    rows.push([role, cell(row.domain), status, ...(prices ?? [empty, empty, empty])]);
+    if (prices) rows.push([role, cell(row.domain), status, ...prices]);
+    else if (status === 'taken') taken.push(cell(row.domain));
+    else if (status === 'owned') yours.push(row.domain);
+    else if (status !== 'available') other.push(cell(row.domain) + ' ' + status);
   };
   const exact = check.query.exactDomain;
   const hit = check.domains.find(row => row.domain === exact);
   if (exact) add(primary?.domain === exact && rowStatus(hit, owned) === 'available' ? 'Best' : 'Asked', hit);
   add('Best', primary);
   for (const row of also.slice(0, 2)) add('Also', row);
-  const yours = [...owned].filter(domain => !seen.has(domain));
-  if (yours.length) {
-    rows.push(['Yours', yours.slice(0, 3).map(cell).join(', ') + (yours.length > 3 ? ' +' + (yours.length - 3) : ''), 'owned', empty, empty, empty]);
-    yours.forEach(domain => seen.add(domain));
-  }
+  for (const domain of owned) if (!seen.has(domain) && !yours.includes(domain)) yours.push(domain);
+  yours.forEach(domain => seen.add(domain));
   const all = [...new Map([...(check.alternatives?.domains ?? []), ...check.domains].map(row => [row.domain, row])).values()];
   const takenSame = all.filter(row => !seen.has(row.domain) && !row.variant && row.status === 'taken'
     && row.domain.split('.')[0] === label && !owned.has(row.domain));
-  if (takenSame.length) {
-    rows.push(['Taken', takenSame.length === 1 ? cell(takenSame[0].domain) : takenSame.map(row => '.' + cell(row.ending ?? row.domain.split('.').slice(1).join('.'))).join(' '),
-      'taken', empty, empty, empty]);
-  }
-  return rows;
+  const endings = takenSame.map(row => '.' + cell(row.ending ?? row.domain.split('.').slice(1).join('.')));
+  const takenText = [...taken, ...(taken.length || takenSame.length > 1 ? endings : takenSame.map(row => cell(row.domain)))];
+  const status = [
+    takenText.length ? 'Taken: ' + takenText.join(', ') : '',
+    yours.length ? 'Yours: ' + yours.slice(0, 3).map(cell).join(', ') + (yours.length > 3 ? ' +' + (yours.length - 3) : '') : '',
+    other.length ? other.join(', ') : '',
+  ].filter(Boolean).join(' · ');
+  return { rows, status };
 }
 
 const domainHeader = ['', 'Domain', 'Status', 'Now', 'Then/yr', 'Where'];
@@ -171,11 +183,16 @@ export function shortDomainAnswer(check, { link, purchase = false } = {}) {
     } else first = '';
     also = available.filter(row => row !== primary && row.domain !== exact);
   }
-  const tableRows = domainRows(check, { primary, pick, also, owned, label });
+  const { rows: tableRows, status: statusLine } = domainRows(check, { primary, pick, also, owned, label });
   const { us } = sources(check);
   const others = ranked ? whoElseLine(whoElse(context, { pick, ownedDomains, hasAdvice: Boolean(advice),
     blockedBrand: brandConflict(context, check.trademarks) })) : '';
-  const text = tableRows.length ? table(domainHeader, tableRows) : first.trim();
+  const priced = tableRows.length ? table(domainHeader, tableRows) : '';
+  const takenExact = hit?.status === 'taken' && !owned.has(exact);
+  const alternative = takenExact && primary && tableRows.some(row => row[1] === cell(primary.domain) && row[2] === 'available')
+    ? 'Best available alternative: ' + cell(primary.domain) + '.' : '';
+  const sections = takenExact ? [statusLine, alternative, priced] : [priced || first.trim(), statusLine];
+  const text = sections.filter(Boolean).join('\n\n');
   const ownAdvice = ownedDomains.length && context?.domain && !owned.has(context.domain)
     && check.domains.some(row => row.domain === context.domain && row.status === 'taken')
     ? 'Keep using ' + cell(ownedDomains[0]) + ' and hold off on ' + cell(context.domain) + '.' : '';

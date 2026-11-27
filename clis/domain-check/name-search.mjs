@@ -74,6 +74,28 @@ function fitsCap(option, { budget } = {}) {
   return known(option.total) && cents(option.total) <= cents(budget ?? pickCapUsd);
 }
 
+// A shop that requires its own DNS (Cloudflare) gives way to the cheapest shop without that lock when it costs at most
+// this much more over 3 years.
+export const dnsLockSlackUsd = 2;
+export const locksDns = offer => Boolean(offer?.needsCloudflareDns) || /^cloudflare$/i.test(offer?.shop ?? offer?.id ?? '');
+
+// One offer for a domain: the lowest 3-year total, unless it locks DNS and an unlocked offer is within $2 of it.
+export function preferUnlocked(offers = [], total = offer => offer?.threeYearUsd) {
+  const priced = offers.filter(offer => known(total(offer))).sort((a, b) => cents(total(a)) - cents(total(b)));
+  const [cheapest] = priced;
+  if (!cheapest) return offers[0];
+  if (!locksDns(cheapest)) return cheapest;
+  const open = priced.find(offer => !locksDns(offer));
+  return open && cents(total(open)) - cents(total(cheapest)) <= cents(dnsLockSlackUsd) ? open : cheapest;
+}
+
+// Drop a DNS-locked option when the same domain has an unlocked option within $2 over 3 years.
+function withoutLockIn(options) {
+  return options.filter(option => !locksDns(option) || !known(option.total) || !options.some(other => other !== option
+    && other.domain === option.domain && !locksDns(other) && known(other.total)
+    && cents(other.total) - cents(option.total) <= cents(dnsLockSlackUsd)));
+}
+
 // The one pick rule. options are free, eligible, in-scope rows shaped { domain, now, total } (total = payments due in
 // 3 years). The pick is the highest-quality option within the cap; when none fits, the least paid over 3 years.
 // .ai is never the default: only when the person asked for it or its 3-year total fits the budget they gave.
@@ -86,8 +108,9 @@ export function choosePick(options, { requested = [], eligible = [], budget, all
     : Number(a.exact === false) - Number(b.exact === false)) || rank(a) - rank(b)
     || (a.total ?? Infinity) - (b.total ?? Infinity)
     || (a.now ?? Infinity) - (b.now ?? Infinity) || a.domain.localeCompare(b.domain);
-  return allowed.filter(option => upfrontCap != null ? known(option.total) : fitsCap(option, { budget })).sort(byQuality)[0]
-    ?? (allowOverCap ? lowestTotal(allowed, rank) : undefined);
+  const withinCap = allowed.filter(option => upfrontCap != null ? known(option.total) : fitsCap(option, { budget }));
+  return withoutLockIn(withinCap).sort(byQuality)[0]
+    ?? (allowOverCap ? lowestTotal(withoutLockIn(allowed), rank) : undefined);
 }
 
 // The least paid over 3 years; the cheaper first payment, then quality, breaks a tie.
@@ -254,7 +277,10 @@ export function listQuote(catalog, { domain, tld }, now, bundled = bundledCatalo
   // Data-only shops never become the listed pick or its checkout link.
   const prices = datedListPrices(catalog, tld, now, bundled).filter(row => linkable(row.id)).sort((a, b) =>
     a.firstYear - b.firstYear || a.renewal - b.renewal);
-  const best = prices[0];
+  // A DNS-locked list price gives way to an unlocked shop within $2 over 3 years.
+  const threeYear = row => termCosts(tld, row.firstYear, row.renewal).threeYear;
+  const best = locksDns(prices[0]) ? preferUnlocked(prices.filter(row => known(threeYear(row)) &&
+    (row === prices[0] || threeYear(row) - threeYear(prices[0]) <= dnsLockSlackUsd)), threeYear) ?? prices[0] : prices[0];
   const confirmShop = prices.find(row => confirmingShops.includes(row.id))?.id ??
     (tld === 'no' ? 'dynadot' : tld === 'so' ? 'namecheap' : 'spaceship');
   return {

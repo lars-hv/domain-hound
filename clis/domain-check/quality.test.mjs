@@ -81,6 +81,11 @@ test('the pick rule: best quality within $60 over 3 years, else the least paid o
   assert.equal(pick([option('a.com', 10, null), option('a.dev', 8.28, 33.12)]), 'a.dev');
   assert.equal(pick([option('a.com', 10, null)]), undefined);
   assert.ok(comparePicks(option('a.com', 30, 90), option('b.dev', 23, 69)) > 0);
+  const locked = { ...option('a.com', 9, 30), shop: 'Cloudflare' };
+  const unlocked = { ...option('a.com', 10, 31), shop: 'Spaceship' };
+  assert.equal(choosePick([locked, unlocked], { upfrontCap: 9.50 }), locked);
+  assert.equal(choosePick([locked, unlocked], { budget: 30.50 }), locked);
+  assert.equal(choosePick([locked, unlocked]), unlocked);
 });
 
 test('baseline prices: the pick is .com, with distinct cheapest-upfront and 3-year value lines and every row kept', async t => {
@@ -269,7 +274,9 @@ test('Cloudflare: one checked official snapshot, merged by registrar with fresh 
   const uk = listQuote(fresh, { domain: 'example.uk', tld: 'uk' }, now);
   assert.deepEqual([uk.shop, uk.price, uk.renewal, uk.priceCheckedAt.slice(0, 10)], ['Cloudflare', 5.3, 5.3, '2026-11-25']);
   assert.equal(uk.buyUrl, 'https://www.cloudflare.com/domains/search/?q=example.uk');
-  assert.equal(listQuote(fresh, { domain: 'example.com', tld: 'com' }, now).shop, 'Cloudflare');
+  // Cloudflare's DNS lock gives way to an unlocked shop within $2 over 3 years ($34.50 against $33.51); .uk stays,
+  // because Dynadot costs $2.52 more there.
+  assert.equal(listQuote(fresh, { domain: 'example.com', tld: 'com' }, now).shop, 'Dynadot');
   assert.equal(listQuote(null, { domain: 'example.com', tld: 'com' }, now).shop, 'Spaceship');
 
   const names = [{ name: 'exampleheron', taken: ['com'], free: free(['uk', 'xyz']) }];

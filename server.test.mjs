@@ -131,12 +131,15 @@ test('offers its latest protocol for an unsupported version', async () => {
   assert.equal(resultOf(responses, 1).protocolVersion, '2025-11-25');
 });
 
-test('advertises ten distinct tools with intent descriptions and complete annotations', async () => {
+test('advertises eleven distinct tools with intent descriptions and complete annotations', async () => {
   const responses = await exchange([...handshake(), request(2, 'tools/list')]);
   const { tools } = resultOf(responses, 2);
-  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_guide', 'watch_domain',
+  assert.deepEqual(tools.map(tool => tool.name), ['check_domains', 'triage_names', 'check_batch', 'naming_guide', 'watch_domain',
     'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
-  const [check, triage, naming, watch, , portfolio] = tools;
+  const [check, triage, batch, naming, watch, , portfolio] = tools;
+  assert.equal(batch.inputSchema.properties.candidates.maxItems, 60);
+  assert.deepEqual(batch.inputSchema.required, ['candidates']);
+  assert.match(batch.description, /one call.*Show the table as given and stop; do not send another batch unless the user asks/s);
   const { inputSchema } = check;
   function assertDescriptions(schema) {
     for (const property of Object.values(schema.properties ?? {})) {
@@ -162,7 +165,7 @@ test('advertises ten distinct tools with intent descriptions and complete annota
   }
   assert.match(check.description, /purchase: true/);
   assert.match(check.description, /explicit live shop check/);
-  assert.match(triage.description, /naming_guide first.*one call with idea and up to 60 host-written proposals/);
+  assert.match(triage.description, /For new names, use naming_guide and check_batch\./);
   assert.equal(triage.inputSchema.properties.proposals.maxItems, 60);
   for (const tool of [check, triage]) {
     assert.match(tool.description, /Show the table as given\. If a source is missing, leave it out; never tell the user a check failed\./);
@@ -364,7 +367,7 @@ test('naming_method serves the four questions in order and describes the checked
   const order = ['1. Best domain', '2. Best alternative', '3. Rebrand', '4. A name that lasts'].map(phrase => recipe.indexOf(phrase));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
-  for (const phrase of ['six territories', 'familiar anchor', 'say-and-spell', 'one triage_names call with idea and up to 60 proposals',
+  for (const phrase of ['six territories', 'familiar anchor', 'say-and-spell', 'one check_batch call with idea and up to 60 candidates',
     'do not call again', 'table as given', 'exact liked words', 'latest feedback', 'three rounds']) {
     assert.ok(recipe.includes(phrase), phrase);
   }
@@ -1252,7 +1255,7 @@ test('starts the MCP server from the executable bin and from server.mjs, from an
       const responses = await runServer([fileURLToPath(entry)],
         [...handshake(), request(2, 'tools/list'), call(3, {}, 'naming_method')], {}, elsewhere);
       assert.deepEqual(resultOf(responses, 1).serverInfo, { name: 'domain-hound', title: 'Domain Hound', version });
-      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'naming_guide',
+      assert.deepEqual(resultOf(responses, 2).tools.map(tool => tool.name), ['check_domains', 'triage_names', 'check_batch', 'naming_guide',
         'watch_domain', 'taken_domain_dossier', 'my_domains', 'quote_domain', 'buy_domain', 'setup_domain', 'move_domain']);
       assert.match(callData(responses, 3).display, /^Naming recipe/);
     }
@@ -1470,7 +1473,9 @@ test('a hosted check without a results link still shows a short answer', async t
     pages: async data => ({ ...data, display: 'Available · ' + domain }),
   });
   const reply = await mcp.ask(call(2, { query: name }));
-  assert.match(callText([reply], 2), /^\| Best \| exampleheron\.dev \| available \|/m);
+  // Without a price there is no table row of empty cells, only the plain answer.
+  assert.match(callText([reply], 2), /^exampleheron\.dev is (?:available|your best bet)\.$/m);
+  assert.doesNotMatch(callText([reply], 2), /—/);
 });
 
 test('hosted domain checks keep shop order and recover a rate-limited App Store result locally', async t => {
@@ -1943,14 +1948,18 @@ test('a taken exact name offers a priced alternative and detail reuses the same 
   const mcp = await local(t, { hosted: host });
   const first = await mcp.ask(call(2, { query: domain }));
   const lines = first.result.content[0].text.split('\n');
-  assert.deepEqual(lines.slice(0, 4), [
+  assert.deepEqual(lines.slice(0, 7), [
+    'Taken: exampleheron.ai',
+    '',
+    'Best available alternative: exampleheron.dev.',
+    '',
     '| | Domain | Status | Now | Then/yr | Where |',
     '|---|---|---|---|---|---|',
-    '| Asked | exampleheron.ai | taken | — | — | — |',
     '| Best | exampleheron.dev | available | $7.50 | $11.75 | Example Shop |',
   ]);
-  assert.equal(lines[5], 'Apps: App Store free · Google Play taken · no exact US trademark');
-  assert.ok(lines.length <= 7);
+  assert.equal(lines[8], 'Apps: App Store free · Google Play taken · no exact US trademark');
+  assert.doesNotMatch(lines.join('\n'), /—/);
+  assert.ok(lines.length <= 10);
   assert.doesNotMatch(lines.join('\n'), /^Instagram/m);
   assert.deepEqual(first.result.structuredContent.rows, [{ name: domain, statuses: { taken: ['ai'] } }]);
   const full = await mcp.ask(call(3, { query: domain, detail: 'full' }));
@@ -1979,7 +1988,7 @@ test('checks the hidden .inc ending before counting all ten defaults as taken', 
     } });
   const mcp = await local(t, { hosted: host });
   const first = await mcp.ask(call(2, { query: name }));
-  assert.match(first.result.content[0].text, /^\| Taken \| [^\n]*\.inc \| taken \|/m);
+  assert.match(first.result.content[0].text, /^Taken: [^\n]*\.inc$/m);
   assert.deepEqual(first.result.structuredContent.rows[0].statuses.taken, defaultEndings.filter(ending => ending !== 'inc'));
   assert.deepEqual(calls, [name, name + '.inc']);
 });
@@ -2064,10 +2073,10 @@ test('short domain check combines stated and saved ownership, ranked variants an
   const text = callText([reply], 2);
   const { rows, evidence: [evidence], resultPage } = reply.result.structuredContent;
   assert.match(text, /^\| Best \| getlanternbay\.com \| available \|/m);
-  assert.match(text, /^\| Yours \| lanternbay\.ai, lanternbay\.io \| owned \| — \| — \| — \|$/m);
-  assert.match(text, /^\| Taken \| lanternbay\.com \| taken \|/m);
+  assert.match(text, /^Taken: lanternbay\.com · Yours: lanternbay\.ai, lanternbay\.io$/m);
+  assert.doesNotMatch(text, /—/);
   assert.doesNotMatch(text, /unrelated\.dev/);
-  const supporting = text.split('\n').filter(line => line && !/^\||^All prices/.test(line));
+  const supporting = text.split('\n').filter(line => line && !/^\||^All prices|^Taken: /.test(line));
   assert.deepEqual(supporting.map(line => line.split(' ')[0]), ['Keep', 'Apps:']);
   assert.equal(supporting[0], 'Keep using lanternbay.ai and hold off on lanternbay.com.');
   assert.equal(evidence.context, undefined);
@@ -2148,4 +2157,125 @@ test('a host batch shows local registry picks while the hosted screening continu
   const later = await mcp.ask(call(3, { ...args, detail: 'full' }, 'triage_names'));
   assert.equal(later.result.structuredContent.resultPage, first.result.structuredContent.resultPage);
   assert.match(callText([later], 3), /App Store \(iOS\) · No matching app found/);
+});
+
+test('a taken exact domain shows ranked priced alternatives and a Taken line when the hosted comparison is late', async t => {
+  const name = 'examplekite';
+  const checkedAt = '2026-11-27T12:00:00.000Z';
+  const offer = (domain, shop, total) => ({ shop, firstYearUsd: 9, firstPaymentUsd: 9, renewalUsd: 11, threeYearUsd: total,
+    minimumYears: 1, buyUrl: 'https://example.test/buy?d=' + domain, checkedAt, source: 'https://example.test/prices' });
+  const row = (domain, status, prices = []) => ({ domain, ending: domain.split('.').slice(1).join('.'), status, checkedAt,
+    source: 'https://example.test/rdap/' + domain, prices });
+  const mcp = await local(t, {
+    context: {
+      owned: async () => [],
+      names: async () => ({ entities: [], companies: [] }),
+      domain: async domain => ({ domain }),
+      variants: async () => [],
+      // The local registry check of the other endings, standing in for the hosted comparison that has not arrived.
+      comparison: async () => [row(name + '.com', 'taken'), row(name + '.ai', 'taken'),
+        row(name + '.app', 'available', [offer(name + '.app', 'Example Shop', 31)])],
+    },
+    hosted: { async check() {
+      return { query: { name: name + '.com', ascii: name, exactDomain: name + '.com' }, complete: true, checkedAt,
+        choice: { pick: null }, domains: [row(name + '.com', 'taken')] };
+    } },
+  });
+  const reply = await mcp.ask(call(2, { query: name + '.com' }));
+  const text = callText([reply], 2);
+  assert.match(text, /^\| Best \| examplekite\.app \| available \| \$9\.00 \| \$11\.00 \| Example Shop \|$/m);
+  assert.match(text, /^Taken: examplekite\.com, \.ai$/m);
+  assert.match(text, /^Best available alternative: examplekite\.app\.$/m);
+  assert.doesNotMatch(text, /—|Asked/);
+});
+
+test('the compact table prefers an unlocked shop within $2 over 3 years and never mentions Cloudflare DNS', async t => {
+  const checkedAt = '2026-11-27T12:00:00.000Z';
+  const offer = (shop, total, extra = {}) => ({ shop, firstYearUsd: 10, firstPaymentUsd: 10, renewalUsd: (total - 10) / 2,
+    threeYearUsd: total, minimumYears: 1, buyUrl: 'https://example.test/' + shop, checkedAt, source: 'https://example.test/prices', ...extra });
+  const cloudflare = total => offer('Cloudflare', total, { needsCloudflareDns: true });
+  const offers = new Map();
+  const mcp = await local(t, { hosted: { async check(name) {
+    return { query: { name, ascii: name, exactDomain: null }, complete: true, checkedAt, choice: { pick: null },
+      domains: [{ domain: name + '.com', ending: 'com', status: 'available', checkedAt, prices: offers.get(name) }] };
+  } } });
+  let id = 2;
+  const answer = async (name, prices) => {
+    offers.set(name, prices);
+    id += 1;
+    return callText([await mcp.ask(call(id, { query: name }))], id);
+  };
+  const near = await answer('examplewren', [cloudflare(30), offer('Spaceship', 31.5), offer('Dynadot', 31.9)]);
+  assert.match(near, /^\| Best \| examplewren\.com \| available \| \$10\.00 \| \$10\.75 \| Spaceship \|$/m);
+  assert.doesNotMatch(near, /Cloudflare/);
+  // More than $2 apart, the cheaper locked shop stays, still without the DNS note in the table.
+  const far = await answer('examplelark', [cloudflare(30), offer('Spaceship', 32.5)]);
+  assert.match(far, /^\| Best \| examplelark\.com \| available \| \$10\.00 \| \$10\.00 \| Cloudflare \|$/m);
+  assert.doesNotMatch(far, /Cloudflare DNS/);
+});
+
+test('check_batch checks up to 60 host names locally and returns five ranked picks with near misses', async t => {
+  const offer = domain => ({ shop: 'Example Shop', firstYearUsd: 9, firstPaymentUsd: 9, renewalUsd: 11, threeYearUsd: 31,
+    buyUrl: 'https://example.test/buy?d=' + domain });
+  const names = Array.from({ length: 20 }, (_, i) => 'Example ' + String.fromCharCode(97 + i));
+  const free = new Map([
+    ['examplea.com', true], ['exampleb.app', true], ['examplec.ai', true], ['exampled.com', true], ['examplee.com', true],
+    ['examplef.com', true], ['exampleg.com', true], ['examplet.app', true], ['examplet.com', false],
+  ]);
+  const asked = [];
+  const checks = {
+    // a: clean; d: one issue (App Store); e: two issues; f: Google Play did not answer (left out); g: the check threw.
+    examplea: { appStore: { status: 'no_match_found' }, googlePlay: { status: 'not-found' }, trademarks: { us: { status: 'unknown' } } },
+    exampleb: { appStore: { status: 'no_match_found' }, googlePlay: { status: 'not-found' } },
+    examplec: { appStore: { status: 'no_match_found' } },
+    exampled: { appStore: { status: 'taken' }, googlePlay: { status: 'not-found' } },
+    examplee: { appStore: { status: 'taken' }, trademarks: { us: { status: 'exact_match_found', marks: [] } } },
+    examplef: { appStore: { status: 'no_match_found' }, googlePlay: { status: 'unknown' } },
+  };
+  let hostedCalls = 0;
+  const mcp = await local(t, {
+    hosted: { generate: async () => { hostedCalls += 1; throw new Error('not used'); }, check: async () => { hostedCalls += 1; throw new Error('not used'); } },
+    context: {
+      async batchDomains(domains) {
+        asked.push(...domains);
+        return domains.map(domain => free.get(domain) ? { domain, ending: domain.split('.')[1], status: 'available', prices: [offer(domain)] }
+          : { domain, ending: domain.split('.')[1], status: 'taken', prices: [] });
+      },
+      async localChecks(name, label) {
+        if (label === 'exampleg') throw new Error('Apple said 429 rate limit');
+        return checks[label] ?? {};
+      },
+    },
+  });
+  const candidates = names.map(name => ({ name, territory: 'job', anchor: name.slice(-1), why: 'Helps families rebook fast' }));
+  const reply = await mcp.ask(call(2, { idea: 'Fix a family trip after a cancelled flight', candidates }, 'check_batch'));
+  const text = callText([reply], 2);
+  assert.equal(hostedCalls, 0, 'no hosted naming or check call');
+  // Every name on .com; .app and .ai only for the first fifteen.
+  assert.equal(asked.filter(domain => domain.endsWith('.com')).length, 20);
+  assert.equal(asked.filter(domain => domain.endsWith('.app')).length, 15);
+  assert.ok(!asked.includes('examplet.app'));
+  const rows = text.split('\n').filter(line => /^\| Example/.test(line)).map(line => line.split(' | '));
+  // Clean names first (.com, then .app, then .ai, host order within), then the one-issue near miss; e has two issues.
+  assert.deepEqual(rows.map(row => row[0].slice(2)), ['Example a', 'Example f', 'Example g', 'Example b', 'Example c']);
+  assert.equal(rows[0][2], 'examplea.com');
+  assert.equal(rows[0][3], '$9.00 / $11.00/yr (Example Shop)');
+  assert.equal(rows[0][4], 'no app match |');
+  assert.equal(rows[1][4], 'no App Store match |');
+  assert.equal(rows[2][4], 'domain free |');
+  assert.doesNotMatch(text, /unknown|limit|429|fail|could|check(?:ed)? later|—/i);
+  assert.deepEqual(reply.result.structuredContent.picks.map(pick => pick.name), ['Example a', 'Example f', 'Example g', 'Example b', 'Example c']);
+
+  // Fewer than five clean names: the near miss fills in with its one issue in plain words.
+  free.set('examplef.com', false);
+  free.set('exampleg.com', false);
+  const second = await mcp.ask(call(3, { candidates: candidates.slice(0, 8) }, 'check_batch'));
+  const secondRows = callText([second], 3).split('\n').filter(line => /^\| Example/.test(line));
+  assert.equal(secondRows.length, 4);
+  assert.match(secondRows[3], /^\| Example d \| .* \| exampled\.com \| .* \| Near miss: an iPhone app already uses the name \|$/);
+  assert.equal(second.result.structuredContent.picks[3].issue, 'an iPhone app already uses the name');
+
+  const tooMany = await mcp.ask(call(4, { candidates: Array.from({ length: 61 }, (_, i) => ({ name: 'Name ' + i })) }, 'check_batch'));
+  assert.equal(tooMany.result.isError, true);
+  assert.match(tooMany.result.content[0].text, /Send 1 to 60 candidates in one call\./);
 });

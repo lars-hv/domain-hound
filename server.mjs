@@ -15,10 +15,11 @@ import { watchDomain, watchTool } from './watch.mjs';
 import { callPurchaseTool, purchaseToolNames, registeredTools, withCheckQuoteOffer, withWatchQuoteOffer } from './clis/spaceship/tools.mjs';
 import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandles, scoreName, validCandidate } from './clis/domain-check/name-score.mjs';
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
-import { alternativeEndings, HostedRateLimit, hostedClient, hostedDebug } from './hosted.mjs';
+import { alternativeEndings, hostedClient, hostedDebug } from './hosted.mjs';
 import { checkLines, generatedChecks, hostedChecks, hostedResult, visibleChecks } from './hosted-results.mjs';
 import { doneGuidance, shortBatchAnswer, shortDomainAnswer, shortIdeaAnswer } from './short-answer.mjs';
 import { capabilityArgs, capabilityDir, isEntry, packageJson } from './packaged.mjs';
+import { batchAnswer, batchArguments, batchGeneration, checkBatch, maxBatch } from './batch.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export { capabilityDir };
@@ -73,7 +74,8 @@ const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short'
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
   + 'Use check_domains first for availability, prices, and advice on whether to keep a name or buy an alternative. Use triage_names for a name-only screen and watch_domain for a release watch. '
-  + 'When asked for new names, get the naming_guide, brainstorm in the host, then make one triage_names call with idea and up to 60 proposals. '
+  + 'When asked for new names, get the naming_guide, brainstorm in the host, then send one check_batch call with idea and up to 60 candidates, '
+  + 'preferring names that fit .com, .app or .ai. Show its five picks and stop; send another batch only if the user asks. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Pass stated ownership in ownedDomains. Use my_domains to review renewals of domains the person already owns.';
@@ -84,7 +86,8 @@ const checkTool = {
     + 'Use query for one exact domain or bare name ({"query":"lanternbay.dev"}), or names for a batch ({"names":["lanternbay.dev","lanternbay"]}). '
     + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
     + 'Checks domains, app names and exact US trademark matches. One call answers; late checks fill in on the results page. '
-    + 'Use triage_names for name ideas and quote_domain for a live Spaceship purchase quote. ' + showAnswer,
+    + 'For a taken exact domain, always include the best available alternative in the reply even for a yes/no question. '
+    + 'Use check_batch for name ideas and quote_domain for a live Spaceship purchase quote. ' + showAnswer,
   annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
   _meta: batchResultMeta,
   inputSchema: {
@@ -162,7 +165,7 @@ const namingContext = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'For new names, use naming_guide first, then make one call with idea and up to 60 host-written proposals. '
+    + 'For new names, use naming_guide and check_batch. '
     + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
     + 'One call answers with the best names; late checks fill in on the results page. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
@@ -207,10 +210,35 @@ const triageTool = {
   },
 };
 
+const batchTool = {
+  name: 'check_batch',
+  description: 'Use this when checking host-written name ideas: once after naming_guide, with up to 60 diverse names in one call. '
+    + 'Checks .com for every name and .app and .ai for the first ones, then App Store, Google Play and exact US trademarks, '
+    + 'and returns up to five ranked picks: clean names first, then near misses with their one issue. '
+    + 'Show the table as given and stop; do not send another batch unless the user asks. If a source is missing, leave it out.',
+  annotations: { title: 'Check a batch of name ideas', ...searchAnnotations },
+  inputSchema: {
+    type: 'object',
+    properties: {
+      idea: { type: 'string', minLength: 3, maxLength: 400, description: 'What the business does in one sentence.' },
+      customer: namingContext.customer,
+      feedback: namingContext.feedback,
+      round: { type: 'integer', minimum: 1, maximum: 3, description: 'Naming round, e.g. 2.' },
+      shown: namingContext.shown,
+      taste: namingContext.taste,
+      candidates: { type: 'array', minItems: 1, maxItems: maxBatch, items: namingCandidate,
+        description: 'Up to 60 host-written names in one call, best first. Order counts: the first names are also checked on .app and .ai.' },
+      detail: detailSchema,
+    },
+    required: ['candidates'],
+    additionalProperties: false,
+  },
+};
+
 const namingTool = {
   name: 'naming_guide',
   description: 'Use this when the user asks for new product, company or app names, a rebrand or a blend. Call it before brainstorming. '
-    + 'Brainstorm using the guide, then send idea and proposals to triage_names to check domains, apps and exact US trademarks.',
+    + 'Brainstorm using the guide, then send idea and up to 60 candidates to check_batch in one call to check domains, apps and exact US trademarks.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },
@@ -271,7 +299,7 @@ function compactCheckResult(result, full) {
       ...(full && !batch && row.status === 'available' && { prices: row.prices.slice(0, 3) }),
     })),
     appStore: settled(check.appStore ?? check.nameChecks?.appStore), googlePlay: settled(check.googlePlay ?? check.nameChecks?.googlePlay),
-    trademarks: settled((check.trademarks ?? check.nameChecks?.trademarks)?.us) && (check.trademarks ?? check.nameChecks?.trademarks),
+    trademarks: compactTrademarks(check.trademarks ?? check.nameChecks?.trademarks, full),
   }));
   const structuredContent = {
     ...(evidence?.length && { evidence }),
@@ -279,6 +307,12 @@ function compactCheckResult(result, full) {
     ...(rows.length && { rows }),
   };
   return { ...result, structuredContent };
+}
+
+function compactTrademarks(trademarks, full) {
+  if (full) return trademarks;
+  if (!definiteSource(trademarks?.us)) return undefined;
+  return { us: { ...trademarks.us, scope: 'Exact live US word marks' } };
 }
 
 function lookupResult(page, args, triage = false) {
@@ -792,7 +826,9 @@ export async function serve({
       const owned = new Set(ownedDomains);
       const limits = selectedEndings(args);
       const hit = check.domains.find(row => row.domain === exact);
-      const comparison = check[alternativeEndings] ?? (local && exact &&
+      // A taken exact domain always gets ranked alternatives: when the hosted comparison is late, the local registry
+      // check of the other endings stands in for it in the first answer.
+      const comparison = check[alternativeEndings] ?? (exact &&
         (hit?.status === 'taken' || owned.has(exact) || exceeds(hit)) && context?.comparison
         ? { domains: await get(localAlternatives, label, () => context.comparison(label, limits), []) } : null);
       const originals = comparison ? [...new Map([...comparison.domains, ...check.domains].map(row => [row.domain, row])).values()] : check.domains;
@@ -831,6 +867,7 @@ export async function serve({
       const options = rows.filter(row => row.status === 'available' && !row.premium && canRecommend(row.ending, args.eligible))
         .flatMap(row => row.prices.filter(offer => offer.buyUrl).map(offer => ({ ...offer, domain: row.domain,
           now: offer.firstPaymentUsd, total: offer.threeYearUsd })));
+      // choosePick drops a DNS-locked offer when the same domain has an unlocked one within $2 over 3 years.
       const pick = (offers, requested = args.endings) => choosePick(offers, {
         requested, eligible: args.eligible, exactLabel: label, upfrontCap: args.budget, allowOverCap: false,
       }) ?? null;
@@ -905,8 +942,7 @@ export async function serve({
       })).then(async answers => {
         const first = await job.first;
         return renderHostedLookup(answers, lookupArgs, triage, { reuse: first?.resultPage, enhance });
-      }, problem => {
-          if (problem instanceof HostedRateLimit) return errorResult('The Hound needs a breather. Try again in a few minutes.');
+      }, () => {
           hostedDebug('Hosted domain lookup could not finish; using the local check.');
           return null;
         }).then(result => {
@@ -1027,9 +1063,50 @@ export async function serve({
       await job.initial;
       if (args.detail === 'full' && job.finish) await within({ done: job.finish }, timeout - (performance.now() - started));
       return lookupResult(job.page, args, true);
+    } catch {
+      return local();
+    }
+  }
+
+  // A host batch: checked here, without the hosted naming service. Repeated calls with the same names share one run.
+  const batches = new Map();
+  async function runBatch(args, started) {
+    let candidates;
+    try {
+      candidates = batchArguments(args);
+      validateDetail(args);
     } catch (problem) {
-      return problem instanceof HostedRateLimit
-        ? errorResult('The Hound needs a breather. Try again in a few minutes.') : local();
+      return errorResult(problem.message);
+    }
+    if (!context?.batchDomains || !context?.localChecks) {
+      return errorResult('Use triage_names with these names instead.');
+    }
+    const key = JSON.stringify(candidates);
+    let job = batches.get(key);
+    if (!job) {
+      job = (async () => {
+        const result = await checkBatch(candidates, context, { deadline: started + timeout - 1200 });
+        const proposed = new Map(candidates.map(entry => [entry.label, entry]));
+        const generation = batchGeneration(result);
+        const page = await pages(hostedResult(generatedChecks(generation, proposed), {}, generation), {}, { triage: true })
+          .catch(() => null);
+        return { result, resultPage: page?.resultPage ?? null };
+      })();
+      batches.set(key, job);
+      job.then(() => setTimeout(() => { if (batches.get(key) === job) batches.delete(key); }, keepFinishedMs).unref(),
+        () => batches.delete(key));
+    }
+    try {
+      const { result, resultPage } = await job;
+      const link = resultPage && resultsLine(resultPage).replace(/^Results page:/, 'All prices, shops and checks:');
+      const answer = batchAnswer(result, { link });
+      const picks = result.picks.map(entry => ({ name: entry.name, domain: entry.domain.domain,
+        ...(entry.found.length && { issue: entry.found[0] }) }));
+      // The same closing instruction as every short answer: show it and stop, no second batch unless asked.
+      return { content: [{ type: 'text', text: answer }, { type: 'text', text: doneGuidance }], isError: false,
+        structuredContent: { answer, next: doneGuidance, picks, ...(resultPage && { resultPage }) } };
+    } catch {
+      return errorResult('Domain Hound could not format the result.');
     }
   }
 
@@ -1213,7 +1290,7 @@ export async function serve({
       const [{ dossierTool }, { portfolioTool }] = await Promise.all([
         import('./dossier.mjs'), import('./clis/portfolio/portfolio.mjs'),
       ]);
-      return reply({ tools: registeredTools([checkTool, triageTool, namingTool, watchTool, dossierTool, portfolioTool]) });
+      return reply({ tools: registeredTools([checkTool, triageTool, batchTool, namingTool, watchTool, dossierTool, portfolioTool]) });
     }
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
@@ -1225,6 +1302,7 @@ export async function serve({
       }
       return reply(toolResult(JSON.stringify({ display: attributed(namingRecipe(args?.about?.slice(0, 160))) })));
     }
+    if (name === batchTool.name) return reply(await runBatch(args, performance.now()));
     if (name === watchTool.name) {
       let result;
       try {
