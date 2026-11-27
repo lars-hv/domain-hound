@@ -156,7 +156,7 @@ export async function runCanary({ now = new Date(), label = randomLabel() } = {}
   const directory = pathToFileURL(folder + sep);
   const fetcher = countingFetch(globalThis.fetch);
   const options = {
-    directory, now, fetcher, env: {}, cachedOnly: true,
+    directory, now, fetcher, env: { DOMAIN_HOUND_TEST: '1', DOMAIN_HOUND_OPEN: 'off' }, cachedOnly: true,
     resolveNs: async domain => {
       await fetcher.take('DNS');
       return systemResolveNs(domain);

@@ -14,6 +14,10 @@ on:
 permissions:
   contents: read
 
+env:
+  DOMAIN_HOUND_OPEN: 'off'
+  DOMAIN_HOUND_TEST: '1'
+
 jobs:
   publish:
     runs-on: ubuntu-latest
