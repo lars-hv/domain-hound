@@ -97,8 +97,9 @@ export function shortIdeaAnswer(checks, { pending, link } = {}) {
         : ready.map(([label, answer]) => label + ' ' + (taken(answer) ? 'taken' : free(answer) ? 'free' : 'couldn’t check')).join(' · ');
     const offer = row && domainPrice(row, pick);
     return plain(check.query.name) + ' - ' + [
-      row ? row.domain + (offer ? ', ' + offer : '') : 'no domain pick',
-      apps, warning && 'Heads-up: ' + warning, late.length ? 'still checking ' + late.join(', ') : '',
+      plain(check.why), row ? row.domain + (offer ? ', ' + offer : '') : 'no domain pick',
+      apps, warning ? 'Heads-up: ' + warning : check.why && (check.nameChecks?.trademarks?.us?.status === 'no_exact_match_found'
+        ? 'no exact US trademark found' : 'US trademark unconfirmed'), late.length ? 'still checking ' + late.join(', ') : '',
     ].filter(Boolean).join(' · ');
   });
   return [...(lines.length ? lines : [pending ? 'Still checking names and domains.' : 'No names passed the checks.']),

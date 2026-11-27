@@ -16,7 +16,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCache } from './clis/domain-check/cache.mjs';
 import { defaultEndings } from './clis/domain-check/name-search.mjs';
 import { triageNames } from './clis/domain-check/triage.mjs';
-import { referenceExamples } from './clis/domain-check/naming-method.mjs';
 import { attribution, checkText, errorText as errorJson, localCheckNotice, md, neverBuys, purchaseLine, safeLink, triageText } from './display.mjs';
 
 const server = new URL('./server.mjs', import.meta.url);
@@ -331,39 +330,25 @@ test('an ending on request joins the default endings at the wire and on the page
   assert.ok(receipt.includes('endingsample.de'));
 });
 
-test('naming_method returns the naming skill v1 method as display with an optional description', async () => {
+test('naming_method serves the four questions in order and describes the checked naming loop', async () => {
   const responses = await exchange([...handshake(), call(2, undefined, 'naming_method'), call(3, {}, 'naming_method'),
     call(4, { query: 'not used' }, 'naming_method'), call(5, { about: 'Book trips' }, 'naming_method')]);
   const text = callJson(responses, 2);
   assert.equal(callJson(responses, 3), text);
   assert.match(errorText(responses, 4), /optional about/);
-  assert.match(callData(responses, 5).display, /1\. Brief: Book trips\./);
+  assert.match(callData(responses, 5).display, /Brief: Book trips/);
   const data = JSON.parse(text);
-  // The text block is the display alone.
   assert.equal(callText(responses, 2), data.display);
   assert.deepEqual(Object.keys(data), ['display']);
   const recipe = data.display;
-  // Process, recipes, bans, the steering question and twelve real names by type, still one short read.
   assert.ok(Buffer.byteLength(text) < 2600, String(Buffer.byteLength(text)));
-  for (const phrase of ['naming skill v1', 'about 30', '6 territories', 'Generate 150', 'English names unless asked', 'endings or budget',
-    'candidates', 'Missing evidence counts as not checked', 'Skip check_domains', 'Show the tool’s answer as given', 'results link',
-    'Offer details only if the user asks', 'never pad',
-    'ask exactly "Which two do you love, and which one do you hate?"', 'Never re-show a rejected name',
-    'odd pair (default)', 'pun', 'blend', 'insider term', 'phrase or character',
-    'Bans (code drops them before scoring)', '-ly, -ify, -io', 'AI, GPT, bot, smart', 'Real names by type (patterns only)']) {
-    assert.ok(recipe.includes(phrase), phrase);
-  }
-  // Twelve real names by type, no origin stories.
-  const examples = recipe.slice(recipe.indexOf('Real names by type'));
-  assert.equal(referenceExamples.length, 12);
-  for (const [type, name] of referenceExamples) assert.ok(examples.includes(type) && examples.includes(name), name);
-  assert.doesNotMatch(recipe, /founded|named after|came from|stands for/i);
-  // One screening call: brief, generate, a single triage of the best eight, then the answer and the steering question.
-  assert.doesNotMatch(recipe, /shortlist|check_domains ONCE/);
-  const order = ['1. Brief', '2. Subject words', '3. Generate', '5. Screen', 'triage_names ONCE with your best EIGHT', 'first five',
-    '6. Answer', '7. Steer'].map(phrase => recipe.indexOf(phrase));
+  const order = ['1. Best domain', '2. Best alternative', '3. Rebrand', '4. A name that lasts'].map(phrase => recipe.indexOf(phrase));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
+  for (const phrase of ['six territories', 'familiar anchor', 'say-and-spell', 'up to 20 proposals',
+    'final checks', 'exact liked words', 'latest feedback', 'three rounds']) {
+    assert.ok(recipe.includes(phrase), phrase);
+  }
 });
 
 test('naming_method accepts a detailed brief and keeps the recipe concise', async () => {
@@ -1568,10 +1553,14 @@ test('the MCP checks YouTube locally only when the hosted YouTube state is unkno
 
 test('triage_names sends the steering to hosted generation and refreshes the same receipt', async t => {
   const requests = [];
-  const input = { idea: 'A tool for planning workshops', wanted: ['Exampleheron'], avoid: ['Examplefox'], round: 2 };
+  const previous = { name: 'Exampleheron', territory: 'object', anchor: 'heron',
+    why: 'A heron watches patiently, like an event host watching the workshop schedule.' };
+  const input = { idea: 'A tool for planning workshops', wanted: ['Exampleheron'], avoid: ['Examplefox'], round: 2,
+    shown: [previous], feedback: 'Keep heron and make it calmer.',
+    taste: [{ id: 'bird', kind: 'keep-word', value: 'heron', source: previous.name }] };
   const initial = { version: 2, stage: 'initial', names: [], round: 2, complete: false, details: { id: 'test-job' } };
   const final = { ...initial, stage: 'final', complete: true, details: null,
-    question: 'Which two do you love, and which one do you hate?' };
+    question: 'Which word would you keep, and what do you like about another name?' };
   let finish;
   const followUp = new Promise(resolve => { finish = resolve; });
   const host = {
@@ -1585,7 +1574,7 @@ test('triage_names sends the steering to hosted generation and refreshes the sam
   assert.equal(first.pending, true);
   assert.equal(first.generation.details, undefined);
   assert.equal(updated.resultPage, first.resultPage);
-  assert.match(updated.display, /Which two do you love/);
+  assert.match(updated.display, /Which word would you keep/);
 });
 
 test('check_domains fills unknown public name checks locally and keeps confirmed hosted answers', async t => {

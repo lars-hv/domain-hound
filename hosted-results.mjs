@@ -165,6 +165,7 @@ export function hostedChecks(checks, args, triage = false) {
 export function generatedChecks(generation) {
   return generation.names.map(entry => ({
     query: { name: entry.name, exactDomain: null },
+    why: entry.why,
     domains: entry.domains,
     choice: { pick: entry.domain },
     nameChecks: entry.nameChecks,

@@ -60,7 +60,7 @@ Then ask, for example: “Is lanternbay.com available?”, “Find a name for my
 
 ## Find and check
 
-The Claude Code and Codex plugins include a `domains` skill for availability, price comparisons, purchases and release watches. The `naming` skill covers naming a product, company or app.
+The Claude Code and Codex plugins include one `domain-hound` skill for domain searches, price comparisons, naming, purchases and release watches.
 
 The package uses the same hosted search as [domainhound.dev](https://domainhound.dev). `check_domains` compares ten
 endings by default: .com, .ai, .io, .dev, .co, .so, .sh, .inc, .tech and .app. A typed domain checks that exact ending.
@@ -78,9 +78,10 @@ If `check_domains` says a check is pending, repeat the same call to collect it. 
 
 When the hosted lookup cannot check a .dev or .app domain, the package can ask Google Registry from your device and pass the result back to the hosted service to calculate the pick. It also tries Apple from your device when the hosted App Store lookup is rate-limited.
 
-Pass `idea` to `triage_names` to generate names on the same service. The results page updates as the checks finish.
-Pass `names` to screen names you already have. For a second generation round, pass the same `idea` with the `wanted`
-and `avoid` names and the next `round` number.
+Pass `idea` to `triage_names` to find checked names. The results page updates as screening finishes.
+Pass `names` to screen existing names. For another naming round, send the same `idea`, the previous `shown` names,
+your updated `taste` and the latest `feedback`. Add `proposals` with up to 20 host-written candidates per call
+to use the same checks on your own ideas. Use `pick` with a previously shown name to recheck one winner.
 
 Set `DOMAIN_HOUND_API_URL` to use a different HTTPS API origin or a loopback HTTP origin for development. The package
 retries a transient check failure once. If the hosted check is still running when the tool returns, repeat the same call
@@ -105,7 +106,10 @@ Use `check_domains` for one exact domain or up to 20 names or domains. Use `tria
 
 ### Naming skill and Name score
 
-Brainstorm names all day. If they're not available, it's pointless. The naming skill gives your agent one method: subject words, six territories, five recipes (odd pair, pun, blend, insider term, phrase or character), hard bans, and one steering question: "Which two do you love, and which one do you hate?" The Claude Code plugin ships it as `skills/naming/SKILL.md`; any MCP client gets the same method from `naming_guide`.
+The Claude Code plugin ships one skill at `skills/domain-hound/SKILL.md`. It walks through the best domain
+and price, the best alternative if it is taken, a possible rebrand, and a name that will still fit as the business grows.
+Any MCP client can get the method from `naming_guide`. Generated names include a short reason linking a familiar
+word or image to the business. New ideas are shown after the domain, app stores and exact US trademark checks finish.
 
 `triage_names` gives each of the first five names a **Name score**, 0 to 100: how clear the road is. It is not a probability. Points come from the best available ending (22), its 3-year price (3), trademarks (25), rivals (20), apps (8), handles (7) and name quality (15). Bans (digits, hyphens, -ly, -ify, -io, AI, GPT, bot, smart, generic words like hub or labs, over 12 letters) and hard filters (no available ending within $60 over 3 years, an identical live trademark in your classes, a strong same-name rival in your subject, a severe bad meaning) run first, in code; those names get no score and are never a pick. A check that failed counts 40% of its points and says "Not checked". Trademarks stay at 20 of 25 until the EU office answers. A failed US trademark or rival check keeps the total at 79 or less, and so does missing `candidates` evidence for the bans code cannot judge on its own. Bands: 80+ Strong, 60 to 79 Workable, 40 to 59 Risky, under 40 Advise against. Picks rank by score. Each scored name shows up to three reasons. The hosted generator includes its own Name score in each suggestion. A local bare-name lookup can also provide a preliminary score.
 
@@ -189,7 +193,7 @@ Quotes, transfer quotes, DNS plans, order and transfer claims and receipts stay 
 
 ## Privacy and lookup hosts
 
-Hosted checks send the name or domain to Domain Hound. A hosted naming round sends its idea and steering words to
+Hosted checks send the name or domain to Domain Hound. A hosted naming round sends its brief, proposals and conversation notes to
 Domain Hound and Cloudflare Workers AI. Set `DOMAIN_HOUND_LOCAL=1` for local lookups. Local lookups share candidates
 with public evidence sources. Catalog downloads carry no candidate name. Clicking a results link sends the name in that link.
 
