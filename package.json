@@ -1,7 +1,7 @@
 {
   "name": "domain-hound",
-  "version": "0.1.20",
-  "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
+  "version": "0.1.21",
+  "description": "Ask Claude or ChatGPT for a name or domain. Get one you can buy. It checks the domain, the cheapest shop including renewal, the app stores and US trademarks, in one answer. Free. Never buys without your yes.",
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -16,25 +16,18 @@
     "url": "git+https://github.com/lars-hv/domain-hound.git"
   },
   "keywords": [
-    "mcp",
-    "mcp-server",
-    "claude",
-    "claude-code",
-    "codex",
-    "domain",
-    "domain-availability",
-    "domains-for-agents",
-    "domain-portfolio",
-    "domain-transfer",
-    "domain-name",
-    "startup-name",
+    "domain name",
+    "domain availability",
+    "domain prices",
+    "renewal price",
+    "startup name",
+    "business name",
     "naming",
+    "app name",
     "trademark",
-    "app-name",
-    "whois",
-    "rdap",
-    "registrar",
-    "domain-prices"
+    "rebrand",
+    ".com",
+    ".ai"
   ],
   "mcpName": "dev.domainhound/domain-hound",
   "files": [

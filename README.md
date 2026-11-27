@@ -1,8 +1,10 @@
-# Domain Hound: Domains for agents
+# Domain Hound: Ask Claude or ChatGPT for a name or domain. Get one you can buy.
 
-One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.
+It checks the domain, the cheapest shop including renewal, the app stores and US trademarks, in one answer. Free.
 
-Domain Hound finds names and checks domain availability, first-year and renewal prices, app names, trademarks and social handles from Claude Code, Codex or any MCP client. Connect your Spaceship account to quote a domain, buy it with your approval and set up DNS. It also investigates and watches taken domains, plans moves to a cheaper registrar, and keeps track of every domain you own. It runs locally.
+Install the package to use Domain Hound locally in Claude Code or Codex. Never buys without your yes. With your Spaceship key and your yes, your agent can buy it and set up DNS.
+
+App checks cover the App Store and Google Play. Exact US trademark matches only. Similar names aren't checked. Dated list prices, source shown. Trademark results are a search aid, not legal advice.
 
 - **Find and check:** `check_batch`, `triage_names`, `check_domains`, `naming_guide`
 - **Buy and set up:** `quote_domain`, `buy_domain`, `setup_domain`

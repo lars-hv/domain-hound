@@ -1,33 +1,52 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "domain-hound",
-  "version": "0.1.20",
-  "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
+  "version": "0.1.21",
+  "description": "Ask Codex for a name or domain. Get one you can buy.",
   "author": {
     "name": "Lars Hvinden"
   },
   "homepage": "https://domainhound.dev",
   "license": "MIT",
+  "keywords": [
+    "domain name",
+    "domain availability",
+    "domain prices",
+    "renewal price",
+    "startup name",
+    "business name",
+    "naming",
+    "app name",
+    "trademark",
+    "rebrand",
+    ".com",
+    ".ai"
+  ],
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Domain Hound",
-        "shortDescription": "Domains for agents",
-        "longDescription": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track. Domain Hound finds names and checks registry availability, compares upfront and renewal prices, and screens names for trademarks, app store clashes and web traction. Connect your own Spaceship account to get a live quote, buy with your approval and set up website or mail DNS. You buy through Spaceship’s own MCP, after you approve Spaceship’s confirmation with the price and payment method. Direct purchase is an opt-in in the server settings, and Spaceship checkout is the fallback. It investigates and watches taken domains, plans moves to a cheaper registrar, and keeps track of every domain you own: expiry, DNS, site, email setup and renewal prices. Domain Hound runs on your machine and is open source under the MIT license.",
-        "developerName": "Lars Hvinden",
-        "category": "Developer Tools",
+        "shortDescription": "Names and domains you can buy",
+        "longDescription": "It checks the domain, the cheapest shop including renewal, the app stores and US trademarks, in one answer. Free.\n\nUse this when you want to know if a domain is available and where it is cheapest, or when you need a good name for your business and have none yet. Domain Hound checks ten endings (.com, .ai, .io, .dev, .app, .co, .so, .sh, .tech, .inc) and finds the cheapest of six shops, renewal included. It shows the first-year price, renewal price and total cost over three years, and suggests cheaper endings. If your name is taken, it helps you find names with a meaning behind them, each with an available domain. It also checks app names on the App Store and Google Play, shows exact US trademark matches only, and shows other businesses found using the name. Similar names aren't checked for trademarks.\n\nNever buys without your yes. With your Spaceship key and your yes, your agent can buy it and set up DNS. Approve the exact price through Spaceship’s own MCP. Direct purchase is an opt-in, and Spaceship checkout is the fallback. Dated list prices, source shown. Trademark results are a search aid, not legal advice.\n\nWorks in your agent (Claude Code and Codex). Made by BrightBoard AS. Privacy policy https://domainhound.dev/privacy/ and terms of service https://domainhound.dev/terms/ Support is available through GitHub Issues or privacy@domainhound.dev.",
+        "developerName": "BrightBoard AS",
+        "category": "Productivity",
         "capabilities": [
-          "Find names and check domains",
-          "Compare upfront and renewal prices",
-          "Buy and set up DNS at Spaceship",
-          "Watch, move and track your domains"
+          "Check domain availability",
+          "Compare domain prices and renewals",
+          "Find names with available domains",
+          "Check the App Store, Google Play and US trademarks"
         ],
         "websiteURL": "https://domainhound.dev",
         "privacyPolicyURL": "https://domainhound.dev/privacy/",
-        "termsOfServiceURL": "https://domainhound.dev/privacy/#terms",
+        "termsOfServiceURL": "https://domainhound.dev/terms/",
         "supportURL": "https://github.com/lars-hv/domain-hound/issues",
         "logo": "./assets/icon-1024.png",
-        "composerIcon": "./assets/icon-512.png"
+        "composerIcon": "./assets/icon-512.png",
+        "defaultPrompt": [
+          "Is lanternbay.com available, and where is it cheapest?",
+          "Find a name for my meeting-room booking app, with a domain for each.",
+          "My .com is taken. What is the best alternative?"
+        ]
       }
     }
   }
