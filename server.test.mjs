@@ -2120,7 +2120,7 @@ test('one naming call checks up to 60 proposals in parallel groups of 20 and mer
 test('a host batch shows local registry picks while the hosted screening continues', async t => {
   const proposal = { name: 'Example Heron', territory: 'metaphor', anchor: 'heron', why: 'A heron watches over arrivals.' };
   const price = { shop: 'Example Shop', firstYearUsd: 7, renewalUsd: 12, threeYearUsd: 31, buyUrl: 'https://example.test/shop' };
-  const domain = { domain: 'exampleheron.com', ending: 'com', status: 'available', evidence: 'rdap', prices: [price] };
+  const domain = { domain: 'exampleheron.app', ending: 'app', status: 'available', evidence: 'rdap', prices: [price] };
   let complete;
   const details = new Promise(resolve => { complete = resolve; });
   const final = { version: 2, stage: 'final', names: [{ ...proposal, domain: { ...price, domain: domain.domain },
@@ -2129,7 +2129,7 @@ test('a host batch shows local registry picks while the hosted screening continu
   const mcp = await local(t, {
     context: { async proposalDomains(labels) {
       assert.deepEqual(labels, ['exampleheron']);
-      return [domain];
+      return [{ domain: 'exampleheron.com', ending: 'com', status: 'taken', prices: [] }, domain];
     } },
     hosted: {
       generate: async () => ({ stage: 'initial', names: [], details: { id: 'example-job' } }),
@@ -2138,7 +2138,7 @@ test('a host batch shows local registry picks while the hosted screening continu
   });
   const args = { idea: 'Help travellers recover a cancelled flight', proposals: [proposal] };
   const first = await mcp.ask(call(2, args, 'triage_names'));
-  assert.match(callText([first], 2), /^\| Example Heron \| A heron watches over arrivals \| exampleheron\.com \| \$7\.00 \/ \$12\.00 \|$/m);
+  assert.match(callText([first], 2), /^\| Example Heron \| A heron watches over arrivals \| exampleheron\.app \| \$7\.00 \/ \$12\.00 \|$/m);
   assert.equal(first.result.content[1].text, doneGuidance);
   assert.equal(first.result.structuredContent.pending, true);
 

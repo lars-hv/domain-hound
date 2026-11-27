@@ -984,16 +984,20 @@ export async function serve({
       job.initial = (async () => {
         const remote = hosted?.generate(input, AbortSignal.timeout(Math.max(1, Math.floor(timeout - 750))))
           .then(value => ({ value }), error => ({ error }));
-        // The live worker can send a receipt before it has names. Use local .com registry results for the first
+        // The live worker can send a receipt before it has names. Use local registry results for the first
         // table while the hosted checks run, then update the same receipt with the screened shortlist.
         if (proposed.size && context?.proposalDomains) {
           const domains = await context.proposalDomains([...proposed.keys()]).catch(() => []);
-          const byDomain = new Map(domains.map(row => [row.domain, row]));
+          const offers = new Map(domains.flatMap(row => {
+            if (row.status !== 'available' || row.premium) return [];
+            const price = row.prices.find(offer => offer.buyUrl && offer.renewalUsd <= 20 && offer.threeYearUsd <= pickCapUsd);
+            return price ? [[row.domain, { row, price }]] : [];
+          }));
           const names = [...proposed.entries()].flatMap(([label, proposal]) => {
-            const row = byDomain.get(label + '.com');
-            const price = row?.prices.find(offer => offer.buyUrl && offer.renewalUsd <= 20 && offer.threeYearUsd <= pickCapUsd);
-            if (!price || row.status !== 'available' || row.premium) return [];
-            return [{ ...proposal, domain: { domain: row.domain, ...price }, domains: [row], screening: 'partial' }];
+            const available = ['com', 'app', 'dev'].map(ending => offers.get(label + '.' + ending)).filter(Boolean);
+            const [first] = available;
+            return first ? [{ ...proposal, domain: { domain: first.row.domain, ...first.price },
+              domains: available.map(offer => offer.row), screening: 'partial' }] : [];
           });
           if (names.length) {
             const first = { stage: 'initial', names, checkedAt: new Date().toISOString() };
