@@ -2,6 +2,7 @@ import { shopSearchUrl, shops } from './clis/domain-check/prices.mjs';
 import { answerPolicy, affordableAdvice, appleSource, closeLabels, preferredEndings } from './name-context.mjs';
 import { publicSources, registrySource } from './context-sources.mjs';
 import { portfolioDomain } from './clis/portfolio/store.mjs';
+import { fitsBudget, hostContext, marketEndings, preferenceScore, validateHostContext } from './host-context.mjs';
 import { playSearchLink } from './clis/domain-check/google-play.mjs';
 import { geoInstruction, namingRecipe } from './clis/domain-check/naming-method.mjs';
 import { asciiDomain, canRecommend, choosePick, defaultEndings, domainEnding, normalizeName, pickCapUsd, restrictedEndings, supportedEndings, validEligibility } from './clis/domain-check/name-search.mjs';
@@ -19,7 +20,7 @@ import { alternativeEndings, hostedClient, hostedDebug } from './hosted.mjs';
 import { checkLines, generatedChecks, hostedChecks, hostedResult, visibleChecks } from './hosted-results.mjs';
 import { doneGuidance, shortBatchAnswer, shortDomainAnswer, shortIdeaAnswer } from './short-answer.mjs';
 import { capabilityArgs, capabilityDir, isEntry, packageJson } from './packaged.mjs';
-import { batchAnswer, batchArguments, batchGeneration, checkBatch, maxBatch } from './batch.mjs';
+import { batchAnswer, batchArguments, batchFacts, batchGeneration, checkBatch, maxBatch } from './batch.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export { capabilityDir };
@@ -56,7 +57,12 @@ function regionalEnding(country) {
   return Object.hasOwn(countryEnding, code) ? countryEnding[code] : europeanCountries.has(code) ? 'eu' : null;
 }
 const shopIds = new Map(Object.entries(shops).map(([id, shop]) => [shop.name, id]));
-const selectedEndings = args => [...new Set([...(args.endings ?? []), ...(args.eligible ?? []), regionalEnding(args.country), ...defaultEndings].filter(Boolean))];
+const overCap = (row, args) => row?.premium || (row?.prices?.length > 0 && row.prices.every(offer => !fitsBudget(offer, args, pickCapUsd)));
+const selectedEndings = args => [...new Set([...(args.endings ?? []), ...(args.eligible ?? []), ...marketEndings(args.market),
+  regionalEnding(args.country), ...defaultEndings].filter(Boolean))];
+const preferredFor = args => [...new Set([...(args.endings ?? []), ...marketEndings(args.market),
+  ...selectedEndings(args).filter(ending => preferenceScore(ending, args, { ending: true }) > 0)])]
+  .filter(ending => preferenceScore(ending, args, { ending: true }) >= 0);
 const lookupProperties = {
   country: { type: 'string', pattern: '^[A-Za-z]{2}$', description: 'Buyer country code if supplied, such as SE, DK, DE or GB for .co.uk. Do not infer it from language alone.' },
   ai: { type: 'boolean', description: 'Legacy flag, e.g. true. .ai is already checked by default.' },
@@ -68,16 +74,16 @@ const lookupProperties = {
 };
 const searchAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const batchResultMeta = { 'anthropic/maxResultSizeChars': 40_000 };
-const showAnswer = 'Show the table as given. If a source is missing, leave it out; never tell the user a check failed. '
-  + 'The table and its supporting lines are the complete first reply. Use them as written, including the results link. ' + answerPolicy;
+const showAnswer = 'Share the compact table, checked facts, and results link. You can add up to two lines of advice tailored to the user. '
+  + 'If a source is missing, leave it out. ' + answerPolicy;
 const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
-const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
-  + 'Use check_domains first for availability, prices, and advice on whether to keep a name or buy an alternative. Use triage_names for a name-only screen and watch_domain for a release watch. '
+const serverInstructions = 'Domain Hound checks domain availability and compares prices, renewal included. For a given name or domain, call check_domains. '
+  + 'For new names or a rebrand, call naming_brief, write the candidates yourself, then call check_batch once. '
+  + 'Use domainhound_generate_names only when the client cannot brainstorm or wants extra inspiration. Use triage_names for screening names you already have. '
+  + 'Pass known context from the conversation: what the business does, markets, three-year budget in USD, owned domains, and likes or dislikes. Pass eligibility for restricted endings only when known. '
   + 'For an initial buy-or-rebrand decision, use the ownership, alternatives and conflicts from check_domains in one call. '
-  + 'When asked for new names and the brief is clear, send 12 to 20 strong candidates directly to check_batch in one call. '
-  + 'Use naming_guide first when the user wants to explore directions or blend past choices. '
-  + 'Prefer names that fit .com, .app or .ai. Show its five picks and stop; offer another round only if asked. '
+  + 'Explain why a US trademark match matters when the market includes the US or is unknown. Offer another round only if asked. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Pass stated ownership in ownedDomains. Use my_domains to review renewals of domains the person already owns.';
@@ -88,9 +94,8 @@ const checkTool = {
     + 'Use query for one exact domain or bare name ({"query":"lanternbay.dev"}), or names for a batch ({"names":["lanternbay.dev","lanternbay"]}). '
     + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
     + 'Checks domains, app names and exact US trademark matches. One call answers; late checks fill in on the results page. '
-    + 'For a taken exact domain, always include the best available alternative in the reply even for a yes/no question. '
-    + 'For buy-or-rebrand advice, lead with the recommendation supported by the returned evidence. '
-    + 'Use check_batch for name ideas and quote_domain for a live Spaceship purchase quote. ' + showAnswer,
+    + 'For a taken exact domain, it returns checked alternatives where available. '
+    + 'Use naming_brief for new names and quote_domain for a live Spaceship purchase quote.',
   annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
   _meta: batchResultMeta,
   inputSchema: {
@@ -98,8 +103,8 @@ const checkTool = {
     properties: {
       ...lookupProperties,
       detail: detailSchema,
-      ownedDomains: { type: 'array', maxItems: 100, items: { type: 'string', maxLength: 253 },
-        description: 'Exact domains the user said they own, e.g. ["lanternbay.ai"]. Matching domains in my_domains are included automatically.' },
+      ...hostContext,
+      idea: { type: 'string', minLength: 1, maxLength: 400, description: 'What the business does in one line, for example "Help families rebook flights".' },
       query: { ...nameSchema,
         description: 'One name or exact domain, e.g. "lanternbay.me" or "lanternbay". Supply either query or names.' },
       names: { type: 'array', minItems: 1, maxItems: 20,
@@ -168,9 +173,9 @@ const namingContext = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'For new names, use check_batch. '
+    + 'For new names, start with naming_brief. '
     + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
-    + 'One call answers with the best names; late checks fill in on the results page. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
+    + 'One call answers with the best names; late checks fill in on the results page. For a domain-only lookup or registrar prices, use check_domains.',
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
   inputSchema: {
@@ -213,20 +218,19 @@ const triageTool = {
   },
 };
 
+const ideaSchema = { type: 'string', minLength: 3, maxLength: 400, description: 'What the business does in one sentence.' };
 const batchTool = {
   name: 'check_batch',
-  description: 'Use this directly when a user gives a clear naming brief. Brainstorm 12 to 20 distinctive names with familiar words. '
-    + 'Use different directions, such as the job, outcome, metaphor, familiar object, role, or a word twist. '
-    + 'Send them in one call. The maximum is 60; there is no need to fill it. '
-    + 'Checks .com for every name and .app and .ai for the first ones, then App Store, Google Play and exact US trademarks, '
-    + 'and returns up to five ranked picks: clean names first, then near misses with their one issue. '
-    + 'Show the table and link as given, optionally name one favorite, and stop without a follow-up question. '
-    + 'Keep each check scoped to the source named in its row. Offer another round only if asked.',
+  description: 'Use this after naming_brief to check up to 60 host-written names in one call. '
+    + 'It returns up to five picks as a compact table and structured facts, including prices, App Store, Google Play and exact US trademark results. '
+    + 'It uses known markets, ownership, price cap and preferences when ranking names and domains.',
   annotations: { title: 'Check a batch of name ideas', ...searchAnnotations },
   inputSchema: {
     type: 'object',
     properties: {
-      idea: { type: 'string', minLength: 3, maxLength: 400, description: 'What the business does in one sentence.' },
+      idea: ideaSchema,
+      ...hostContext,
+      eligible: lookupProperties.eligible,
       customer: namingContext.customer,
       feedback: namingContext.feedback,
       round: { type: 'integer', minimum: 1, maximum: 3, description: 'Naming round, e.g. 2.' },
@@ -242,9 +246,28 @@ const batchTool = {
 };
 
 const namingTool = {
+  name: 'naming_brief',
+  description: 'Use this first for new names or a rebrand when the host can write the candidates. '
+    + 'It returns a creative method and the conversation context for the host to write its own names. '
+    + 'Use check_batch after writing the candidates to verify them.',
+  annotations: { title: 'Plan a naming round', ...searchAnnotations, openWorldHint: false },
+  inputSchema: { type: 'object', properties: {
+    idea: ideaSchema, ...hostContext, eligible: lookupProperties.eligible, customer: namingContext.customer, feedback: namingContext.feedback,
+    taste: namingContext.taste, shown: namingContext.shown, round: batchTool.inputSchema.properties.round,
+  }, additionalProperties: false },
+};
+
+const generateTool = {
+  name: 'domainhound_generate_names',
+  description: 'Use this when the client cannot write name candidates itself or wants extra inspiration. '
+    + 'It asks the hosted naming service for names and checks on them. It uses the same naming brief as the host-written route.',
+  annotations: { title: 'Generate extra name ideas', ...searchAnnotations, idempotentHint: false },
+  inputSchema: { ...namingTool.inputSchema, required: ['idea'], properties: { ...namingTool.inputSchema.properties, detail: detailSchema } },
+};
+
+const legacyNamingTool = {
   name: 'naming_guide',
-  description: 'Use this when the user wants to explore naming directions or blend past choices. '
-    + 'For a clear naming brief, use check_batch directly.',
+  description: 'Use this when reading the naming method through a pinned tool reference. For a new naming round, use naming_brief.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },
@@ -361,12 +384,13 @@ function lookupResult(page, args, triage = false) {
     return result;
   }
 
-  const options = { link, purchase: args.purchase === true };
+  const options = { link, purchase: args.purchase === true, market: args.market, eligible: args.eligible, preferred: preferredFor(args),
+    budget: args.budget, budgetThreeYearUsd: args.budgetThreeYearUsd, dislikes: args.dislikes, likes: args.likes, idea: args.idea };
   const withAlternatives = check => ({ ...check, alternatives: check[alternativeEndings] ?? check.alternatives });
   const short = triage
     ? shortIdeaAnswer(visibleChecks(checks ?? [], args, page.generation), { ...options, generated: Boolean(page.generation) })
     : checks.length === 1 ? shortDomainAnswer(withAlternatives(checks[0]), options)
-      : shortBatchAnswer(checks.map(withAlternatives));
+      : shortBatchAnswer(checks.map(withAlternatives), { market: args.market });
   // The local fallback's own notice stays on the results page; the short answer carries only checked facts.
   const notes = args.purchase && !triage ? [page.quoteOffer ? 'Ask for a live Spaceship quote.' : 'This check leaves checkout to you.'] : [];
   const text = triage ? short : [
@@ -452,12 +476,13 @@ function cliArguments(args) {
     throw new Error('Supply an object with query or names.');
   }
   validateDetail(args);
-  if (Object.hasOwn(args, 'ownedDomains') && (!Array.isArray(args.ownedDomains) || args.ownedDomains.length > 100 ||
-    args.ownedDomains.some(domain => !portfolioDomain(domain)))) {
-    throw new Error('Owned domains must be a list of up to 100 exact domain names.');
+  validateHostContext(args);
+  if (args.idea !== undefined && (typeof args.idea !== 'string' || !args.idea.trim() || args.idea.length > 400)) {
+    throw new Error('Describe the business in one line of up to 400 characters.');
   }
   const flags = lookupFlags(args);
-  if (args.endings) flags.push('--prefer-endings', args.endings.join(','));
+  const preferred = preferredFor(args);
+  if (preferred.length) flags.push('--prefer-endings', preferred.join(','));
   if (args.budget !== undefined) flags.push('--upfront-cap', String(args.budget));
   const hasQuery = Object.hasOwn(args, 'query');
   if (hasQuery === Object.hasOwn(args, 'names')) throw new Error('Supply exactly one of query or names.');
@@ -568,7 +593,7 @@ function validateDetail(args) {
 
 function generationArguments(args) {
   validateDetail(args);
-  if (Object.keys(args).some(key => !['idea', 'wanted', 'avoid', 'round', 'detail', ...Object.keys(namingContext)].includes(key))) {
+  if (Object.keys(args).some(key => !['idea', 'wanted', 'avoid', 'round', 'detail', 'eligible', ...Object.keys(namingContext), ...Object.keys(hostContext)].includes(key))) {
     throw new Error('Supply an idea and any naming preferences or proposals.');
   }
   const { idea, wanted, avoid, round } = args;
@@ -585,7 +610,10 @@ function generationArguments(args) {
   if (Array.isArray(args.proposals) && args.proposals.some(proposal => !namingTerritories.includes(proposal?.territory))) {
     throw new Error('Use one of these territory values for each proposal: ' + namingTerritories.join(', ') + '.');
   }
-  const context = Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(namingContext, key)));
+  validateHostContext(args);
+  if (args.eligible !== undefined && !validEligibility(args.eligible)) throw new Error('Choose supported restricted endings.');
+  const context = Object.fromEntries(Object.entries(args).filter(([key]) => key === 'eligible'
+    || Object.hasOwn(namingContext, key) || Object.hasOwn(hostContext, key)));
   const { proposals, ...brief } = context;
   if (proposals !== undefined && (!Array.isArray(proposals) || proposals.length < 1 || proposals.length > maxProposals)) {
     throw new Error('Send 1 to ' + maxProposals + ' proposals in one call.');
@@ -810,7 +838,7 @@ export async function serve({
   };
 
   function nameEvidence(args) {
-    if (!context && !args.ownedDomains?.length) return null;
+    if (!context && !Object.keys(hostContext).some(key => Object.hasOwn(args, key))) return null;
     const portfolioDomains = Promise.resolve().then(() => context?.owned()).catch(() => []);
     const names = new Map();
     const registries = new Map();
@@ -822,8 +850,6 @@ export async function serve({
     }
     const ownedFor = async label => [...new Set([...(args.ownedDomains ?? []).map(portfolioDomain), ...(await portfolioDomains ?? [])])]
       .filter(domain => domain?.startsWith(label + '.'));
-    const exceeds = row => row?.premium || (row?.prices?.length > 0 && row.prices.every(offer =>
-      args.budget == null ? offer.threeYearUsd > pickCapUsd : offer.firstPaymentUsd > args.budget));
     return async (check, { local = false } = {}) => {
       const label = check.query.ascii ?? normalizeName(check.query.name.split('.')[0]);
       if (!label) return check;
@@ -835,7 +861,7 @@ export async function serve({
       // A taken exact domain always gets ranked alternatives: when the hosted comparison is late, the local registry
       // check of the other endings stands in for it in the first answer.
       const comparison = check[alternativeEndings] ?? (exact &&
-        (hit?.status === 'taken' || owned.has(exact) || exceeds(hit)) && context?.comparison
+        (hit?.status === 'taken' || owned.has(exact) || overCap(hit, args)) && context?.comparison
         ? { domains: await get(localAlternatives, label, () => context.comparison(label, limits), []) } : null);
       const originals = comparison ? [...new Map([...comparison.domains, ...check.domains].map(row => [row.domain, row])).values()] : check.domains;
       const com = label + '.com';
@@ -866,16 +892,17 @@ export async function serve({
         const variant = row.variant ?? row.domain.split('.')[0] !== label;
         return { ...row, variant, source: row.source?.includes('://') ? row.source : registrySource(row.domain, row.ending, row.evidence ?? row.source),
           prices: (row.prices ?? []).map(offer => ({ ...offer, recommended:
-            args.budget == null ? offer.threeYearUsd <= pickCapUsd : offer.firstPaymentUsd <= args.budget })) };
+            fitsBudget(offer, args, pickCapUsd) })) };
       });
       const rows = decorate([...close.map(reprice), ...originals.filter(row => !close.some(variant => variant.domain === row.domain))]
         .filter(row => !seen.has(row.domain) && seen.add(row.domain)));
-      const options = rows.filter(row => row.status === 'available' && !row.premium && canRecommend(row.ending, args.eligible))
+      const options = rows.filter(row => row.status === 'available' && !row.premium && canRecommend(row.ending, args.eligible)
+        && (row.domain === exact || preferenceScore(row.ending, args, { ending: true }) >= 0))
         .flatMap(row => row.prices.filter(offer => offer.buyUrl).map(offer => ({ ...offer, domain: row.domain,
           now: offer.firstPaymentUsd, total: offer.threeYearUsd })));
       // choosePick drops a DNS-locked offer when the same domain has an unlocked one within $2 over 3 years.
-      const pick = (offers, requested = args.endings) => choosePick(offers, {
-        requested, eligible: args.eligible, exactLabel: label, upfrontCap: args.budget, allowOverCap: false,
+      const pick = (offers, requested = preferredFor(args)) => choosePick(offers.filter(offer => fitsBudget(offer, args)), {
+        requested, eligible: args.eligible, exactLabel: label, upfrontCap: args.budget, budget: args.budgetThreeYearUsd, allowOverCap: false,
       }) ?? null;
       const choice = { ...comparison?.choice, pick: pick(options) };
       const domains = exact ? decorate(check.domains) : rows;
@@ -886,10 +913,10 @@ export async function serve({
       const cheapestSameName = pick(options.filter(offer => offer.domain.startsWith(label + '.') &&
         !offer.domain.endsWith('.com') && !offer.domain.endsWith('.ai')));
       const advice = affordableAdvice(rows, adviceContext, cheapestSameName, check.checkedAt ?? new Date().toISOString(),
-        pickCapUsd, args.budget);
+        args.budgetThreeYearUsd ?? pickCapUsd, args.budget);
       return { ...check, domains, choice: exactChoice,
         [alternativeEndings]: exact && comparison ? { ...comparison, domains: rows, choice } : undefined,
-        ownedDomains, ranked: Boolean(context), context: name || domain ? adviceContext : null, advice,
+        ownedDomains, ranked: Boolean(context || args.budgetThreeYearUsd !== undefined || preferredFor(args).length || args.dislikes?.length), context: name || domain ? adviceContext : null, advice,
         ...(app && { appStore: { ...app, source: appleSource } }),
         ...(play && { googlePlay: { ...play, source: play.link ?? playSearchLink(check.query.name) } }),
         ...(mark && { trademarks: { us: { ...mark, source: mark.searchUrl ?? 'https://tmsearch.uspto.gov/' } } }),
@@ -940,9 +967,9 @@ export async function serve({
       job.done = Promise.all(rows.map(async ({ name }, index) => {
         const answer = await hosted.check(name, name.includes('.') ? [] : extra, signal,
           streamDomains ? (value, apple, alternatives) => receive(value, index, true, apple, alternatives) : undefined,
-          enhance ? { compareExact: row => (args.ownedDomains ?? []).some(domain => portfolioDomain(domain) === row.domain) ||
-            ['com', 'ai'].includes(row.ending) && (row.premium || row.prices?.length && row.prices.every(offer =>
-              args.budget == null ? offer.threeYearUsd > pickCapUsd : offer.firstPaymentUsd > args.budget)) } : undefined);
+          enhance ? { compareExact: row => (args.ownedDomains ?? []).some(domain => portfolioDomain(domain) === row.domain)
+            || ((args.budgetThreeYearUsd !== undefined || ['com', 'ai'].includes(row.ending)) && overCap(row, args)),
+            comparisonEndings: name.includes('.') ? extra : [] } : undefined);
         receive(answer, index);
         return answer;
       })).then(async answers => {
@@ -1004,8 +1031,8 @@ export async function serve({
     }
     const local = () => toolResult(JSON.stringify({
       display: attributed(args.detail === 'full'
-        ? 'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n' + namingRecipe(input.idea)
-        : 'Name generation is unavailable. Use naming_guide, then send your candidates to triage_names.'),
+        ? 'Use naming_brief, then send your candidates to check_batch.\n\n' + namingRecipe(input.idea)
+        : 'Name generation is unavailable. Use naming_brief, then send your candidates to check_batch.'),
       source: 'local', unavailable: true,
     }));
     if (!hosted && (!input.proposals || !context?.proposalDomains)) return local();
@@ -1087,11 +1114,12 @@ export async function serve({
     if (!context?.batchDomains || !context?.localChecks) {
       return errorResult('Use triage_names with these names instead.');
     }
-    const key = JSON.stringify(candidates);
+    const { candidates: _candidates, detail, ...brief } = args;
+    const key = JSON.stringify([candidates, Object.entries(brief).sort(([a], [b]) => a.localeCompare(b))]);
     let job = batches.get(key);
     if (!job) {
       job = (async () => {
-        const result = await checkBatch(candidates, context, { deadline: started + timeout - 1200 });
+        const result = await checkBatch(candidates, context, { deadline: started + timeout - 1200, context: brief });
         const proposed = new Map(candidates.map(entry => [entry.label, entry]));
         const generation = batchGeneration(result);
         const page = await pages(hostedResult(generatedChecks(generation, proposed), {}, generation), {}, { triage: true })
@@ -1106,9 +1134,7 @@ export async function serve({
       const { result, resultPage } = await job;
       const link = resultPage && resultsLine(resultPage).replace(/^Results page:/, 'All prices, shops and checks:');
       const answer = batchAnswer(result, { link });
-      const picks = result.picks.map(entry => ({ name: entry.name, domain: entry.domain.domain,
-        ...(entry.found.length && { issue: entry.found[0] }) }));
-      // The same closing instruction as every short answer: show it and stop, no second batch unless asked.
+      const picks = result.picks.map(batchFacts);
       return { content: [{ type: 'text', text: answer }, { type: 'text', text: doneGuidance }], isError: false,
         structuredContent: { answer, next: doneGuidance, picks, ...(resultPage && { resultPage }) } };
     } catch {
@@ -1296,14 +1322,28 @@ export async function serve({
       const [{ dossierTool }, { portfolioTool }] = await Promise.all([
         import('./dossier.mjs'), import('./clis/portfolio/portfolio.mjs'),
       ]);
-      return reply({ tools: registeredTools([checkTool, triageTool, batchTool, namingTool, watchTool, dossierTool, portfolioTool]) });
+      return reply({ tools: registeredTools([checkTool, triageTool, batchTool, namingTool, generateTool, legacyNamingTool, watchTool, dossierTool, portfolioTool]) });
     }
     const { name, arguments: args } = params ?? {};
     if (purchaseToolNames.has(name)) return reply(await callPurchaseTool(name, args));
-    if (name === namingTool.name || name === 'naming_method') {
+    if (name === namingTool.name) {
+      const brief = args ?? {};
+      try {
+        if (!isObject(brief) || Object.keys(brief).some(key => !Object.hasOwn(namingTool.inputSchema.properties, key))) {
+          throw new Error('Send an idea and any known naming context.');
+        }
+        const { idea, ...context } = brief;
+        const input = generationArguments({ idea: idea ?? 'Missing business description', ...context });
+        const instructions = namingRecipe(idea, input);
+        return reply({ content: [{ type: 'text', text: instructions }], structuredContent: { brief, instructions }, isError: false });
+      } catch (problem) {
+        return reply(errorResult(problem.message));
+      }
+    }
+    if (name === legacyNamingTool.name || name === 'naming_method') {
       if (args !== undefined && (!isObject(args) || Object.keys(args).some(key => key !== 'about') ||
         (Object.hasOwn(args, 'about') && (typeof args.about !== 'string' || !args.about.trim() ||
-          args.about.length > namingTool.inputSchema.properties.about.maxLength)))) {
+          args.about.length > legacyNamingTool.inputSchema.properties.about.maxLength)))) {
         return reply(errorResult('naming_guide accepts an optional about description of up to 512 characters.'));
       }
       return reply(toolResult(JSON.stringify({ display: attributed(namingRecipe(args?.about?.slice(0, 160))) })));
@@ -1336,8 +1376,10 @@ export async function serve({
     }
     const purchase = isObject(args) && args.purchase === true;
     const started = performance.now();
+    if (name === generateTool.name || (name === triageTool.name && isObject(args) && Object.hasOwn(args, 'idea'))) {
+      return reply(shortReply(await generateNames(args ?? {}, started), args ?? {}, true));
+    }
     if (name === triageTool.name) {
-      if (isObject(args) && Object.hasOwn(args, 'idea')) return reply(shortReply(await generateNames(args, started), args, true));
       const fromHost = await hostedLookup(args, true, started);
       if (fromHost) return reply(shortReply(fromHost, args, true));
       let current;
