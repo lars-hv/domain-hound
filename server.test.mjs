@@ -154,7 +154,8 @@ test('advertises ten distinct tools with intent descriptions and complete annota
   }
   assert.match(check.description, /purchase: true/);
   assert.match(check.description, /explicit live shop check/);
-  assert.match(triage.description, /idea.*website.*name generator/);
+  assert.match(triage.description, /naming_guide first.*idea.*proposals per batch/);
+  assert.match(triage.description, /idea alone when host brainstorming is unavailable/);
   assert.equal(triage.inputSchema.properties.shortlist.type, 'boolean');
   assert.equal(watch.annotations.readOnlyHint, false);
   assert.equal(portfolio.annotations.readOnlyHint, false);
