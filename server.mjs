@@ -21,7 +21,7 @@ import { candidateFields, compactScore, compareScores, scoreEligible, scoreHandl
 import { scoreLogger } from './clis/domain-check/score-log.mjs';
 import { alternativeEndings, HostedRateLimit, hostedClient, hostedDebug } from './hosted.mjs';
 import { checkLines, generatedChecks, hostedChecks, hostedResult, visibleChecks } from './hosted-results.mjs';
-import { shortDomainAnswer, shortIdeaAnswer } from './short-answer.mjs';
+import { doneGuidance, shortBatchAnswer, shortDomainAnswer, shortIdeaAnswer } from './short-answer.mjs';
 
 // The capability ships inside the package; tests inject another directory through serve({ cwd }).
 export const capabilityDir = fileURLToPath(new URL('./clis/domain-check/', import.meta.url));
@@ -70,12 +70,13 @@ const lookupProperties = {
 };
 const searchAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true };
 const batchResultMeta = { 'anthropic/maxResultSizeChars': 40_000 };
-const showAnswer = 'Show the tool’s text answer as given. Offer details only if the user asks. ' + answerPolicy;
+const showAnswer = 'Show the table as given. If a source is missing, leave it out; never tell the user a check failed. '
+  + 'The table and its supporting lines are the complete first reply. Use them as written, including the results link. ' + answerPolicy;
 const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short',
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
-  + 'Use check_domains for availability or prices, triage_names for trademark screening, and watch_domain for a release watch. '
-  + 'When asked for new names, get the naming_guide, brainstorm in the host, then use triage_names with idea and proposals to check them. '
+  + 'Use check_domains first for availability, prices, and advice on whether to keep a name or buy an alternative. Use triage_names for a name-only screen and watch_domain for a release watch. '
+  + 'When asked for new names, get the naming_guide, brainstorm in the host, then make one triage_names call with idea and up to 60 proposals. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Pass stated ownership in ownedDomains. Use my_domains to review renewals of domains the person already owns.';
@@ -85,7 +86,8 @@ const checkTool = {
   description: 'Use this when checking whether a name or exact domain is available, what an ending such as .ai costs, or where to register. '
     + 'Use query for one exact domain or bare name ({"query":"lanternbay.dev"}), or names for a batch ({"names":["lanternbay.dev","lanternbay"]}). '
     + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
-    + 'Checks domains, app names and exact US trademark matches. Repeat to collect pending checks. Use triage_names for name ideas and quote_domain for a live Spaceship purchase quote. ' + showAnswer,
+    + 'Checks domains, app names and exact US trademark matches. One call answers; late checks fill in on the results page. '
+    + 'Use triage_names for name ideas and quote_domain for a live Spaceship purchase quote. ' + showAnswer,
   annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
   _meta: batchResultMeta,
   inputSchema: {
@@ -124,6 +126,9 @@ const candidateDescriptions = {
 };
 
 const namingTerritories = ['job', 'result', 'metaphor', 'object', 'role', 'twist'];
+// One naming call checks up to 60 proposals; the hosted API takes them in groups of 20.
+const maxProposals = 60;
+const proposalGroup = 20;
 const namingText = maxLength => ({ type: 'string', minLength: 1, maxLength });
 const namingCandidate = {
   type: 'object', additionalProperties: false, required: ['name', 'territory', 'anchor', 'why'],
@@ -142,7 +147,8 @@ const namingContext = {
   shown: { type: 'array', maxItems: 15, items: { anyOf: [namingCandidate, { type: 'object', required: ['name'],
     additionalProperties: false, properties: { name: namingText(40) } }] },
     description: 'Earlier shown names with creative details when present, or just the name.' },
-  proposals: { type: 'array', minItems: 1, maxItems: 20, items: namingCandidate, description: 'Host-written naming ideas to check against the brief.' },
+  proposals: { type: 'array', minItems: 1, maxItems: maxProposals, items: namingCandidate,
+    description: 'Host-written naming ideas to check against the brief, up to 60 in one call.' },
   taste: { type: 'array', maxItems: 20, items: {
     type: 'object', required: ['id', 'kind'], additionalProperties: false, properties: {
       id: { type: 'string', pattern: '^[a-z0-9-]{1,24}$', description: 'Stable ID for this preference.' },
@@ -159,9 +165,9 @@ const namingContext = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'For new names, use naming_guide first, then pass idea and up to 20 host-written proposals per batch. '
+    + 'For new names, use naming_guide first, then make one call with idea and up to 60 host-written proposals. '
     + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
-    + 'Repeat with the same input to collect pending checks. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
+    + 'One call answers with the best names; late checks fill in on the results page. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
   _meta: batchResultMeta,
   inputSchema: {
@@ -215,6 +221,19 @@ const namingTool = {
 };
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const unsettledStatuses = ['check at shop', 'still checking'];
+const definiteSource = source => ['taken', 'exact_match_found', 'not-found', 'no_match_found', 'no_exact_match_found'].includes(source?.status);
+
+// A default (short) lookup answer: the table text, then the host instruction as its own block. Hosts that read the
+// structured result get the same answer and instruction first. Full detail and purchase requests keep their shape.
+function shortReply(result, args, triage = false) {
+  if (result.isError || args?.detail === 'full' || args?.purchase === true || result.structuredContent?.unavailable) return result;
+  const answer = result.content[0].text;
+  const { resultPage, pending } = result.structuredContent ?? {};
+  const details = triage ? { ...(resultPage && { resultPage }), ...(pending && { pending }) } : result.structuredContent;
+  return { ...result, content: [{ type: 'text', text: answer }, { type: 'text', text: doneGuidance }],
+    structuredContent: { answer, next: doneGuidance, ...details } };
+}
 // The legacy display stays in structured results. Lookup tools can supply their own text.
 function toolResult(json, isError = false) {
   const structured = JSON.parse(json);
@@ -240,17 +259,22 @@ function compactCheckResult(result, full) {
       ['likely taken (DNS)', likely_taken], ['check at shop', shop_check?.filter(ending =>
         !likely_free?.includes(ending) && !likely_taken?.includes(ending))], ['still checking', checking],
     ];
-    return { name, statuses: Object.fromEntries(statuses.map(([status, endings]) => [status, status === 'owned' ? endings : endings?.filter(ending => !isOwned(ending))]).filter(([, endings]) => endings?.length)) };
+    return { name, statuses: Object.fromEntries(statuses.map(([status, endings]) => [status, status === 'owned' ? endings : endings?.filter(ending => !isOwned(ending))])
+      .filter(([status, endings]) => endings?.length && (full || !unsettledStatuses.includes(status)))) };
   });
+  // By default only settled sources reach the host; the results page keeps the rest.
+  const settled = source => full || definiteSource(source) ? source : undefined;
   const evidence = (checks ?? nameEvidence)?.filter(check => check.ranked || check.ownedDomains?.length).map(check => ({
     name: check.query.name, exactDomain: check.query.exactDomain, ownedDomains: check.ownedDomains,
-    pick: check.choice?.pick, alternative: (check[alternativeEndings] ?? check.alternatives)?.choice?.pick, context: check.context, advice: check.advice,
-    domains: [...new Map([...((check[alternativeEndings] ?? check.alternatives)?.domains ?? []), ...check.domains].map(row => [row.domain, row])).values()].filter(row => listSources || text.includes(row.domain)).map(row => ({
+    pick: check.choice?.pick, alternative: (check[alternativeEndings] ?? check.alternatives)?.choice?.pick,
+    ...(full && { context: check.context, advice: check.advice }),
+    domains: [...new Map([...((check[alternativeEndings] ?? check.alternatives)?.domains ?? []), ...check.domains].map(row => [row.domain, row])).values()]
+      .filter(row => (listSources || text.includes(row.domain)) && (full || row.status !== 'unknown' || row.reason === 'reserved')).map(row => ({
       domain: row.domain, status: row.status, variant: row.variant, checkedAt: row.checkedAt, source: row.source,
       ...(full && !batch && row.status === 'available' && { prices: row.prices.slice(0, 3) }),
     })),
-    appStore: check.appStore ?? check.nameChecks?.appStore, googlePlay: check.googlePlay ?? check.nameChecks?.googlePlay,
-    trademarks: check.trademarks ?? check.nameChecks?.trademarks,
+    appStore: settled(check.appStore ?? check.nameChecks?.appStore), googlePlay: settled(check.googlePlay ?? check.nameChecks?.googlePlay),
+    trademarks: settled((check.trademarks ?? check.nameChecks?.trademarks)?.us) && (check.trademarks ?? check.nameChecks?.trademarks),
   }));
   const structuredContent = {
     ...(evidence?.length && { evidence }),
@@ -290,7 +314,8 @@ function lookupResult(page, args, triage = false) {
       ].filter(Boolean).join(' · ');
       return md(name) + (verdict ? (triage ? ' - ' : ': ') + verdict : '');
     });
-    result.content[0].text = [...progressRows, 'Still checking ' + (triage ? 'names and domains.' : 'domains.'),
+    result.content[0].text = [...progressRows,
+      link ? 'The results page fills in the rest by itself.' : 'More answers are on the way; ask again for the rest.',
       args.purchase && !triage ? 'This check leaves checkout to you.' : '', link].filter(Boolean).join('\n');
     return result;
   }
@@ -299,16 +324,14 @@ function lookupResult(page, args, triage = false) {
     return result;
   }
 
-  const options = { pending: Boolean(page.pending), link };
+  const options = { link, purchase: args.purchase === true };
+  const withAlternatives = check => ({ ...check, alternatives: check[alternativeEndings] ?? check.alternatives });
   const short = triage
-    ? shortIdeaAnswer(visibleChecks(checks ?? [], args, page.generation), options)
-    : checks.map(check => shortDomainAnswer({ ...check, alternatives: check[alternativeEndings] ?? check.alternatives }, {
-      ...options, link: checks.length === 1 ? link : undefined,
-    })).join('\n\n');
-  const notes = [
-    ...(args.purchase && !triage ? [page.quoteOffer ? 'Ask for a live Spaceship quote.' : 'This check leaves checkout to you.'] : []),
-    ...(local && !triage ? [localCheckNotice] : []),
-  ];
+    ? shortIdeaAnswer(visibleChecks(checks ?? [], args, page.generation), { ...options, generated: Boolean(page.generation) })
+    : checks.length === 1 ? shortDomainAnswer(withAlternatives(checks[0]), options)
+      : shortBatchAnswer(checks.map(withAlternatives));
+  // The local fallback's own notice stays on the results page; the short answer carries only checked facts.
+  const notes = args.purchase && !triage ? [page.quoteOffer ? 'Ask for a live Spaceship quote.' : 'This check leaves checkout to you.'] : [];
   const text = triage ? short : [
     short.replace(/^[^\n]+/, first => [first, ...notes].join(' ')),
     ...(checks.length !== 1 ? [link] : []),
@@ -526,7 +549,15 @@ function generationArguments(args) {
     throw new Error('Use one of these territory values for each proposal: ' + namingTerritories.join(', ') + '.');
   }
   const context = Object.fromEntries(Object.entries(args).filter(([key]) => Object.hasOwn(namingContext, key)));
-  if (Buffer.byteLength(JSON.stringify(context)) > (context.proposals ? 11_000 : 3500)) {
+  const { proposals, ...brief } = context;
+  if (proposals !== undefined && (!Array.isArray(proposals) || proposals.length < 1 || proposals.length > maxProposals)) {
+    throw new Error('Send 1 to ' + maxProposals + ' proposals in one call.');
+  }
+  // Each group of proposals travels with the brief in one hosted request.
+  const groups = [];
+  for (let index = 0; index < (proposals?.length ?? 0); index += proposalGroup) groups.push(proposals.slice(index, index + proposalGroup));
+  if (Buffer.byteLength(JSON.stringify(brief)) > 3500
+    || groups.some(group => Buffer.byteLength(JSON.stringify({ ...brief, proposals: group })) > 11_000)) {
     throw new Error('Keep the current brief, taste notes and shown names short enough for one round.');
   }
   return { idea: idea.trim(), ...(wanted && { wanted }), ...(avoid && { avoid }), ...(round && { round }), ...context };
@@ -895,7 +926,7 @@ export async function serve({
       }
       hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
       return lookupResult({
-        display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
+        display: attributed('Domain Hound needs a little longer for this one. Ask again in a moment for the result.'),
         complete: false, pending: true,
       }, args, triage);
     }
@@ -933,21 +964,54 @@ export async function serve({
       display: attributed(args.detail === 'full'
         ? 'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n' + namingRecipe(input.idea)
         : 'Name generation is unavailable. Use naming_guide, then send your candidates to triage_names.'),
-      source: 'local',
+      source: 'local', unavailable: true,
     }));
-    if (!hosted) return local();
+    if (!hosted && (!input.proposals || !context?.proposalDomains)) return local();
     const key = JSON.stringify(input);
     let job = generations.get(key);
     if (!job) {
       job = { page: null };
       generations.set(key, job);
+      const proposed = new Map((input.proposals ?? []).flatMap(proposal => {
+        const label = normalizeName(proposal?.name);
+        return label ? [[label, proposal]] : [];
+      }));
       const write = (generation, pending = false, failed = false) => pages(
-        hostedResult(generatedChecks(generation), {}, generation, { pending, failed }), {},
+        hostedResult(generatedChecks(generation, proposed), {}, generation, { pending, failed }), {},
         { triage: true, reuse: job.page?.resultPage, refresh: pending },
       ).then(page => { job.page = page; });
+      const hasDetails = generation => generation?.stage === 'initial' && typeof generation.details?.id === 'string';
       job.initial = (async () => {
-        const initial = await hosted.generate(input, AbortSignal.timeout(Math.max(1, Math.floor(timeout - 750))));
-        const pending = initial.stage === 'initial' && typeof initial.details?.id === 'string';
+        const remote = hosted?.generate(input, AbortSignal.timeout(Math.max(1, Math.floor(timeout - 750))))
+          .then(value => ({ value }), error => ({ error }));
+        // The live worker can send a receipt before it has names. Use local .com registry results for the first
+        // table while the hosted checks run, then update the same receipt with the screened shortlist.
+        if (proposed.size && context?.proposalDomains) {
+          const domains = await context.proposalDomains([...proposed.keys()]).catch(() => []);
+          const byDomain = new Map(domains.map(row => [row.domain, row]));
+          const names = [...proposed.entries()].flatMap(([label, proposal]) => {
+            const row = byDomain.get(label + '.com');
+            const price = row?.prices.find(offer => offer.buyUrl && offer.renewalUsd <= 20 && offer.threeYearUsd <= pickCapUsd);
+            if (!price || row.status !== 'available' || row.premium) return [];
+            return [{ ...proposal, domain: { domain: row.domain, ...price }, domains: [row], screening: 'partial' }];
+          });
+          if (names.length) {
+            const first = { stage: 'initial', names, checkedAt: new Date().toISOString() };
+            await write(first, Boolean(remote));
+            if (remote) job.finish = track(remote.then(async ({ value, error }) => {
+              if (error) throw error;
+              return hasDetails(value) ? hosted.finishGeneration(value) : value;
+            }).then(
+              final => write(final.names.length ? final : first),
+              () => write(first, false, true),
+            ));
+            return;
+          }
+        }
+        if (!remote) throw new Error('No naming results');
+        const { value: initial, error } = await remote;
+        if (error) throw error;
+        const pending = hasDetails(initial);
         await write(initial, pending);
         if (pending) job.finish = track(hosted.finishGeneration(initial).then(final => write(final), () => write(initial, false, true)));
       })();
@@ -1180,9 +1244,9 @@ export async function serve({
     const purchase = isObject(args) && args.purchase === true;
     const started = performance.now();
     if (name === triageTool.name) {
-      if (isObject(args) && Object.hasOwn(args, 'idea')) return reply(await generateNames(args, started));
+      if (isObject(args) && Object.hasOwn(args, 'idea')) return reply(shortReply(await generateNames(args, started), args, true));
       const fromHost = await hostedLookup(args, true, started);
-      if (fromHost) return reply(fromHost);
+      if (fromHost) return reply(shortReply(fromHost, args, true));
       let current;
       const result = await runLookup(args, triageArguments, triageRows, (data, lookup) => triageReceipt(lookup, args, data),
         async (progress, timing, lookup) => {
@@ -1199,7 +1263,7 @@ export async function serve({
           shown.display = resultsLine(resultPage) + '\n' + shown.display;
           return localProgress(JSON.stringify({ ...shown, resultPage }));
         }, lookup => { current = lookup; }, started);
-      reply(result);
+      reply(shortReply(result, args, true));
       if (!result.isError && current?.finished && current.outcome?.data) followUp(current);
       return;
     }
@@ -1215,7 +1279,7 @@ export async function serve({
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));
     }
-    return reply(name === checkTool.name ? compactCheckResult(result, args?.detail === 'full') : result);
+    return reply(name === checkTool.name ? shortReply(compactCheckResult(result, args?.detail === 'full'), args) : result);
   }
 
   const lines = createInterface({ input, terminal: false, crlfDelay: Infinity });

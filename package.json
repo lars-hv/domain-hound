@@ -1,6 +1,6 @@
 {
   "name": "domain-hound",
-  "version": "0.1.17",
+  "version": "0.1.18",
   "description": "Domains for agents. One MCP for everything domains: find, check, buy, set up, watch, move, renew, keep track.",
   "license": "MIT",
   "type": "module",
@@ -120,5 +120,8 @@
   },
   "bugs": {
     "url": "https://github.com/lars-hv/domain-hound/issues"
-  }
+  },
+  "bundleDependencies": [
+    "parse5"
+  ]
 }

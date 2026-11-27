@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { PassThrough } from 'node:stream';
 import { serve } from './server.mjs';
+import { doneGuidance } from './short-answer.mjs';
 import { hostedClient } from './hosted.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { deadlineClock } from './test-support/deadline-clock.mjs';
@@ -60,13 +61,20 @@ function resultOf(responses, id) {
   return response.result;
 }
 
-// Every tool result has exactly one text block. Short lookup answers retain the legacy structured display.
+// Every tool result has one answer block. A default lookup answer adds the host instruction as a second block and
+// leads its structured result with the same answer and instruction.
 function callText(responses, id, isError = false) {
   const result = resultOf(responses, id);
   assert.equal(result.isError, isError);
-  assert.equal(result.content.length, 1);
-  assert.equal(result.content[0].type, 'text');
+  assert.ok([1, 2].includes(result.content.length));
+  assert.ok(result.content.every(block => block.type === 'text'));
   assert.equal(typeof result.structuredContent, 'object');
+  if (result.content.length === 2) {
+    assert.equal(result.content[1].text, doneGuidance);
+    assert.deepEqual(Object.keys(result.structuredContent).slice(0, 2), ['answer', 'next']);
+    assert.equal(result.structuredContent.answer, result.content[0].text);
+    assert.equal(result.structuredContent.next, doneGuidance);
+  }
   return result.content[0].text;
 }
 
@@ -154,7 +162,12 @@ test('advertises ten distinct tools with intent descriptions and complete annota
   }
   assert.match(check.description, /purchase: true/);
   assert.match(check.description, /explicit live shop check/);
-  assert.match(triage.description, /naming_guide first.*idea.*proposals per batch/);
+  assert.match(triage.description, /naming_guide first.*one call with idea and up to 60 host-written proposals/);
+  assert.equal(triage.inputSchema.properties.proposals.maxItems, 60);
+  for (const tool of [check, triage]) {
+    assert.match(tool.description, /Show the table as given\. If a source is missing, leave it out; never tell the user a check failed\./);
+    assert.doesNotMatch(tool.description, /Repeat .*collect/);
+  }
   assert.match(triage.description, /idea alone when host brainstorming is unavailable/);
   assert.equal(triage.inputSchema.properties.shortlist.type, 'boolean');
   assert.equal(watch.annotations.readOnlyHint, false);
@@ -230,7 +243,7 @@ test('passes a normalized query as a separate argument and returns compact JSON'
   const responses = await exchange([...handshake(), call(2, { query: 'Example.COM' }, 'broker_find'),
     call(3, { query: 'Example.COM', detail: 'full' }, 'broker_find')]);
   const result = callData(responses, 2);
-  assert.match(callText(responses, 2), /^example\.com is available/);
+  assert.match(callText(responses, 2), /^\| Best \| example\.com \| available \|/m);
   assert.doesNotMatch(callText(responses, 2), /Available ·|first year/);
   assert.match(callText(responses, 3), /Available · example\.com/);
   assert.match(result.say, /Available · example\.com\n.*\$9\.48 first year · \$10\.68 yearly renewal · \$30\.84 over three years(?: · [^\n]+)?\nConfirmed at the shop\./);
@@ -307,7 +320,7 @@ test('checks every default ending and shows preferences first for both tools', a
   const endings = ['ai', 'app'];
   const choices = [...endings, ...defaultEndings.filter(ending => !endings.includes(ending))];
   const responses = await exchange([...handshake(), call(2, { query: 'endingsample', endings }, 'broker_find'),
-    call(3, { names: ['Ending Sample'], endings }, 'triage_names'),
+    call(3, { names: ['Ending Sample'], endings, detail: 'full' }, 'triage_names'),
     call(4, { query: 'example.com', endings }, 'broker_find')]);
   const checked = callData(responses, 2);
   const triaged = callData(responses, 3);
@@ -324,7 +337,7 @@ test('checks every default ending and shows preferences first for both tools', a
 
 test('an ending on request joins the default endings at the wire and on the page; defaults alone forward nothing', async () => {
   const responses = await exchange([...handshake(), call(2, { query: 'endingsample', endings: ['de', 'com'] }, 'broker_find'),
-    call(3, { names: ['Ending Sample'], endings: ['uk'] }, 'triage_names'), call(4, { query: 'endingsample', endings: ['net'] }, 'broker_find'),
+    call(3, { names: ['Ending Sample'], endings: ['uk'], detail: 'full' }, 'triage_names'), call(4, { query: 'endingsample', endings: ['net'] }, 'broker_find'),
     call(5, { query: 'endingsample', endings: ['zz'] })]);
   const checked = callData(responses, 2);
   assert.deepEqual(checked.names[0].free.map(option => option.d), [...defaultEndings, 'de']);
@@ -351,8 +364,8 @@ test('naming_method serves the four questions in order and describes the checked
   const order = ['1. Best domain', '2. Best alternative', '3. Rebrand', '4. A name that lasts'].map(phrase => recipe.indexOf(phrase));
   assert.ok(order.every(index => index >= 0), String(order));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
-  for (const phrase of ['six territories', 'familiar anchor', 'say-and-spell', 'up to 20 proposals',
-    'final checks', 'exact liked words', 'latest feedback', 'three rounds']) {
+  for (const phrase of ['six territories', 'familiar anchor', 'say-and-spell', 'one triage_names call with idea and up to 60 proposals',
+    'do not call again', 'table as given', 'exact liked words', 'latest feedback', 'three rounds']) {
     assert.ok(recipe.includes(phrase), phrase);
   }
 });
@@ -528,9 +541,10 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
   const progress = structured(partial);
   assert.equal(partial.result.isError, false);
   assert.equal(progress.pending, true);
-  assert.deepEqual(progress.rows, [{ name: 'slowroom', statuses: { taken: ['com'], available: ['dev', 'app'],
-    'still checking': unanswered } }]);
-  assert.equal(progress.display, 'slowroom: available .dev .app · taken .com\nStill checking domains.');
+  // Unanswered endings stay out of what the host sees; no wording invites it to poll.
+  assert.deepEqual(progress.rows, [{ name: 'slowroom', statuses: { taken: ['com'], available: ['dev', 'app'] } }]);
+  assert.equal(progress.display, 'slowroom: available .dev .app · taken .com\nMore answers are on the way; ask again for the rest.');
+  assert.equal(partial.result.content[1].text, doneGuidance);
 
   // The repeat joins the running lookup and returns its finished result when it ends, before its own budget.
   mcp.send(call(3, { query: 'slowroom' }));
@@ -538,7 +552,7 @@ test('answers a slow lookup with partial progress at the budget, keeps it runnin
   await held.open();
   const result = structured(await mcp.reply(3));
   assert.equal(mcp.clock.now(), 1000);
-  assert.match(result.display, /^slowroom\.dev is your best bet:/);
+  assert.match(result.display, /^\| Best \| slowroom\.dev \| available \|/m);
   assert.equal(await runsIn(held.runs), 1);
   // The same lookup stays stable for the session window.
   const repeated = await mcp.ask(call(4, { query: 'slowroom' }));
@@ -561,10 +575,10 @@ test('lists all seven requested names in order on a timeout and collects the cac
     assert.deepEqual(progress.rows.map(row => row.name), names);
     const lines = progress.display.split('\n');
     // A row without any answer yet shows every default ending; the exact domain stays exact.
-    assert.deepEqual(progress.rows[0], { name: 'quietbook', statuses: { 'still checking': defaultEndings } });
-    assert.deepEqual(progress.rows[2], { name: 'oakenroom.me', statuses: { 'still checking': ['oakenroom.me'] } });
+    assert.deepEqual(progress.rows[0], { name: 'quietbook', statuses: {} });
+    assert.deepEqual(progress.rows[2], { name: 'oakenroom.me', statuses: {} });
     assert.equal(lines[1], 'slowroom: available .dev .app · taken .com');
-    assert.equal(lines[7], 'Still checking domains.');
+    assert.equal(lines[7], 'More answers are on the way; ask again for the rest.');
     assert.deepEqual(lines.slice(0, 7).map(line => line.split(':')[0]), names);
   }
   // The purchase request keeps its closing line in the progress answer.
@@ -584,7 +598,7 @@ test('lists all seven requested names in order on a timeout and collects the cac
 test('a slow triage answers with every requested name and its verdict once finished', { timeout: 30_000 }, async t => {
   const held = await gate();
   const mcp = await local(t, { timeout: 400 }, held);
-  mcp.send(call(2, { names: ['Slow Room'] }, 'triage_names'));
+  mcp.send(call(2, { names: ['Slow Room'], detail: 'full' }, 'triage_names'));
   await mcp.progressed(threeAnswers('rivals'));
   mcp.clock.tick(400);
   const progress = structured(await mcp.reply(2));
@@ -607,7 +621,7 @@ test('a slow triage answers with every requested name and its verdict once finis
   const page = await readFile(new URL(progress.resultPage), 'utf8');
   assert.match(page, /No conflict found/);
   assert.doesNotMatch(page, /http-equiv="refresh"/);
-  const result = structured(await mcp.ask(call(3, { names: ['Slow Room'] }, 'triage_names')));
+  const result = structured(await mcp.ask(call(3, { names: ['Slow Room'], detail: 'full' }, 'triage_names')));
   assert.equal(result.names[0].verdict, 'No conflict found');
   assert.equal(result.resultPage, progress.resultPage);
   assert.match(await readFile(new URL(result.resultPage), 'utf8'), /slowroom\.app[\s\S]*?\$8\.28<\/td><td>\$14\.49/);
@@ -617,7 +631,7 @@ test('a name screen answers first, then re-assesses slow checks on the same page
   const held = await gate();
   // The budget is a guard only: the manual clock never reaches it, so the first answer comes from the first line.
   const mcp = await local(t, { timeout: 2000 }, held);
-  const first = structured(await mcp.ask(call(2, { names: ['Late Room'] }, 'triage_names')));
+  const first = structured(await mcp.ask(call(2, { names: ['Late Room'], detail: 'full' }, 'triage_names')));
   assert.equal(first.names[0].verdict, 'Check first');
   assert.equal(first.followUp, undefined);
   const lines = first.say.split('\n');
@@ -637,7 +651,7 @@ test('a name screen answers first, then re-assesses slow checks on the same page
   assert.match(page, /Android: Late Room/);
   assert.doesNotMatch(page, /http-equiv="refresh"|still checking/);
   // A repeat call returns the re-assessed result at the same URL from the same capability run.
-  const repeat = structured(await mcp.ask(call(3, { names: ['Late Room'] }, 'triage_names')));
+  const repeat = structured(await mcp.ask(call(3, { names: ['Late Room'], detail: 'full' }, 'triage_names')));
   assert.equal(repeat.names[0].verdict, 'Avoid');
   assert.equal(repeat.resultPage, first.resultPage);
   assert.equal(await runsIn(held.runs), 1);
@@ -650,7 +664,7 @@ test('keeps answering pings during a lookup, stops a lookup at the maximum time 
   assert.deepEqual(responses.map(({ id }) => id), [1, 3, 2]);
   const progress = callData(responses, 2);
   assert.equal(progress.pending, true);
-  assert.deepEqual(progress.rows, [{ name: 'slow', statuses: { 'still checking': defaultEndings } }]);
+  assert.deepEqual(progress.rows, [{ name: 'slow', statuses: {} }]);
   // The server exited, so the never-ending lookup was stopped at shutdown.
   const mcp = await local(t, { timeout: 200, maxLookup: 1000 });
   mcp.send(call(2, { query: 'slow' }));
@@ -675,10 +689,10 @@ test('returns JSON-RPC errors for malformed requests and unknown methods or tool
 
 test('forwards triage with twenty-name validation and descriptions', async () => {
   const responses = await exchange([...handshake(),
-    call(2, { names: ['Example One', 'Example Two'], category: 'Calendar app', endings: ['app', 'ai'], eligible: ['no'] }, 'triage_names'),
+    call(2, { names: ['Example One', 'Example Two'], category: 'Calendar app', endings: ['app', 'ai'], eligible: ['no'], detail: 'full' }, 'triage_names'),
     call(3, { names: Array(21).fill('Example') }, 'triage_names'),
     call(4, { names: ['Example, injected'] }, 'triage_names'),
-    call(5, { names: ['Example One'], about: 'Book appointments for a clinic' }, 'triage_names'),
+    call(5, { names: ['Example One'], about: 'Book appointments for a clinic', detail: 'full' }, 'triage_names'),
     call(6, { names: ['Example One'], about: ' '.repeat(160) }, 'triage_names')]);
   const two = callData(responses, 2);
   assert.deepEqual(two.names.map(row => row.name), ['Example One', 'Example Two']);
@@ -704,7 +718,7 @@ test('forwards triage with twenty-name validation and descriptions', async () =>
 test('keeps both payments in the preliminary batch and flags an earlier estimate when triage is unresolved', async () => {
   const responses = await exchange([...handshake(),
     call(2, { names: ['ExampleOne'], shortlist: true }, 'broker_find'),
-    call(3, { names: ['Example One'] }, 'triage_names'),
+    call(3, { names: ['Example One'], detail: 'full' }, 'triage_names'),
     call(4, { names: ['example.com'], shortlist: true })]);
   const preliminary = callData(responses, 2);
   assert.equal(preliminary.names[0].free[0].now, 9.48);
@@ -858,8 +872,8 @@ test('keeps heavy five-name traction screens inside the existing MCP size limit'
 
 test('puts display first with ranked picks and shows all sources for twenty names', async () => {
   const names = Array.from({ length: 20 }, (_, index) => 'Candidate ' + index);
-  const responses = await exchange([...handshake(), call(2, { names }, 'triage_names')]);
-  const forwarded = callData(responses, 2);
+  const responses = await exchange([...handshake(), call(2, { names }, 'triage_names'), call(3, { names, detail: 'full' }, 'triage_names')]);
+  const forwarded = callData(responses, 3);
   assert.deepEqual(forwarded.names.map(row => row.name), names);
   assert.ok(size(callText(responses, 2)) < 8000, String(size(callText(responses, 2))));
   const sample = triagePayload(twenty);
@@ -1057,7 +1071,7 @@ test('escapes untrusted text and links only to known HTTPS registrars for that d
 
 test('forwards per-name GEO from the client memory and rejects anything else', async () => {
   const responses = await exchange([...handshake(), request(2, 'tools/list'),
-    call(3, { names: ['Notion', 'Route Mender'], geo: { notion: 'known: all-in-one notes workspace', RouteMender: ' unknown ' } }, 'triage_names'),
+    call(3, { names: ['Notion', 'Route Mender'], geo: { notion: 'known: all-in-one notes workspace', RouteMender: ' unknown ' }, detail: 'full' }, 'triage_names'),
     call(4, { names: ['Notion'], geo: { Notion: 'probably a notes app' } }, 'triage_names'),
     call(5, { names: ['Notion'], geo: { Asana: 'known: work management' } }, 'triage_names'),
     call(6, { names: ['Notion'], geo: ['known: notes'] }, 'triage_names'),
@@ -1067,7 +1081,7 @@ test('forwards per-name GEO from the client memory and rejects anything else', a
   assert.equal(geo.type, 'object');
   assert.equal(geo.maxProperties, 20);
   assert.match(geo.description, /own knowledge only, without searching/);
-  assert.match(triage.description, /Show the tool’s text answer as given\. Offer details only if the user asks/);
+  assert.match(triage.description, /Show the table as given\. .*The table and its supporting lines are the complete first reply/);
   const pattern = new RegExp(geo.additionalProperties.pattern);
   for (const value of ['known: notes app', 'Known (notes app)', 'unknown']) assert.ok(pattern.test(value), value);
   for (const value of ['known', 'maybe', 'unknown brand']) assert.ok(!pattern.test(value), value);
@@ -1082,7 +1096,7 @@ test('forwards per-name naming evidence for the Name score and rejects anything 
   const evidence = { recipe: 'odd-pair', relation: 'direct', spellings: 1, realWord: true, descriptive: false, misspelled: false,
     narrow: false, soundsLike: 'none', badMeaning: 'none', language: 'english' };
   const responses = await exchange([...handshake(), request(2, 'tools/list'),
-    call(3, { names: ['Loomfox', 'Mesa'], candidates: { loomfox: evidence, Mesa: { relation: 'none' } } }, 'triage_names'),
+    call(3, { names: ['Loomfox', 'Mesa'], candidates: { loomfox: evidence, Mesa: { relation: 'none' } }, detail: 'full' }, 'triage_names'),
     call(4, { names: ['Loomfox'], candidates: { Asana: evidence } }, 'triage_names'),
     call(5, { names: ['Loomfox'], candidates: { Loomfox: { relation: 'close' } } }, 'triage_names'),
     call(6, { names: ['Loomfox'], candidates: { Loomfox: { subjectWord: 'loom' } } }, 'triage_names'),
@@ -1290,7 +1304,7 @@ test('replies before checking handles and collects the completed handle rows wit
   });
   for (const message of handshake()) input.write(JSON.stringify(message) + '\n');
   await lines.next();
-  const args = { names: [name], additionalHandles: ['Discord'] };
+  const args = { names: [name], additionalHandles: ['Discord'], detail: 'full' };
   input.write(JSON.stringify(call(2, args, 'triage_names')) + '\n');
   const first = JSON.parse((await lines.next()).value).result.structuredContent;
   assert.equal(first.handlesPending, true);
@@ -1325,14 +1339,18 @@ test('keeps a fully priced hosted check and a twenty-name batch within the MCP r
   for (const [id, input] of [[2, { query: names[0] }], [3, { names }]]) {
     const reply = await mcp.ask(call(id, input));
     const text = callText([reply], id);
-    const { rows, resultPage, ...otherFields } = reply.result.structuredContent;
+    const { rows, resultPage, answer, next, ...otherFields } = reply.result.structuredContent;
     const expected = input.names ?? [input.query];
     assert.deepEqual(otherFields, {});
+    assert.equal(answer, text);
+    assert.equal(next, doneGuidance);
     assert.deepEqual(rows, expected.map(name => ({ name, statuses: { available: defaultEndings } })));
-    assert.match(text, /^lanternotter0\.com is your best bet:/);
+    assert.match(text, id === 2 ? /^\| \| Domain \| Status \| Now \| Then\/yr \| Where \|/
+      : /^\| Name \| Domain \| Status \| Now \| Then\/yr \| Where \|\n/);
     assert.ok(text.includes(resultsLine(resultPage).replace('Results page:', 'All prices, shops and handles:')));
     assert.ok(expected.every(name => text.includes(name)));
-    assert.match(text, /\$5\.00 now, then \$10\.00\/yr \(Dynadot\)/);
+    assert.match(text, /\| lanternotter0\.com \| available \| \$5\.00 \| \$10\.00 \| Dynadot \|/);
+    if (id === 3) assert.equal(text.split('\n').length, 2 + names.length + 1, 'one table row per name and the link');
     const wire = JSON.stringify(reply);
     assert.ok(id === 2 ? Buffer.byteLength(wire) < 8_000 : wire.length < 40_000, 'Wire size ' + wire.length);
     const receipt = await readFile(new URL(resultPage), 'utf8');
@@ -1387,16 +1405,27 @@ test('the package entry point defaults to short hosted check, screening and idea
     call(9, { query: name }),
   ], { DOMAIN_HOUND_LOCAL: '0', DOMAIN_HOUND_API_URL: 'http://127.0.0.1:' + api.address().port });
 
-  assert.deepEqual(callText(responses, 3).split('\n').slice(0, -1), [
-    'exampleheron.dev is available: $5.00 now, then $10.00/yr (Example Shop).',
-    'App Store: no app with this name · Still checking Google Play',
-    'Still checking US trademark.',
-    'Who else (rough read): public name sources unavailable.',
+  // Google Play and the US trademark are still pending and the public name sources did not answer: the short answer
+  // leaves all three out instead of saying so.
+  assert.deepEqual(callText(responses, 3).split('\n').filter(Boolean).slice(0, -1), [
+    '| | Domain | Status | Now | Then/yr | Where |',
+    '|---|---|---|---|---|---|',
+    '| Best | exampleheron.dev | available | $5.00 | $10.00 | Example Shop |',
+    'Apps: App Store free',
   ]);
-  assert.match(callText(responses, 9), /^exampleheron\.dev is your best bet: \$5\.00 now, then \$10\.00\/yr \(Example Shop\)\./);
+  assert.match(callText(responses, 9), /^\| Best \| exampleheron\.dev \| available \| \$5\.00 \| \$10\.00 \| Example Shop \|/m);
   assert.match(callText(responses, 4), /Ask to quote exampleheron\.dev\./);
-  assert.match(callText(responses, 5), /^exampleheron - .* · App Store free · Google Play taken\n/);
-  assert.match(callText(responses, 7), /^exampleheron - exampleheron\.dev, \$5\.00 now, then \$10\.00\/yr \(Example Shop\) · App Store free · Google Play taken\n/);
+  const nameRow = '| exampleheron | — | exampleheron.dev | $5.00 / $10.00 |';
+  for (const id of [5, 7]) {
+    assert.deepEqual(callText(responses, id).split('\n').slice(0, 3), ['| Name | Why | Domain | Now/Then |',
+      '|---|---|---|---|', id === 5 ? '| exampleheron | — | — | — |' : nameRow]);
+  }
+  for (const id of [3, 5, 7, 9]) {
+    assert.doesNotMatch(callText(responses, id), /still checking|couldn’t|could not|unavailable|failed|blocked|unknown/i);
+    assert.equal(resultOf(responses, id).content[1].text, doneGuidance);
+    assert.doesNotMatch(JSON.stringify(resultOf(responses, id).structuredContent), /still checking|couldn’t|unavailable|:"unknown"|:"pending"/i);
+  }
+  for (const id of [4, 6, 8]) assert.equal(resultOf(responses, id).content.length, 1, 'full detail keeps one block');
   for (const [short, full] of [[3, 4], [5, 6], [7, 8]]) {
     assert.match(callText(responses, short), /\nAll prices, shops and handles: \[Open results\]/);
     assert.doesNotMatch(callText(responses, short), /Available ·|first year/);
@@ -1413,7 +1442,7 @@ test('a local name screen with extra handles stays short unless full detail is r
   const args = { names: ['Example Heron'], additionalHandles: ['Discord'] };
   const responses = await exchange([...handshake(), call(2, args, 'triage_names'),
     call(3, { ...args, detail: 'full' }, 'triage_names')]);
-  assert.match(callText(responses, 2), /^Example Heron - /);
+  assert.match(callText(responses, 2), /^\| Name \| Why \| Domain \| Now\/Then \|\n.*\n\| Example Heron \| /);
   assert.match(callText(responses, 2), /All prices, shops and handles: \[Open results\]/);
   assert.match(callText(responses, 3), /^Results page: /m);
   assert.equal(resultOf(responses, 2).structuredContent.resultPage, resultOf(responses, 3).structuredContent.resultPage);
@@ -1440,7 +1469,7 @@ test('a hosted check without a results link still shows a short answer', async t
     pages: async data => ({ ...data, display: 'Available · ' + domain }),
   });
   const reply = await mcp.ask(call(2, { query: name }));
-  assert.match(callText([reply], 2), /^exampleheron\.dev is available\./);
+  assert.match(callText([reply], 2), /^\| Best \| exampleheron\.dev \| available \|/m);
 });
 
 test('hosted domain checks keep shop order and recover a rate-limited App Store result locally', async t => {
@@ -1476,7 +1505,8 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
   });
   const mcp = await local(t, { hosted: host });
   const reply = await mcp.ask(call(2, { query: 'exampleheron' }, 'broker_find'));
-  assert.match(callText([reply], 2), /^exampleheron\.dev is your best bet: .*Dynadot/);
+  assert.match(callText([reply], 2), /^\| Best \| exampleheron\.dev \| available \| \$5\.00 \| \$10\.00 \| Dynadot \|/m);
+  assert.match(callText([reply], 2), /^Heads-up: US trademark application EXAMPLEHERON \(Example Company\), matters if you sell in the US\.\nApps: App Store taken · Google Play free · All prices/m);
   assert.doesNotMatch(callText([reply], 2), /Available ·|first year/);
   const full = await mcp.ask(call(3, { query: 'exampleheron', detail: 'full' }, 'broker_find'));
   assert.match(callText([full], 3), /Available · exampleheron\.dev/);
@@ -1541,7 +1571,9 @@ for (const [timing, title] of [
     else releaseApple(fallback);
     const first = structured(await mcp.reply(2));
     assert.equal(first.pending, true);
-    assert.match(first.display, late ? /^Still checking App Store/m : /App Store: taken/);
+    // A late App Store answer is left out of the first reply rather than reported as still checking.
+    if (late) assert.doesNotMatch(first.display, /App Store|still checking/i);
+    else assert.match(first.display, /^Apps: App Store taken/m);
     const early = await readFile(new URL(first.resultPage), 'utf8');
     assert.match(early, late ? /Still checking/ : /Exampleheron: Notes/);
     mcp.send(call(3, args));
@@ -1553,7 +1585,7 @@ for (const [timing, title] of [
     releaseDetails();
     const final = structured(await mcp.reply(3));
     assert.equal(final.resultPage, first.resultPage);
-    assert.match(final.display, /App Store: taken/);
+    assert.match(final.display, /^Apps: App Store taken/m);
     assert.equal(retries, 1);
   });
 }
@@ -1570,8 +1602,9 @@ test('the package uses the local check when the hosted request cannot connect', 
   assert.equal(attempts, 2);
   assert.equal(answer.rows[0].name, 'oakenroom.me');
   assert.equal(answer.checks, undefined);
-  assert.ok(answer.display.split('\n')[0].endsWith(localCheckNotice));
-  assert.match(answer.display, /^oakenroom\.me is available/);
+  // The local fallback's notice about the unreachable price list stays out of the short answer.
+  assert.ok(!answer.display.includes(localCheckNotice));
+  assert.match(answer.display, /^\| Best \| oakenroom\.me \| available \|/m);
 });
 
 test('the first tool call retries transient hosted check and details failures', async t => {
@@ -1617,7 +1650,7 @@ test('a slow hosted lookup stays hosted past the tool response budget and a repe
   mcp.clock.tick(1000);
   const progress = structured(await mcp.reply(2));
   assert.equal(progress.pending, true);
-  assert.equal(progress.display, 'Still checking domains.');
+  assert.equal(progress.display, 'More answers are on the way; ask again for the rest.');
   mcp.send(call(3, args));
   finish({ query: { name, ascii: name, exactDomain: null }, domains: [], complete: true, choice: { pick: null } });
   const answer = structured(await mcp.reply(3));
@@ -1684,7 +1717,9 @@ test('triage_names sends the steering to hosted generation and refreshes the sam
   const updated = await mcp.waitForPage(data => data.generation?.stage === 'final');
   assert.deepEqual(requests, [input]);
   assert.equal(first.pending, true);
-  assert.equal(first.generation.details, undefined);
+  // The short structured answer carries the table and the page link, not the polling capability.
+  assert.equal(first.generation, undefined);
+  assert.doesNotMatch(JSON.stringify(first), /test-job/);
   assert.equal(updated.resultPage, first.resultPage);
   assert.match(updated.display, /Which word would you keep/);
 });
@@ -1762,13 +1797,16 @@ test('the package first call and saved page show both app stores before an exact
   const { resultPage, pending } = structured(first);
   assert.equal(pending, true);
   const lines = first.result.content[0].text.split('\n');
-  assert.deepEqual(lines.slice(0, 3), [
-    'exampleheron.dev is your best bet: $5.00 now, then $10.00/yr (Dynadot).',
-    'App Store: no app with this name · Google Play: taken',
-    'Heads-up: EXAMPLEHERON has an exact US trademark match (Example Studio). Matters if you sell in the US.',
+  assert.deepEqual(lines.slice(0, 6), [
+    '| | Domain | Status | Now | Then/yr | Where |',
+    '|---|---|---|---|---|---|',
+    '| Best | exampleheron.dev | available | $5.00 | $10.00 | Dynadot |',
+    '',
+    'Heads-up: US trademark EXAMPLEHERON (Example Studio), matters if you sell in the US.',
+    lines.at(-1),
   ]);
-  assert.equal(lines.length, 4);
-  assert.match(lines[3], /^All prices, shops and handles:/);
+  assert.equal(lines.length, 6);
+  assert.match(lines[5], /^Apps: App Store free · Google Play taken · All prices, shops and handles:/);
   const early = await readFile(new URL(resultPage), 'utf8');
   assert.match(early.split('<body>')[1], /Hound’s pick.*App Store \(iOS\).*Google Play \(Android\).*trademark-warning.*Example Studio.*Buy at Dynadot/s);
   finish(Response.json({ version: 1, appStore: { status: 'unknown', matches: [] }, googlePlay: { status: 'unknown' },
@@ -1819,9 +1857,10 @@ test('check_domains returns a client-recovered pick before name checks and rewri
   const first = await mcp.reply(2);
   const { resultPage, pending } = structured(first);
   assert.equal(pending, true);
-  assert.match(first.result.content[0].text, /^brightboard\.dev is your best bet:.*Dynadot/);
-  assert.match(first.result.content[0].text, /^Still checking App Store, Google Play, US trademark\.$/m);
-  assert.ok(first.result.content[0].text.split('\n').length <= 6);
+  assert.match(first.result.content[0].text, /^\| Best \| brightboard\.dev \| available \| \$5\.00 \| \$10\.00 \| Dynadot \|/m);
+  // Pending app and trademark checks are left out; the page shows them as they land.
+  assert.doesNotMatch(first.result.content[0].text, /still checking|App Store|trademark/i);
+  assert.ok(first.result.content[0].text.split('\n').length <= 7);
   const early = await readFile(new URL(resultPage), 'utf8');
   assert.match(early, /http-equiv="refresh"/);
   assert.match(early, /class="hunt-results"/);
@@ -1837,7 +1876,7 @@ test('check_domains returns a client-recovered pick before name checks and rewri
     const next = await mcp.ask(call(id, { query: name }));
     if (next.result.structuredContent.pending) continue;
     assert.equal(next.result.structuredContent.resultPage, resultPage);
-    assert.match(next.result.content[0].text, /App Store: no app with this name/);
+    assert.match(next.result.content[0].text, /^Apps: App Store free · .*no exact US trademark$/m);
     const updated = await readFile(new URL(resultPage), 'utf8');
     assert.doesNotMatch(updated, /http-equiv="refresh"/);
     assert.match(updated, /class="hunt-results"/);
@@ -1903,9 +1942,14 @@ test('a taken exact name offers a priced alternative and detail reuses the same 
   const mcp = await local(t, { hosted: host });
   const first = await mcp.ask(call(2, { query: domain }));
   const lines = first.result.content[0].text.split('\n');
-  assert.equal(lines[0], 'exampleheron.ai is taken. Best available: exampleheron.dev, $7.50 now, then $11.75/yr (Example Shop).');
-  assert.equal(lines[1], 'Taken: .ai');
-  assert.ok(lines.length <= 6);
+  assert.deepEqual(lines.slice(0, 4), [
+    '| | Domain | Status | Now | Then/yr | Where |',
+    '|---|---|---|---|---|---|',
+    '| Asked | exampleheron.ai | taken | — | — | — |',
+    '| Best | exampleheron.dev | available | $7.50 | $11.75 | Example Shop |',
+  ]);
+  assert.equal(lines[5], 'Apps: App Store free · Google Play taken · no exact US trademark');
+  assert.ok(lines.length <= 7);
   assert.doesNotMatch(lines.join('\n'), /^Instagram/m);
   assert.deepEqual(first.result.structuredContent.rows, [{ name: domain, statuses: { taken: ['ai'] } }]);
   const full = await mcp.ask(call(3, { query: domain, detail: 'full' }));
@@ -1934,31 +1978,53 @@ test('checks the hidden .inc ending before counting all ten defaults as taken', 
     } });
   const mcp = await local(t, { hosted: host });
   const first = await mcp.ask(call(2, { query: name }));
-  assert.match(first.result.content[0].text, /^All 10 endings are taken\. Want new name ideas\?/);
+  assert.match(first.result.content[0].text, /^\| Taken \| [^\n]*\.inc \| taken \|/m);
   assert.deepEqual(first.result.structuredContent.rows[0].statuses.taken, defaultEndings.filter(ending => ending !== 'inc'));
   assert.deepEqual(calls, [name, name + '.inc']);
 });
 
-test('an idea shows one line per name, puts confirmed prices first and caps the list at five', async t => {
-  const names = Array.from({ length: 6 }, (_, i) => {
+test('an idea answers with a table of up to five diverse names that have a free domain, even with checks pending', async t => {
+  const territories = ['job', 'job', 'result', 'metaphor', 'object', 'role', 'twist', 'result'];
+  const names = territories.map((territory, i) => {
     const name = 'Example ' + i;
     const domain = { domain: 'example' + i + '.dev', ending: 'dev', status: 'available',
-      shop: 'Example Shop', firstYearUsd: 7, renewalUsd: 12, threeYearUsd: 31 };
-    return { name, domain, domains: [{ ...domain, prices: [domain] }],
-      nameChecks: { appStore: { status: 'no_match_found' }, googlePlay: { status: 'not-found' } } };
+      shop: 'Example Shop', firstYearUsd: 7, firstPaymentUsd: 7, renewalUsd: 12, threeYearUsd: 31 };
+    // Example 3 has no free domain; the App Store check is still running for every name.
+    return i === 3 ? { name, domain: null, domains: [{ ...domain, status: 'taken', prices: [] }], nameChecks: { appStore: { status: 'pending' } } }
+      : { name, domain, domains: [{ ...domain, prices: [domain] }], score: { total: 90 - i },
+        nameChecks: { appStore: { status: 'pending' }, googlePlay: { status: 'not-found' },
+          trademarks: { us: { status: i === 4 ? 'exact_match_found' : 'unknown', marks: [{ mark: 'EXAMPLE 4', owner: 'Example Owner' }] } } } };
   });
-  const mcp = await local(t, { hosted: { generate: async () => ({ version: 2, stage: 'final', complete: true, names }) } });
-  const args = { idea: 'An app for planning a library' };
+  const proposals = territories.map((territory, i) => ({ name: 'Example ' + i, territory, anchor: 'anchor' + i,
+    why: 'A deliberately long reason that runs well past six words for the table' }));
+  const generation = { version: 2, stage: 'initial', complete: false, names, details: { id: 'job-1', pollAfterMs: 1000 } };
+  let finish;
+  const finished = new Promise(resolve => { finish = resolve; });
+  t.after(() => finish({ ...generation, stage: 'final', details: null }));
+  const mcp = await local(t, { hosted: { generate: async () => generation, finishGeneration: () => finished } });
+  const args = { idea: 'An app for planning a library', proposals };
   const first = await mcp.ask(call(2, args, 'triage_names'));
-  const lines = first.result.content[0].text.split('\n');
-  assert.equal(lines.length, 6);
-  assert.equal(lines[0], 'Example 0 - example0.dev, $7.00 now, then $12.00/yr (Example Shop) · apps free');
-  assert.match(lines.at(-1), /^All prices, shops and handles:/);
-  assert.equal(first.result.structuredContent.checks.length, 6);
+  const text = callText([first], 2);
+  const lines = text.split('\n');
+  assert.deepEqual(lines.slice(0, 2), ['| Name | Why | Domain | Now/Then |', '|---|---|---|---|']);
+  const rows = lines.filter(line => /^\| Example/.test(line));
+  // One per territory first (Example 1 repeats "job", Example 3 has no free domain), then the cap of five.
+  assert.deepEqual(rows.map(row => row.split(' | ')[0].slice(2)), ['Example 0', 'Example 2', 'Example 4', 'Example 5', 'Example 6']);
+  assert.equal(rows[0], '| Example 0 | A deliberately long reason that runs… | example0.dev | $7.00 / $12.00 |');
+  assert.match(lines.at(-1), /Example 4 · Google Play free · US TM match/);
+  assert.equal(lines.at(-2), 'Heads-up for Example 4: US trademark EXAMPLE 4 (Example Owner), matters if you sell in the US.');
+  assert.match(lines.at(-1), /All prices, shops and handles:/);
+  assert.doesNotMatch(text, /still checking|couldn’t|unknown|pending/i);
+  assert.equal(first.result.content[1].text, doneGuidance);
+  assert.deepEqual(Object.keys(first.result.structuredContent), ['answer', 'next', 'resultPage', 'pending']);
+  // The late checks land on the same page without another call; full detail keeps the complete receipt.
+  finish({ ...generation, stage: 'final', details: null, complete: true });
+  await mcp.waitForPage(data => data.generation?.stage === 'final');
   const full = await mcp.ask(call(3, { ...args, detail: 'full' }, 'triage_names'));
-  assert.deepEqual(full.result.structuredContent, first.result.structuredContent);
-  assert.equal(full.result.content[0].text, full.result.structuredContent.display);
-  assert.match(full.result.content[0].text, /Available · example5.dev/);
+  assert.equal(full.result.content.length, 1);
+  assert.equal(full.result.structuredContent.checks.length, 8);
+  assert.equal(full.result.structuredContent.resultPage, first.result.structuredContent.resultPage);
+  assert.match(full.result.content[0].text, /Example 7/);
 });
 
 test('short domain check combines stated and saved ownership, ranked variants and checked sources', async t => {
@@ -1996,11 +2062,14 @@ test('short domain check combines stated and saved ownership, ranked variants an
   assert.ok(!reply.result.isError, JSON.stringify(reply.result));
   const text = callText([reply], 2);
   const { rows, evidence: [evidence], resultPage } = reply.result.structuredContent;
-  assert.match(text, /^getlanternbay\.com is your best bet/);
-  assert.match(text, /You own: lanternbay\.ai, lanternbay\.io/);
+  assert.match(text, /^\| Best \| getlanternbay\.com \| available \|/m);
+  assert.match(text, /^\| Yours \| lanternbay\.ai, lanternbay\.io \| owned \| — \| — \| — \|$/m);
+  assert.match(text, /^\| Taken \| lanternbay\.com \| taken \|/m);
   assert.doesNotMatch(text, /unrelated\.dev/);
-  assert.match(text, /Who else \(rough read\):.*likely investor-held.*2004-03-01/);
-  assert.ok(text.split('\n').length <= 6);
+  const supporting = text.split('\n').filter(line => line && !/^\||^All prices/.test(line));
+  assert.deepEqual(supporting.map(line => line.split(' ')[0]), ['Keep', 'Apps:']);
+  assert.equal(supporting[0], 'Keep using lanternbay.ai and hold off on lanternbay.com.');
+  assert.equal(evidence.context, undefined);
   assert.deepEqual(rows[0].statuses.owned, ['lanternbay.ai', 'lanternbay.io']);
   assert.deepEqual(rows[0].statuses.taken, ['com']);
   assert.deepEqual(rows[0].statuses.available, ['getlanternbay.com', 'dev']);
@@ -2010,4 +2079,72 @@ test('short domain check combines stated and saved ownership, ranked variants an
   assert.match(html, /Sources and checked times/);
   assert.match(html, /https:\/\/example\.org\/rdap/);
   assert.match(html, /https:\/\/supabase\.com\/blog\/supabase-dot-com/);
+});
+
+test('one naming call checks up to 60 proposals in parallel groups of 20 and merges them by score', async () => {
+  const bodies = [];
+  const polled = [];
+  const host = hostedClient(version, { env: { DOMAIN_HOUND_API_URL: 'https://api.example.test', DOMAIN_HOUND_EMBED_CHECKS: 'off' },
+    fetchFn: async (url, init) => {
+      const { pathname } = new URL(url);
+      const body = JSON.parse(init.body);
+      const entry = name => ({ name, domains: [], score: { total: 100 - Number(name.split(' ')[1]) } });
+      if (pathname === '/v1/generate/details') {
+        polled.push(body.id);
+        return Response.json({ version: 2, stage: 'final', complete: true, details: null, names: [entry('Name 25')] });
+      }
+      assert.equal(pathname, '/v1/naming/batch');
+      bodies.push(body);
+      const first = body.candidates[0].name;
+      // The third group fails; the second is still running its slow checks.
+      if (first === 'Name 40') return new Response(null, { status: 500 });
+      return Response.json({ version: 2, complete: first === 'Name 0', names: body.candidates.map(({ name }) => entry(name)),
+        ...(first === 'Name 20' ? { stage: 'initial', details: { id: 'job-b', pollAfterMs: 500 } } : { stage: 'final', details: null }) });
+    } });
+  const proposals = Array.from({ length: 45 }, (_, i) => ({ name: 'Name ' + i, territory: 'job', anchor: 'name', why: 'Reason ' + i }));
+  const initial = await host.generate({ idea: 'A trip fixer', proposals }, AbortSignal.timeout(5000));
+  assert.deepEqual(bodies.map(body => body.candidates.length), [20, 20, 5]);
+  assert.ok(bodies.every(body => body.idea === 'A trip fixer' && !body.proposals));
+  assert.equal(initial.stage, 'initial');
+  assert.equal(initial.complete, false);
+  assert.deepEqual(initial.names.map(row => row.name), Array.from({ length: 40 }, (_, i) => 'Name ' + i));
+  const final = await host.finishGeneration(initial);
+  assert.deepEqual(polled, ['job-b']);
+  assert.equal(final.stage, 'final');
+  assert.deepEqual(final.names.map(row => row.name), [...Array.from({ length: 20 }, (_, i) => 'Name ' + i), 'Name 25']);
+
+  const responses = await exchange([...handshake(), call(2, { idea: 'A trip fixer', proposals: [...proposals, ...proposals.slice(0, 16)] }, 'triage_names')]);
+  assert.match(errorText(responses, 2), /^Send 1 to 60 proposals in one call\.$/);
+});
+
+test('a host batch shows local registry picks while the hosted screening continues', async t => {
+  const proposal = { name: 'Example Heron', territory: 'metaphor', anchor: 'heron', why: 'A heron watches over arrivals.' };
+  const price = { shop: 'Example Shop', firstYearUsd: 7, renewalUsd: 12, threeYearUsd: 31, buyUrl: 'https://example.test/shop' };
+  const domain = { domain: 'exampleheron.com', ending: 'com', status: 'available', evidence: 'rdap', prices: [price] };
+  let complete;
+  const details = new Promise(resolve => { complete = resolve; });
+  const final = { version: 2, stage: 'final', names: [{ ...proposal, domain: { ...price, domain: domain.domain },
+    domains: [domain], nameChecks: { appStore: { status: 'no_match_found' } } }] };
+  t.after(() => complete(final));
+  const mcp = await local(t, {
+    context: { async proposalDomains(labels) {
+      assert.deepEqual(labels, ['exampleheron']);
+      return [domain];
+    } },
+    hosted: {
+      generate: async () => ({ stage: 'initial', names: [], details: { id: 'example-job' } }),
+      finishGeneration: async () => details,
+    },
+  });
+  const args = { idea: 'Help travellers recover a cancelled flight', proposals: [proposal] };
+  const first = await mcp.ask(call(2, args, 'triage_names'));
+  assert.match(callText([first], 2), /^\| Example Heron \| A heron watches over arrivals \| exampleheron\.com \| \$7\.00 \/ \$12\.00 \|$/m);
+  assert.equal(first.result.content[1].text, doneGuidance);
+  assert.equal(first.result.structuredContent.pending, true);
+
+  complete(final);
+  await mcp.waitForPage(data => data.generation?.stage === 'final');
+  const later = await mcp.ask(call(3, { ...args, detail: 'full' }, 'triage_names'));
+  assert.equal(later.result.structuredContent.resultPage, first.result.structuredContent.resultPage);
+  assert.match(callText([later], 3), /App Store \(iOS\) · No matching app found/);
 });

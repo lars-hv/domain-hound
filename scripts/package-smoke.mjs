@@ -6,6 +6,9 @@
 // before the server answers is retried for up to ten minutes in total: npx can be served a different (and staler)
 // metadata representation than the one `npm view` saw, so the readiness wait alone does not guarantee npx finds it.
 // Any other failure ends the smoke at once.
+// Every attempt also times the cold start the way a host sees it: the initialize handshake must answer within the
+// hosts' connect window, and in packed mode the first lookup must return a short table answer within the tool limit,
+// with no wording about checks that failed or are still running, and the separate instruction to stop there.
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -29,6 +32,11 @@ const version = published ?? packageVersion;
 const windowMs = Math.min(600_000, Number(process.env.PACKAGE_SMOKE_WINDOW_MS) || 600_000);
 const retryDelayMs = Math.min(15_000, Number(process.env.PACKAGE_SMOKE_RETRY_DELAY_MS ?? 15_000));
 const attemptMs = 90_000;
+// Claude Code and Codex give an MCP server about 30 s to connect; a tool answer has about 15 s.
+const maxInitMs = Number(process.env.PACKAGE_SMOKE_MAX_INIT_MS) || 30_000;
+const maxLookupMs = Number(process.env.PACKAGE_SMOKE_MAX_LOOKUP_MS) || 15_000;
+const doneGuidance = 'Done. Show this; do not call more tools unless the user asks.';
+const unknownWording = /still checking|couldn’t|couldn't|could not|failed|blocked|unknown|unavailable|unreachable|call the same tool/i;
 const deadline = performance.now() + windowMs;
 // npm and npx are .cmd files on Windows and need a shell there.
 const npm = (args, options) => exec(windows ? 'npm.cmd' : 'npm', args, { ...options, shell: windows });
@@ -51,7 +59,9 @@ try {
       'watch.mjs', 'dossier.mjs', 'name-context.mjs', 'context-sources.mjs', 'clis/domain-check/index.mjs', 'clis/domain-check/dossier.mjs', 'clis/domain-check/handles.mjs',
       'clis/domain-check/price-snapshot.json', 'clis/domain-check/meaning-words.LICENSE.txt',
       'share.mjs', 'site/r/share-format.mjs', 'skills/domain-hound/SKILL.md', 'clis/spaceship/tools.mjs', 'clis/spaceship/transfer.mjs',
-      'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs']) {
+      'clis/portfolio/move.mjs', 'clis/portfolio/transfer-prices.mjs',
+      // parse5 and its one dependency ship inside the package, so a cold npx fetches one tarball instead of three.
+      'node_modules/parse5/package.json', 'node_modules/entities/package.json']) {
       assert.ok(paths.includes(file), 'Tarball lacks ' + file);
     }
     assert.ok(!paths.some(file => /\.test\.mjs$|^fixtures\/|^test-support\/|^scripts\/|^\.github\//.test(file)), 'Tarball ships test or build files');
@@ -105,15 +115,20 @@ try {
     let description;
     let toolsListed;
     let initializedMs;
+    let listedMs;
+    let lookupMs;
     let checkBytes;
     let exitCode;
     try {
       const init = await request(1, 'initialize', { protocolVersion: '2025-11-25', capabilities: {},
         clientInfo: { name: 'domain-hound-package-smoke', version: '1' } });
       initializedMs = Math.round(performance.now() - started);
+      assert.ok(initializedMs < maxInitMs, `Cold npx initialize took ${initializedMs} ms; hosts allow about ${maxInitMs} ms`);
       assert.equal(init.serverInfo.version, version);
       child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+      const listStarted = performance.now();
       const listed = await request(2, 'tools/list');
+      listedMs = Math.round(performance.now() - listStarted);
       toolsListed = listed.tools;
       assert.deepEqual(toolsListed.map(tool => tool.name), tools);
       for (const tool of toolsListed) {
@@ -125,13 +140,29 @@ try {
       if (published) {
         description = `Published npx smoke on ${process.platform}: ${filename}, ${tools.length} tools`;
       } else {
+        const lookupStarted = performance.now();
         const checked = await request(3, 'tools/call', { name: 'check_domains', arguments: { query: 'example.com' } });
+        lookupMs = Math.round(performance.now() - lookupStarted);
+        assert.ok(lookupMs < maxLookupMs, `First lookup took ${lookupMs} ms; hosts allow about ${maxLookupMs} ms`);
         assert.equal(checked.isError, false, JSON.stringify(checked.content));
         const display = checked.content[0].text;
         assert.equal(checked.structuredContent.rows[0].name, 'example.com');
         assert.deepEqual(checked.structuredContent.rows[0].statuses.taken, ['com']);
-        assert.match(display, /^example\.com is taken\./);
-        assert.match(display, /^All prices, shops and handles: \[Open results\]\(.+\.html>?\)$/m);
+        // The first answer is a table with the exact verdict and at most two supporting lines.
+        const lines = display.split('\n');
+        assert.equal(lines[0], '| | Domain | Status | Now | Then/yr | Where |');
+        assert.equal(lines[1], '|---|---|---|---|---|---|');
+        assert.equal(lines[2], '| Asked | example.com | taken | — | — | — |');
+        assert.match(lines.at(-1), /All prices, shops and handles: \[Open results\]\(.+\.html>?\)$/);
+        const tableEnd = lines.findLastIndex(line => line.startsWith('|'));
+        assert.equal(lines[tableEnd + 1], '', 'Markdown separates the table from the notes');
+        assert.ok(lines.length - tableEnd - 2 <= 2, 'At most two supporting lines: ' + display);
+        assert.doesNotMatch(display, unknownWording);
+        assert.equal(checked.content.length, 2);
+        assert.equal(checked.content[1].text, doneGuidance);
+        assert.equal(checked.structuredContent.answer, display);
+        assert.equal(checked.structuredContent.next, doneGuidance);
+        assert.doesNotMatch(JSON.stringify(checked.structuredContent), /still checking|couldn’t|unavailable|:"unknown"|:"pending"/i);
         checkBytes = Buffer.byteLength(JSON.stringify(checked));
         assert.ok(checkBytes < 8_000, checkBytes + ' bytes');
         description = `Packed npx smoke on ${process.platform}: ${filename}, ${tools.length} tools, example.com taken`;
@@ -152,7 +183,8 @@ try {
     if (!failure) {
       console.log('MCP tools: ' + toolsListed.map(tool => tool.name).join(', '));
       console.log('tools/list annotations: ' + JSON.stringify(Object.fromEntries(toolsListed.map(tool => [tool.name, tool.annotations]))));
-      console.log('Cold npx initialize: ' + initializedMs + ' ms' + (checkBytes ? ', one exact check: ' + checkBytes + ' bytes' : ''));
+      console.log('Cold npx initialize: ' + initializedMs + ' ms, tools/list: ' + listedMs + ' ms'
+        + (checkBytes ? ', first lookup: ' + lookupMs + ' ms, one exact check: ' + checkBytes + ' bytes' : ''));
       const duration = `${Math.round(performance.now() - started)} ms`;
       console.log(`${description}, ${duration}${published ? `, attempt ${number}` : ''}`);
     }

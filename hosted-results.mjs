@@ -162,10 +162,13 @@ export function hostedChecks(checks, args, triage = false) {
   });
 }
 
-export function generatedChecks(generation) {
+// proposals maps a normalized name to the host's proposal, whose territory and anchor keep the short list diverse.
+export function generatedChecks(generation, proposals = new Map()) {
   return generation.names.map(entry => ({
     query: { name: entry.name, exactDomain: null },
-    why: entry.why,
+    why: entry.why ?? proposals.get(normalizeName(entry.name))?.why,
+    ...(proposals.get(normalizeName(entry.name))?.territory && { territory: proposals.get(normalizeName(entry.name)).territory }),
+    ...(proposals.get(normalizeName(entry.name))?.anchor && { anchor: proposals.get(normalizeName(entry.name)).anchor }),
     domains: entry.domains,
     choice: { pick: entry.domain },
     nameChecks: entry.nameChecks,
