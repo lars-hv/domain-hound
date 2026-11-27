@@ -201,7 +201,7 @@ function compactCheckResult(result) {
 
 function lookupResult(page, args, triage = false) {
   const result = toolResult(JSON.stringify(page));
-  if (args.detail === 'full' || args.additionalHandles?.length) {
+  if (args.detail === 'full') {
     const alternatives = triage ? [] : (page.checks ?? []).flatMap(check => {
       const options = check.query.exactDomain && check[alternativeEndings];
       return options ? checkLines({ ...options, domains: options.domains.filter(row => row.domain !== check.query.exactDomain) },
@@ -211,8 +211,11 @@ function lookupResult(page, args, triage = false) {
     return result;
   }
   const link = page.resultPage && resultsLine(page.resultPage).replace(/^Results page:/, 'All prices, shops and handles:');
-  if (!page.checks && page.pending && page.names?.length) {
-    const progressRows = (triage ? page.names.slice(0, 5) : page.names).map(({ name, free, taken, premium }) => {
+  const local = page[shortPresentation];
+  const checks = page.checks ?? local;
+  if (!checks && page.pending) {
+    const names = page.names ?? [];
+    const progressRows = (triage ? names.slice(0, 5) : names).map(({ name, free, taken, premium }) => {
       const show = values => values.map(value => {
         const ending = value.d ?? value;
         return ending === name ? ending : '.' + ending;
@@ -230,14 +233,14 @@ function lookupResult(page, args, triage = false) {
       args.purchase && !triage ? 'This check leaves checkout to you.' : '', link].filter(Boolean).join('\n');
     return result;
   }
-  if (!page.resultPage) return result;
-  const local = page[shortPresentation];
-  const checks = page.checks ?? local;
-  if (!checks) return result;
+  if (!triage && !checks?.length) {
+    result.content[0].text = ['No domain results to show.', link].filter(Boolean).join('\n');
+    return result;
+  }
 
   const options = { pending: Boolean(page.pending), link };
   const short = triage
-    ? shortIdeaAnswer(visibleChecks(checks, args, page.generation), options)
+    ? shortIdeaAnswer(visibleChecks(checks ?? [], args, page.generation), options)
     : checks.map(check => shortDomainAnswer({ ...check, alternatives: check[alternativeEndings] }, {
       ...options, link: checks.length === 1 ? link : undefined,
     })).join('\n\n');
@@ -248,7 +251,7 @@ function lookupResult(page, args, triage = false) {
   const text = triage ? short : [
     short.replace(/^[^\n]+/, first => [first, ...notes].join(' ')),
     ...(checks.length !== 1 ? [link] : []),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
   return { ...result, content: [{ type: 'text', text }] };
 }
 
@@ -609,7 +612,7 @@ export async function serve({
 
   // Join the running or finished lookup for the same input, or start one. Answer within the budget with the
   // result, or with the progress so far while the lookup keeps running for a repeated call to collect.
-  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}, started = performance.now(), legacy = false) {
+  async function runLookup(args, buildArgs, rowsFor, render, renderProgress, onLookup = () => {}, started = performance.now()) {
     let cliArgs;
     let rows;
     try {
@@ -640,7 +643,7 @@ export async function serve({
       try {
         const snapshot = await renderProgress(lookup.progress, {
           rows, elapsedMs: performance.now() - lookup.started, budgetMs: timeout }, lookup);
-        return legacy ? toolResult(snapshot) : lookupResult(JSON.parse(snapshot), args, buildArgs === triageArguments);
+        return lookupResult(JSON.parse(snapshot), args, buildArgs === triageArguments);
       } catch {
         return errorResult('Domain Hound could not format the progress.');
       }
@@ -651,7 +654,7 @@ export async function serve({
     }
     try {
       const page = await render(lookup.outcome.data, lookup);
-      return legacy ? toolResult(JSON.stringify(page)) : lookupResult(page, args, buildArgs === triageArguments);
+      return lookupResult(page, args, buildArgs === triageArguments);
     } catch {
       return errorResult('Domain Hound could not format the result.');
     }
@@ -662,9 +665,8 @@ export async function serve({
     return tracked;
   };
 
-  async function hostedLookup(args, triage, started, { legacy = false } = {}) {
+  async function hostedLookup(args, triage, started, { streamDomains = !triage } = {}) {
     if (!hosted || args?.confirm === true || (triage && args?.additionalHandles?.length)) return null;
-    const streamDomains = !triage && !legacy;
     let rows;
     try {
       (triage ? triageArguments : cliArguments)(args);
@@ -730,14 +732,14 @@ export async function serve({
         if (page) return lookupResult(page, args);
       }
       hostedDebug('Hosted check exceeded the tool response budget; it is still running.');
-      const result = toolResult(JSON.stringify({ display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
-        complete: false, pending: true }));
-      if (!legacy && detail !== 'full') result.content[0].text = 'Still checking ' + (triage ? 'names and domains.' : 'domains.');
-      return result;
+      return lookupResult({
+        display: attributed('The hosted check is still running. Call the same tool again with the same input to collect it.'),
+        complete: false, pending: true,
+      }, args, triage);
     }
     const page = lookup.finished ? lookup.result : await lookup.first;
     if (!page || page.isError) return page;
-    return legacy ? toolResult(JSON.stringify(page)) : lookupResult(page, args, triage);
+    return lookupResult(page, args, triage);
   }
 
   async function renderHostedLookup(checks, args, triage, { pending = false, reuse } = {}) {
@@ -764,9 +766,12 @@ export async function serve({
     } catch (problem) {
       return errorResult(problem.message);
     }
-    const local = () => toolResult(JSON.stringify({ display: attributed(
-      'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n'
-      + namingRecipe(input.idea)), source: 'local' }));
+    const local = () => toolResult(JSON.stringify({
+      display: attributed(args.detail === 'full'
+        ? 'Use this naming method, then send your candidates to triage_names with names and shortlist: true.\n\n' + namingRecipe(input.idea)
+        : 'Name generation is unavailable. Use naming_guide, then send your candidates to triage_names.'),
+      source: 'local',
+    }));
     if (!hosted) return local();
     const key = JSON.stringify(input);
     let job = generations.get(key);
@@ -1040,9 +1045,9 @@ export async function serve({
     // An exact lookup includes the purchase line while its registration status is unsettled.
     const exact = isObject(args) && typeof args.query === 'string' && args.query.includes('.');
     const legacy = name === 'broker_find';
-    const result = await hostedLookup(args, false, started, { legacy }) ?? await runLookup(
+    const result = await hostedLookup(args, false, started, { streamDomains: !legacy }) ?? await runLookup(
       args, cliArguments, checkRows, data => pages({ ...data, source: 'local' }, args).then(page => withCheckQuoteOffer(page, args)),
-      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started, legacy,
+      (progress, timing) => localProgress(progressText(progress, { ...timing, purchase: purchase || exact })), undefined, started,
     );
     if (exact && args.picked === true && !result.isError && result.structuredContent?.resultPage) {
       track(scoreLog?.picked(args.query, 'check_domains'));

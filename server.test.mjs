@@ -227,8 +227,12 @@ test('forwards purchase and the explicit browser confirm flag, and rejects non-b
 });
 
 test('passes a normalized query as a separate argument and returns compact JSON', async () => {
-  const responses = await exchange([...handshake(), call(2, { query: 'Example.COM' }, 'broker_find')]);
+  const responses = await exchange([...handshake(), call(2, { query: 'Example.COM' }, 'broker_find'),
+    call(3, { query: 'Example.COM', detail: 'full' }, 'broker_find')]);
   const result = callData(responses, 2);
+  assert.match(callText(responses, 2), /^example\.com is available/);
+  assert.doesNotMatch(callText(responses, 2), /Available ·|first year/);
+  assert.match(callText(responses, 3), /Available · example\.com/);
   assert.match(result.say, /Available · example\.com\n.*\$9\.48 first year · \$10\.68 yearly renewal · \$30\.84 over three years\nConfirmed at the shop\./);
   assert.match(result.say, /https:\/\/www\.spaceship\.com\/domain-search\/\?query=example\.com/);
   assert.equal(result.complete, true);
@@ -1385,7 +1389,7 @@ test('the package entry point defaults to short hosted check, screening and idea
   const triage = { names: [name] };
   const idea = { idea: 'An app for planning a library' };
   const responses = await runServer([fileURLToPath(new URL('./bin/domain-hound.mjs', import.meta.url))], [
-    ...handshake(), request(2, 'tools/list'),
+    ...handshake('2025-06-18'), request(2, 'tools/list'),
     call(3, check), call(4, { ...check, detail: 'full' }),
     call(5, triage, 'triage_names'), call(6, { ...triage, detail: 'full' }, 'triage_names'),
     call(7, idea, 'triage_names'), call(8, { ...idea, detail: 'full' }, 'triage_names'),
@@ -1411,6 +1415,40 @@ test('the package entry point defaults to short hosted check, screening and idea
   assert.deepEqual(paths.filter(([path]) => path === '/v1/check').map(([, query]) => query).sort(), [name, name, domain]);
   assert.equal(paths.filter(([path]) => path === '/v1/generate').length, 1);
   assert.ok(paths.every(([, , client]) => client === 'mcp/' + version));
+});
+
+test('a local name screen with extra handles stays short unless full detail is requested', async () => {
+  const args = { names: ['Example Heron'], additionalHandles: ['Discord'] };
+  const responses = await exchange([...handshake(), call(2, args, 'triage_names'),
+    call(3, { ...args, detail: 'full' }, 'triage_names')]);
+  assert.match(callText(responses, 2), /^Example Heron - /);
+  assert.match(callText(responses, 2), /All prices, shops and handles: \[Open results\]/);
+  assert.match(callText(responses, 3), /^Results page: /m);
+  assert.equal(resultOf(responses, 2).structuredContent.resultPage, resultOf(responses, 3).structuredContent.resultPage);
+});
+
+test('the local idea fallback gives a short next step and keeps the recipe in full detail', async () => {
+  const args = { idea: 'An app for planning a library' };
+  const responses = await exchange([...handshake(), call(2, args, 'triage_names'),
+    call(3, { ...args, detail: 'full' }, 'triage_names')]);
+  assert.match(callText(responses, 2), /naming_guide/);
+  assert.ok(callText(responses, 2).length < 200);
+  assert.match(callText(responses, 3), /Use this naming method/);
+  assert.ok(callText(responses, 3).length > 1000);
+});
+
+test('a hosted check without a results link still shows a short answer', async t => {
+  const name = 'exampleheron';
+  const domain = name + '.dev';
+  const mcp = await local(t, {
+    hosted: { async check() {
+      return { query: { name, ascii: name, exactDomain: null }, complete: true, choice: { pick: null },
+        domains: [{ domain, ending: 'dev', status: 'available', prices: [] }] };
+    } },
+    pages: async data => ({ ...data, display: 'Available · ' + domain }),
+  });
+  const reply = await mcp.ask(call(2, { query: name }));
+  assert.match(callText([reply], 2), /^exampleheron\.dev is available\./);
 });
 
 test('hosted domain checks keep shop order and recover a rate-limited App Store result locally', async t => {
@@ -1446,7 +1484,11 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
   });
   const mcp = await local(t, { hosted: host });
   const reply = await mcp.ask(call(2, { query: 'exampleheron' }, 'broker_find'));
-  callText([reply], 2);
+  assert.match(callText([reply], 2), /^exampleheron\.dev is your best bet: .*Dynadot/);
+  assert.doesNotMatch(callText([reply], 2), /Available ·|first year/);
+  const full = await mcp.ask(call(3, { query: 'exampleheron', detail: 'full' }, 'broker_find'));
+  assert.match(callText([full], 3), /Available · exampleheron\.dev/);
+  assert.deepEqual(full.result.structuredContent, reply.result.structuredContent);
   const answer = reply.result.structuredContent;
   assert.deepEqual(paths, ['/v1/check', '/v1/check/details', '/search']);
   assert.equal(answer.checks[0].nameChecks.appStore.source, 'local');
