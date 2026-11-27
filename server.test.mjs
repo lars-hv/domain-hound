@@ -139,7 +139,7 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
   const [check, triage, batch, naming, watch, , portfolio] = tools;
   assert.equal(batch.inputSchema.properties.candidates.maxItems, 60);
   assert.deepEqual(batch.inputSchema.required, ['candidates']);
-  assert.match(batch.description, /one call.*Show the table as given and stop; do not send another batch unless the user asks/s);
+  assert.match(batch.description, /one call.*stop without a follow-up question.*Offer another round only if asked/s);
   const { inputSchema } = check;
   function assertDescriptions(schema) {
     for (const property of Object.values(schema.properties ?? {})) {
@@ -150,7 +150,7 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
     if (schema.additionalProperties && typeof schema.additionalProperties === 'object') assertDescriptions(schema.additionalProperties);
   }
   for (const tool of tools) {
-    assert.match(tool.description, /^Use this when /);
+    assert.match(tool.description, /^Use this (?:directly )?when /);
     assert.doesNotMatch(tool.description, /clickable Results page link/);
     assert.ok(tool.annotations.title);
     for (const hint of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
@@ -165,7 +165,7 @@ test('advertises eleven distinct tools with intent descriptions and complete ann
   }
   assert.match(check.description, /purchase: true/);
   assert.match(check.description, /explicit live shop check/);
-  assert.match(triage.description, /For new names, use naming_guide and check_batch\./);
+  assert.match(triage.description, /For new names, use check_batch\./);
   assert.equal(triage.inputSchema.properties.proposals.maxItems, 60);
   for (const tool of [check, triage]) {
     assert.match(tool.description, /Show the table as given\. If a source is missing, leave it out; never tell the user a check failed\./);
@@ -1112,7 +1112,7 @@ test('forwards per-name naming evidence for the Name score and rejects anything 
   assert.deepEqual(candidates.additionalProperties.properties.relation.enum, ['direct', 'loose', 'none']);
   assert.match(candidates.description, /Missing evidence counts as not checked/);
   const naming = resultOf(responses, 2).tools.find(tool => tool.name === 'naming_guide');
-  assert.match(naming.description, /before brainstorming/);
+  assert.match(naming.description, /explore naming directions or blend past choices/);
   const flags = callData(responses, 3).flags;
   const at = flags.indexOf('--candidates');
   assert.ok(at > 0);
@@ -2260,8 +2260,8 @@ test('check_batch checks up to 60 host names locally and returns five ranked pic
   assert.deepEqual(rows.map(row => row[0].slice(2)), ['Example a', 'Example f', 'Example g', 'Example b', 'Example c']);
   assert.equal(rows[0][2], 'examplea.com');
   assert.equal(rows[0][3], '$9.00 / $11.00/yr (Example Shop)');
-  assert.equal(rows[0][4], 'no app match |');
-  assert.equal(rows[1][4], 'no App Store match |');
+  assert.equal(rows[0][4], 'no exact title in either US store |');
+  assert.equal(rows[1][4], 'no exact title in the US App Store |');
   assert.equal(rows[2][4], 'domain free |');
   assert.doesNotMatch(text, /unknown|limit|429|fail|could|check(?:ed)? later|—/i);
   assert.deepEqual(reply.result.structuredContent.picks.map(pick => pick.name), ['Example a', 'Example f', 'Example g', 'Example b', 'Example c']);

@@ -6,6 +6,7 @@ export const dossierTool = {
   name: 'taken_domain_dossier',
   description: 'Use this when investigating a taken domain’s ownership, sale listing or likely price range. Checks registry and public site evidence, '
     + 'and finds up to three available alternatives with upfront, renewal and three-year prices and a quick trademark, app and rival screen. '
+    + 'Use it for a specific request about the owner, sale price, or an offer draft. An initial buy-or-rebrand question uses check_domains. '
     + 'For release alerts use watch_domain. Keep maxBudget private and never send an offer draft.',
   annotations: { title: 'Taken domain dossier', readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
   inputSchema: {

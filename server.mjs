@@ -74,8 +74,10 @@ const detailSchema = { type: 'string', enum: ['short', 'full'], default: 'short'
   description: 'Defaults to "short". Use "full" for all shops and handles.' };
 const serverInstructions = 'Use Domain Hound for domains and product, company or app names, including availability, registration and renewal prices, trademarks, buying and watches. '
   + 'Use check_domains first for availability, prices, and advice on whether to keep a name or buy an alternative. Use triage_names for a name-only screen and watch_domain for a release watch. '
-  + 'When asked for new names, get the naming_guide, brainstorm in the host, then send one check_batch call with idea and up to 60 candidates, '
-  + 'preferring names that fit .com, .app or .ai. Show its five picks and stop; send another batch only if the user asks. '
+  + 'For an initial buy-or-rebrand decision, use the ownership, alternatives and conflicts from check_domains in one call. '
+  + 'When asked for new names and the brief is clear, send 12 to 20 strong candidates directly to check_batch in one call. '
+  + 'Use naming_guide first when the user wants to explore directions or blend past choices. '
+  + 'Prefer names that fit .com, .app or .ai. Show its five picks and stop; offer another round only if asked. '
   + showAnswer + ' Include the clickable Results page link whenever one is returned. '
   + 'To buy, set purchase: true on check_domains, then use quote_domain, buy_domain after approval, and setup_domain with verify: true. '
   + 'Pass stated ownership in ownedDomains. Use my_domains to review renewals of domains the person already owns.';
@@ -87,6 +89,7 @@ const checkTool = {
     + 'Use purchase: true to start a purchase and confirm: true only for an explicit live shop check. '
     + 'Checks domains, app names and exact US trademark matches. One call answers; late checks fill in on the results page. '
     + 'For a taken exact domain, always include the best available alternative in the reply even for a yes/no question. '
+    + 'For buy-or-rebrand advice, lead with the recommendation supported by the returned evidence. '
     + 'Use check_batch for name ideas and quote_domain for a live Spaceship purchase quote. ' + showAnswer,
   annotations: { title: 'Check domain availability and prices', ...searchAnnotations },
   _meta: batchResultMeta,
@@ -165,7 +168,7 @@ const namingContext = {
 const triageTool = {
   name: 'triage_names',
   description: 'Use this when naming a product, company or app, or checking existing names for trademarks, competing apps and handles. '
-    + 'For new names, use naming_guide and check_batch. '
+    + 'For new names, use check_batch. '
     + 'Pass names to screen existing ideas, or idea alone when host brainstorming is unavailable. '
     + 'One call answers with the best names; late checks fill in on the results page. For a domain-only lookup or registrar prices, use check_domains. ' + showAnswer,
   annotations: { title: 'Find and screen product names', ...searchAnnotations, idempotentHint: false },
@@ -212,10 +215,13 @@ const triageTool = {
 
 const batchTool = {
   name: 'check_batch',
-  description: 'Use this when checking host-written name ideas: once after naming_guide, with up to 60 diverse names in one call. '
+  description: 'Use this directly when a user gives a clear naming brief. Brainstorm 12 to 20 distinctive names with familiar words. '
+    + 'Use different directions, such as the job, outcome, metaphor, familiar object, role, or a word twist. '
+    + 'Send them in one call. The maximum is 60; there is no need to fill it. '
     + 'Checks .com for every name and .app and .ai for the first ones, then App Store, Google Play and exact US trademarks, '
     + 'and returns up to five ranked picks: clean names first, then near misses with their one issue. '
-    + 'Show the table as given and stop; do not send another batch unless the user asks. If a source is missing, leave it out.',
+    + 'Show the table and link as given, optionally name one favorite, and stop without a follow-up question. '
+    + 'Keep each check scoped to the source named in its row. Offer another round only if asked.',
   annotations: { title: 'Check a batch of name ideas', ...searchAnnotations },
   inputSchema: {
     type: 'object',
@@ -226,7 +232,7 @@ const batchTool = {
       round: { type: 'integer', minimum: 1, maximum: 3, description: 'Naming round, e.g. 2.' },
       shown: namingContext.shown,
       taste: namingContext.taste,
-      candidates: { type: 'array', minItems: 1, maxItems: maxBatch, items: namingCandidate,
+      candidates: { type: 'array', minItems: 1, maxItems: maxBatch, items: { ...namingCandidate, required: ['name', 'why'] },
         description: 'Up to 60 host-written names in one call, best first. Order counts: the first names are also checked on .app and .ai.' },
       detail: detailSchema,
     },
@@ -237,8 +243,8 @@ const batchTool = {
 
 const namingTool = {
   name: 'naming_guide',
-  description: 'Use this when the user asks for new product, company or app names, a rebrand or a blend. Call it before brainstorming. '
-    + 'Brainstorm using the guide, then send idea and up to 60 candidates to check_batch in one call to check domains, apps and exact US trademarks.',
+  description: 'Use this when the user wants to explore naming directions or blend past choices. '
+    + 'For a clear naming brief, use check_batch directly.',
   annotations: { title: 'Product naming guide', ...searchAnnotations, openWorldHint: false },
   inputSchema: { type: 'object', properties: {
     about: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional product description, e.g. "A room booking app".' },

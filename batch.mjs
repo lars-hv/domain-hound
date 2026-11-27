@@ -71,9 +71,9 @@ function screen(checks) {
   if (us?.status === 'exact_match_found') found.push(issues.trademark);
   const appFree = answered(app) && app.status !== 'taken';
   const playFree = answered(play) && play.status !== 'taken';
-  if (appFree && playFree) clear.push('no app match');
-  else if (appFree) clear.push('no App Store match');
-  else if (playFree) clear.push('no Google Play match');
+  if (appFree && playFree) clear.push('no exact title in either US store');
+  else if (appFree) clear.push('no exact title in the US App Store');
+  else if (playFree) clear.push('no exact title in US Google Play');
   if (us?.status === 'no_exact_match_found') clear.push('no exact US trademark');
   return { found, clear };
 }
