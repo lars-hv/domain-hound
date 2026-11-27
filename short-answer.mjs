@@ -203,21 +203,36 @@ export function shortDomainAnswer(check, { link, purchase = false } = {}) {
 
 // Several names or domains in one call: one row per entry.
 export function shortBatchAnswer(checks, { link } = {}) {
-  const rows = checks.map(check => {
+  const taken = new Set();
+  const yours = new Set();
+  const other = [];
+  const rows = checks.flatMap(check => {
     const exact = check.query.exactDomain;
     const owned = new Set(check.ownedDomains ?? []);
     const rowsFor = check.alternatives?.domains ?? check.domains;
     const pick = check.alternatives?.choice?.pick ?? check.choice?.pick;
     const hit = exact ? check.domains.find(row => row.domain === exact) : null;
+    if (hit && rowStatus(hit, owned) === 'taken') taken.add(cell(hit.domain));
     const best = rowsFor.find(row => row.domain === pick?.domain && row.status === 'available')
       ?? rowsFor.find(row => row.status === 'available');
-    const shown = hit && rowStatus(hit, owned) !== 'taken' ? hit : best ?? hit;
+    const hitStatus = hit && rowStatus(hit, owned);
+    const shown = hitStatus && hitStatus !== 'taken' ? hit : best ?? hit;
     const status = shown ? rowStatus(shown, owned) : rowsFor.length && rowsFor.every(row => row.status === 'taken') ? 'all taken' : null;
     const prices = shown && ['available', 'premium'].includes(status) ? rowOffer(shown, pick) : null;
-    return [cell(exact ?? check.query.name), shown ? cell(shown.domain) : empty, status ?? empty, ...(prices ?? [empty, empty, empty])];
+    if (prices) return [[cell(exact ?? check.query.name), cell(shown.domain), status, ...prices]];
+    if (status === 'all taken') taken.add(cell(check.query.name));
+    else if (status === 'owned') yours.add(cell(shown.domain));
+    else if (status && status !== 'taken') other.push(cell(shown.domain) + ' ' + status);
+    return [];
   });
+  const body = [
+    rows.length ? table(['Name', 'Domain', 'Status', 'Now', 'Then/yr', 'Where'], rows) : '',
+    taken.size ? 'Taken: ' + [...taken].join(', ') : '',
+    yours.size ? 'Yours: ' + [...yours].join(', ') : '',
+    other.join(', '),
+  ].filter(Boolean).join('\n\n');
   const warnings = checks.map(check => headsUp(sources(check).us)).filter(Boolean);
-  return answer(table(['Name', 'Domain', 'Status', 'Now', 'Then/yr', 'Where'], rows), warnings, link);
+  return answer(body, warnings, link);
 }
 
 function shortWhy(text, words = 6) {

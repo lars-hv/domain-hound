@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { PassThrough } from 'node:stream';
 import { serve } from './server.mjs';
-import { doneGuidance } from './short-answer.mjs';
+import { doneGuidance, shortBatchAnswer } from './short-answer.mjs';
 import { hostedClient } from './hosted.mjs';
 import { resultPages, resultsLine } from './results.mjs';
 import { deadlineClock } from './test-support/deadline-clock.mjs';
@@ -2187,6 +2187,19 @@ test('a taken exact domain shows ranked priced alternatives and a Taken line whe
   assert.match(text, /^Taken: examplekite\.com, \.ai$/m);
   assert.match(text, /^Best available alternative: examplekite\.app\.$/m);
   assert.doesNotMatch(text, /—|Asked/);
+});
+
+test('a batch names taken domains below its priced alternatives', () => {
+  const taken = domain => ({ domain, status: 'taken', prices: [] });
+  const offer = { shop: 'Example Shop', firstPaymentUsd: 9, renewalUsd: 11, threeYearUsd: 31 };
+  const alternative = { domain: 'examplekite.app', status: 'available', prices: [offer] };
+  const check = (domain, alternatives) => ({
+    query: { name: domain, exactDomain: domain }, domains: [taken(domain)], alternatives,
+  });
+  const text = shortBatchAnswer([check('examplekite.com', { domains: [alternative] }), check('examplewren.com')]);
+  assert.match(text, /\| examplekite\.com \| examplekite\.app \| available \| \$9\.00 \| \$11\.00 \| Example Shop \|/);
+  assert.match(text, /^Taken: examplekite\.com, examplewren\.com$/m);
+  assert.doesNotMatch(text, /—/);
 });
 
 test('the compact table prefers an unlocked shop within $2 over 3 years and never mentions Cloudflare DNS', async t => {
