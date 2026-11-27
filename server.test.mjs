@@ -164,7 +164,7 @@ test('advertises ten distinct tools with intent descriptions and complete annota
   assert.deepEqual(triage.inputSchema.properties.endings, inputSchema.properties.endings);
   assert.equal(check._meta['anthropic/maxResultSizeChars'], 40_000);
   const { query, names } = inputSchema.properties;
-  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'detail', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
+  assert.deepEqual(Object.keys(inputSchema.properties), ['country', 'ai', 'endings', 'budget', 'eligible', 'detail', 'ownedDomains', 'query', 'names', 'shortlist', 'purchase', 'picked', 'confirm']);
   for (const flag of ['shortlist', 'purchase', 'picked', 'confirm']) assert.equal(inputSchema.properties[flag].type, 'boolean');
   assert.match(inputSchema.properties.confirm.description, /only when the person explicitly asks/);
   assert.deepEqual(inputSchema.properties.eligible.items.enum, ['no', 'eu']);
@@ -227,7 +227,7 @@ test('forwards purchase and the explicit browser confirm flag, and rejects non-b
 test('passes a normalized query as a separate argument and returns compact JSON', async () => {
   const responses = await exchange([...handshake(), call(2, { query: 'Example.COM' }, 'broker_find')]);
   const result = callData(responses, 2);
-  assert.match(result.say, /Available · example\.com\n.*\$9\.48 first year · \$10\.68 yearly renewal · \$30\.84 over three years\nConfirmed at the shop\./);
+  assert.match(result.say, /Available · example\.com\n.*\$9\.48 first year · \$10\.68 yearly renewal · \$30\.84 over three years(?: · [^\n]+)?\nConfirmed at the shop\./);
   assert.match(result.say, /https:\/\/www\.spaceship\.com\/domain-search\/\?query=example\.com/);
   assert.equal(result.complete, true);
   assert.equal(result.checkedAt, '2026-11-24T12:00:00.000Z');
@@ -1847,4 +1847,55 @@ test('an idea shows one line per name, puts confirmed prices first and caps the 
   assert.deepEqual(full.result.structuredContent, first.result.structuredContent);
   assert.equal(full.result.content[0].text, full.result.structuredContent.display);
   assert.match(full.result.content[0].text, /Available · example5.dev/);
+});
+
+test('short domain check combines stated and saved ownership, ranked variants and checked sources', async t => {
+  const checkedAt = '2026-11-26T12:00:00.000Z';
+  const shop = 'https://www.dynadot.com/domain/search?domain=';
+  const row = (domain, status, variant = false) => ({
+    domain, ending: domain.split('.')[1], status, variant, checkedAt, source: 'https://example.org/rdap/' + domain,
+    prices: status === 'available' ? [{ shop: 'Dynadot', firstYearUsd: 5, renewalUsd: 10, firstPaymentUsd: 5,
+      threeYearUsd: 25, minimumYears: 1, buyUrl: shop + domain, checkedAt, source: 'https://example.org/prices' }] : [],
+  });
+  const mcp = await local(t, {
+    context: {
+      owned: async () => ['lanternbay.io', 'unrelated.dev'],
+      names: async () => ({ entities: [], companies: [] }),
+      domain: async domain => ({ domain, site: { title: 'Example Domains', state: 'live', investor: true, checkedAt,
+        url: 'https://example.org/' }, registration: { created: '2004-03-01', checkedAt, url: 'https://example.org/rdap' } }),
+      variants: async (labels, endings) => {
+        assert.deepEqual(labels, ['getlanternbay', 'lanternbayhq', 'trylanternbay', 'lanternbayapp']);
+        assert.deepEqual(endings, ['com', 'ai', 'io']);
+        return [row('getlanternbay.com', 'available', true)];
+      },
+    },
+    hosted: { async check(name) {
+      return {
+        query: { name, ascii: name, exactDomain: null }, complete: true, checkedAt,
+        choice: { pick: null }, appStore: { status: 'taken', matches: [], checkedAt },
+        googlePlay: { status: 'not-found', link: 'https://play.google.com/store/search?q=lanternbay', checkedAt },
+        trademarks: { us: { status: 'no_exact_match_found', matches: [], checkedAt } },
+        domains: [row('lanternbay.com', 'taken'), row('lanternbay.ai', 'taken'),
+          row('lanternbay.io', 'taken'), row('lanternbay.dev', 'available')],
+      };
+    } },
+  });
+  const reply = await mcp.ask(call(2, { query: 'lanternbay', ownedDomains: ['lanternbay.ai'] }));
+  assert.ok(!reply.result.isError, JSON.stringify(reply.result));
+  const text = callText([reply], 2);
+  const { rows, evidence: [evidence], resultPage } = reply.result.structuredContent;
+  assert.match(text, /^getlanternbay\.com is your best bet/);
+  assert.match(text, /You own: lanternbay\.ai, lanternbay\.io/);
+  assert.doesNotMatch(text, /unrelated\.dev/);
+  assert.match(text, /Who else \(rough read\):.*likely investor-held.*2004-03-01/);
+  assert.ok(text.split('\n').length <= 6);
+  assert.deepEqual(rows[0].statuses.owned, ['lanternbay.ai', 'lanternbay.io']);
+  assert.deepEqual(rows[0].statuses.taken, ['com']);
+  assert.deepEqual(rows[0].statuses.available, ['getlanternbay.com', 'dev']);
+  assert.equal(evidence.pick.source, 'https://example.org/prices');
+  assert.equal(evidence.appStore.source, 'https://itunes.apple.com/search');
+  const html = await readFile(new URL(resultPage), 'utf8');
+  assert.match(html, /Sources and checked times/);
+  assert.match(html, /https:\/\/example\.org\/rdap/);
+  assert.match(html, /https:\/\/supabase\.com\/blog\/supabase-dot-com/);
 });

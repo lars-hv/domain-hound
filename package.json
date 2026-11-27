@@ -44,6 +44,8 @@
     "hosted-results.mjs",
     "display.mjs",
     "short-answer.mjs",
+    "name-context.mjs",
+    "context-sources.mjs",
     "results.mjs",
     "results-style.mjs",
     "results-cards.mjs",
