@@ -1343,7 +1343,8 @@ test('keeps a fully priced hosted check and a twenty-name batch within the MCP r
 test('the package entry point defaults to short hosted check, screening and idea replies', async t => {
   const name = 'exampleheron';
   const domain = name + '.dev';
-  const offer = { domain, shop: 'Example Shop', firstYearUsd: 5, firstPaymentUsd: 5, renewalUsd: 10, threeYearUsd: 25 };
+  const offer = { domain, shop: 'Example Shop', firstYearUsd: 5, firstPaymentUsd: 5, renewalUsd: 10, threeYearUsd: 25,
+    buyUrl: 'https://example.com/register', checkedAt: '2026-11-24T12:00:00.000Z' };
   const row = { domain, ending: 'dev', status: 'available', prices: [offer] };
   const appStore = { status: 'no_match_found', matches: [] };
   const googlePlay = { status: 'taken' };
@@ -1383,8 +1384,9 @@ test('the package entry point defaults to short hosted check, screening and idea
 
   assert.deepEqual(callText(responses, 3).split('\n').slice(0, -1), [
     'exampleheron.dev is available: $5.00 now, then $10.00/yr (Example Shop).',
-    'App Store: no app with this name',
-    'Still checking Google Play, US trademark.',
+    'App Store: no app with this name · Still checking Google Play',
+    'Still checking US trademark.',
+    'Who else (rough read): no exact match in the public sources that answered.',
   ]);
   assert.match(callText(responses, 9), /^exampleheron\.dev is your best bet: \$5\.00 now, then \$10\.00\/yr \(Example Shop\)\./);
   assert.match(callText(responses, 4), /Ask to quote exampleheron\.dev\./);
@@ -1393,7 +1395,7 @@ test('the package entry point defaults to short hosted check, screening and idea
   for (const [short, full] of [[3, 4], [5, 6], [7, 8]]) {
     assert.match(callText(responses, short), /\nAll prices, shops and handles: \[Open results\]/);
     assert.doesNotMatch(callText(responses, short), /Available ·|first year/);
-    assert.match(callText(responses, full), /Available · exampleheron\.dev\nExample Shop.*\$5\.00 first year/);
+    assert.match(callText(responses, full), /Available · exampleheron\.dev\n\[?Example Shop.*\$5\.00 first year/);
     assert.equal(resultOf(responses, short).structuredContent.resultPage, resultOf(responses, full).structuredContent.resultPage);
   }
   for (const tool of resultOf(responses, 2).tools.slice(0, 2)) assert.equal(tool.inputSchema.properties.detail.default, 'short');
