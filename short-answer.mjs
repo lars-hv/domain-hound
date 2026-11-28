@@ -1,14 +1,15 @@
-import { brandConflict, domainTier, rankedAlternatives, selectionReason, whoElse } from './name-context.mjs';
-import { normalizeName, preferUnlocked, qualityRank } from './clis/domain-check/name-search.mjs';
+import { domainTier, rankedAlternatives, selectionReason, whoElse } from './name-context.mjs';
+import { canRecommend, normalizeName, preferUnlocked, qualityRank } from './clis/domain-check/name-search.mjs';
 import { md } from './display.mjs';
+import { fitsBudget, preferenceScore, usMarket } from './host-context.mjs';
 
 // The short answer is a small Markdown table plus at most two supporting lines. It never mentions a source that
 // failed, was blocked or is still running: that source is left out here and stays on the results page.
 // The closing instruction to the host travels as its own text block.
-export const doneGuidance = 'Done. Show this; do not call more tools unless the user asks. '
+export const doneGuidance = 'Share these checked facts and add up to two lines of tailored advice if useful. Do not call more tools unless the user asks. '
   + 'For an exact domain that is taken, always show its best available alternative from the answer, even for a yes/no question. '
   + 'Mention resale only if the user asks about buying the taken domain. '
-  + 'Report only the facts and checks listed in the answer. Leave out discussion of missing checks.';
+  + 'Base factual claims on the listed checks. Omit unanswered app, trademark and profile sources entirely, including caveats.';
 
 const plain = value => String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim();
 const usd = value => '$' + value.toFixed(2);
@@ -48,12 +49,12 @@ function rowStatus(row, owned) {
   return row.reason === 'reserved' ? 'reserved' : null;
 }
 
-function headsUp(us) {
+function headsUp(us, market) {
   if (us?.status !== 'exact_match_found') return '';
   const match = us.marks?.[0];
   const kind = match?.status === 'applied' ? 'US trademark application ' : 'US trademark ';
   return 'Heads-up: ' + kind + (match?.mark ? cell(match.mark) : 'with this exact name')
-    + (match?.owner ? ' (' + cell(match.owner) + ')' : '') + ', matters if you sell in the US.';
+    + (match?.owner ? ' (' + cell(match.owner) + ')' : '') + (usMarket(market) ? ', matters if you sell in the US.' : '.');
 }
 
 const sources = check => ({
@@ -131,9 +132,10 @@ function domainRows(check, { primary, pick, also, owned, label }) {
 
 const domainHeader = ['', 'Domain', 'Status', 'Now', 'Then/yr', 'Where'];
 
-export function shortDomainAnswer(check, { link, purchase = false } = {}) {
+export function shortDomainAnswer(check, { link, purchase = false, market, eligible = [], preferred = [],
+  budget, budgetThreeYearUsd, likes, dislikes, idea } = {}) {
   const ranked = Boolean(check.context || check.advice || check.ownedDomains?.length || check.ranked);
-  const { query, ownedDomains = [], context, advice } = check;
+  const { query, ownedDomains = [], context } = check;
   const exact = query.exactDomain;
   const label = query.ascii ?? context?.label ?? normalizeName((exact || query.name).split('.')[0]) ?? '';
   const alternatives = check.alternatives;
@@ -165,8 +167,11 @@ export function shortDomainAnswer(check, { link, purchase = false } = {}) {
     else if (rows.filter(row => !row.variant).every(row => row.status === 'taken' || row.status === 'owned')) {
       first = 'All ' + rows.filter(row => !row.variant).length + ' checked endings are taken. Try a new name.';
     } else first = '';
-    const compare = (a, b) => domainTier(a.domain, label) - domainTier(b.domain, label) || qualityRank(a.domain) - qualityRank(b.domain);
-    also = rankedAlternatives(rows, primary ?? hit, label, compare);
+    const tier = row => preferred.includes(row.ending) && !row.variant ? 0 : domainTier(row.domain, label);
+    const compare = (a, b) => tier(a) - tier(b) || qualityRank(a.domain, preferred, eligible) - qualityRank(b.domain, preferred, eligible);
+    const choices = rows.filter(row => canRecommend(row.ending, eligible) && preferenceScore(row.ending, { likes, dislikes }, { ending: true }) >= 0
+      && row.prices?.some(offer => fitsBudget(offer, { budget, budgetThreeYearUsd })));
+    also = rankedAlternatives(choices, primary ?? hit, label, compare);
   } else {
     pick = alternatives?.choice?.pick ?? check.choice?.pick;
     const best = available.find(row => row.domain === pick?.domain) ?? available[0];
@@ -185,24 +190,20 @@ export function shortDomainAnswer(check, { link, purchase = false } = {}) {
   }
   const { rows: tableRows, status: statusLine } = domainRows(check, { primary, pick, also, owned, label });
   const { us } = sources(check);
-  const others = ranked ? whoElseLine(whoElse(context, { pick, ownedDomains, hasAdvice: Boolean(advice),
-    blockedBrand: brandConflict(context, check.trademarks) })) : '';
+  const others = ranked ? whoElseLine(whoElse(context, { hasAdvice: true, idea })) : '';
   const priced = tableRows.length ? table(domainHeader, tableRows) : '';
   const takenExact = hit?.status === 'taken' && !owned.has(exact);
   const alternative = takenExact && primary && tableRows.some(row => row[1] === cell(primary.domain) && row[2] === 'available')
     ? 'Best available alternative: ' + cell(primary.domain) + '.' : '';
   const sections = takenExact ? [statusLine, alternative, priced] : [priced || first.trim(), statusLine];
   const text = sections.filter(Boolean).join('\n\n');
-  const ownAdvice = ownedDomains.length && context?.domain && !owned.has(context.domain)
-    && check.domains.some(row => row.domain === context.domain && row.status === 'taken')
-    ? 'Keep using ' + cell(ownedDomains[0]) + ' and hold off on ' + cell(context.domain) + '.' : '';
-  const notes = [headsUp(us), ownAdvice || advice?.text, appsLine(check), others];
+  const notes = [appsLine(check), headsUp(us, market), others];
   const shown = answer(text, notes, link);
   return purchase && first && tableRows.length ? first + '\n\n' + shown : shown;
 }
 
 // Several names or domains in one call: one row per entry.
-export function shortBatchAnswer(checks, { link } = {}) {
+export function shortBatchAnswer(checks, { link, market } = {}) {
   const taken = new Set();
   const yours = new Set();
   const other = [];
@@ -231,7 +232,7 @@ export function shortBatchAnswer(checks, { link } = {}) {
     yours.size ? 'Yours: ' + [...yours].join(', ') : '',
     other.join(', '),
   ].filter(Boolean).join('\n\n');
-  const warnings = checks.map(check => headsUp(sources(check).us)).filter(Boolean);
+  const warnings = checks.map(check => headsUp(sources(check).us, market)).filter(Boolean);
   return answer(body, warnings, link);
 }
 
@@ -252,7 +253,7 @@ function nameChecks(check) {
 // The screen's own pick; a screened name without one still shows its first priced free domain.
 const domainPick = (check, fallback = false) => {
   const pick = check.choice?.pick;
-  const row = pick && check.domains.find(row => row.domain === pick.domain && row.status === 'available');
+  const row = pick && check.domains.find(row => row.domain === pick.domain && ['available', 'owned'].includes(row.status));
   if (row) return { row, pick };
   const free = fallback && check.domains.find(row => row.status === 'available' && !row.premium && row.prices?.length);
   return free ? { row: free, pick: null } : null;
@@ -282,17 +283,17 @@ export function diverseNames(checks, limit = maxNames) {
 
 // A generated round shows only
 // names with a free domain; a screen of the person's own names shows each of them.
-export function shortIdeaAnswer(checks, { link, generated = false } = {}) {
+export function shortIdeaAnswer(checks, { link, generated = false, market } = {}) {
   const shown = generated ? diverseNames(checks) : checks.slice(0, maxNames);
   const rows = shown.map(check => {
     const found = domainPick(check);
     const prices = found ? rowOffer(found.row, found.pick) : null;
     const domain = found ? cell(found.row.domain)
       : check.domains.length && check.domains.every(row => row.status === 'taken') ? 'all taken' : empty;
-    return [cell(check.query.name), shortWhy(check.why), domain, prices ? prices[0] + ' / ' + prices[1] : empty];
+    return [cell(check.query.name), shortWhy(check.why), domain, found?.row.status === 'owned' ? 'Already yours' : prices ? prices[0] + ' / ' + prices[1] : empty];
   });
   if (!rows.length) return link || 'Try another naming direction.';
-  const warnings = shown.map(check => headsUp(sources(check).us)
+  const warnings = shown.map(check => headsUp(sources(check).us, market)
     .replace(/^Heads-up: /, 'Heads-up for ' + cell(check.query.name) + ': ')).filter(Boolean);
   const checked = shown.map(check => ({ name: cell(check.query.name), checks: nameChecks(check) }))
     .filter(row => row.checks !== empty);

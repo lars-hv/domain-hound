@@ -4,12 +4,12 @@
   "title": "Domain Hound",
   "description": "Ask Claude or ChatGPT for a name or domain. Get one you can buy.",
   "websiteUrl": "https://domainhound.dev",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "domain-hound",
-      "version": "0.1.21",
+      "version": "0.1.22",
       "transport": {
         "type": "stdio"
       }

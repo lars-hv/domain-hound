@@ -1,7 +1,7 @@
 {
   "name": "domain-hound",
   "displayName": "Domain Hound",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "description": "Ask Claude for a name or domain. Get one you can buy. It checks the domain, the cheapest shop including renewal, the app stores and US trademarks, in one answer. Free. Never buys without your yes.",
   "author": {
     "name": "Lars Hvinden"
