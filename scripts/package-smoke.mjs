@@ -19,7 +19,6 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { doneGuidance } from '../short-answer.mjs';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -154,6 +153,7 @@ try {
       if (published) {
         description = `Published npx smoke on ${process.platform}: ${filename}, ${tools.length} tools`;
       } else {
+        const { doneGuidance } = await import('../short-answer.mjs');
         const lookupStarted = performance.now();
         const checked = await request(3, 'tools/call', { name: 'check_domains', arguments: { query: 'example.com' } });
         lookupMs = Math.round(performance.now() - lookupStarted);

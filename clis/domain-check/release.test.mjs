@@ -2,7 +2,7 @@ import '../../test-support/isolated-cache.mjs';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -516,8 +516,15 @@ if (step === 'etarget') {
 async function publishedSmoke(t, plan, env = {}) {
   const fixture = await fixtureBin(t, plan);
   await fixtureCommand(fixture.dir, 'npx', fakeNpx);
-  const { version } = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'));
-  const result = await run(process.execPath, [join(repoRoot, 'scripts/package-smoke.mjs'), '--published', version], {
+  const manifest = readFileSync(join(repoRoot, 'package.json'), 'utf8');
+  const { version } = JSON.parse(manifest);
+  // The post-publish job starts from a clean checkout with no installed development dependencies.
+  const scripts = join(fixture.dir, 'scripts');
+  await mkdir(scripts);
+  await writeFile(join(fixture.dir, 'package.json'), manifest);
+  const script = join(scripts, 'package-smoke.mjs');
+  await writeFile(script, readFileSync(join(repoRoot, 'scripts/package-smoke.mjs')));
+  const result = await run(process.execPath, [script, '--published', version], {
     env: { ...fixture.env, PACKAGE_SMOKE_RETRY_DELAY_MS: '0', ...env } });
   return { ...result, calls: await fixture.calls(), version };
 }

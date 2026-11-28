@@ -9,7 +9,7 @@ import { fitsBudget, preferenceScore, usMarket } from './host-context.mjs';
 export const doneGuidance = 'Share these checked facts and add up to two lines of tailored advice if useful. Do not call more tools unless the user asks. '
   + 'For an exact domain that is taken, always show its best available alternative from the answer, even for a yes/no question. '
   + 'Mention resale only if the user asks about buying the taken domain. '
-  + 'Base factual claims on the listed checks. Leave out discussion of missing checks.';
+  + 'Base factual claims on the listed checks. Omit unanswered app, trademark and profile sources entirely, including caveats.';
 
 const plain = value => String(value ?? '').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, ' ').trim();
 const usd = value => '$' + value.toFixed(2);
@@ -197,7 +197,7 @@ export function shortDomainAnswer(check, { link, purchase = false, market, eligi
     ? 'Best available alternative: ' + cell(primary.domain) + '.' : '';
   const sections = takenExact ? [statusLine, alternative, priced] : [priced || first.trim(), statusLine];
   const text = sections.filter(Boolean).join('\n\n');
-  const notes = [headsUp(us, market), appsLine(check), others];
+  const notes = [appsLine(check), headsUp(us, market), others];
   const shown = answer(text, notes, link);
   return purchase && first && tableRows.length ? first + '\n\n' + shown : shown;
 }

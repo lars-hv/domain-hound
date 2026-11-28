@@ -1520,7 +1520,7 @@ test('hosted domain checks keep shop order and recover a rate-limited App Store 
   const mcp = await local(t, { hosted: host });
   const reply = await mcp.ask(call(2, { query: 'exampleheron' }, 'broker_find'));
   assert.match(callText([reply], 2), /^\| Best \| exampleheron\.dev \| available \| \$5\.00 \| \$10\.00 \| Dynadot \|/m);
-  assert.match(callText([reply], 2), /^Heads-up: US trademark application EXAMPLEHERON \(Example Company\), matters if you sell in the US\.\nApps: App Store taken · Google Play free · All prices/m);
+  assert.match(callText([reply], 2), /^Apps: App Store taken · Google Play free\nHeads-up: US trademark application EXAMPLEHERON \(Example Company\), matters if you sell in the US\. · All prices/m);
   assert.doesNotMatch(callText([reply], 2), /Available ·|first year/);
   const full = await mcp.ask(call(3, { query: 'exampleheron', detail: 'full' }, 'broker_find'));
   assert.match(callText([full], 3), /Available · exampleheron\.dev/);
@@ -1816,11 +1816,11 @@ test('the package first call and saved page show both app stores before an exact
     '|---|---|---|---|---|---|',
     '| Best | exampleheron.dev | available | $5.00 | $10.00 | Dynadot |',
     '',
-    'Heads-up: US trademark EXAMPLEHERON (Example Studio), matters if you sell in the US.',
+    'Apps: App Store free · Google Play taken',
     lines.at(-1),
   ]);
   assert.equal(lines.length, 6);
-  assert.match(lines[5], /^Apps: App Store free · Google Play taken · All prices, shops and handles:/);
+  assert.match(lines[5], /^Heads-up: US trademark EXAMPLEHERON \(Example Studio\), matters if you sell in the US\. · All prices, shops and handles:/);
   const early = await readFile(new URL(resultPage), 'utf8');
   assert.match(early.split('<body>')[1], /Hound’s pick.*App Store \(iOS\).*Google Play \(Android\).*trademark-warning.*Example Studio.*Buy at Dynadot/s);
   finish(Response.json({ version: 1, appStore: { status: 'unknown', matches: [] }, googlePlay: { status: 'unknown' },
